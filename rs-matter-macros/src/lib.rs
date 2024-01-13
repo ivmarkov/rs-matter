@@ -130,7 +130,9 @@ impl Parse for MatterIdlImportArgs {
 pub fn idl_import(item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as MatterIdlImportArgs);
 
-    let idl = rs_matter_data_model::idl::Idl::parse(CSA_STANDARD_CLUSTERS_IDL.into()).unwrap();
+    let idl_span: &str = IDL;
+
+    let idl = rs_matter_data_model::idl::Idl::parse(idl_span.into()).unwrap();
 
     let streams = idl
         .clusters

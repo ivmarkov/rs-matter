@@ -17,11 +17,12 @@
 
 use crate::common::echo_cluster;
 use core::borrow::Borrow;
-use core::future::pending;
 use core::time::Duration;
-use embassy_futures::select::select3;
+
+use embassy_futures::select::select4;
+
 use embassy_sync::{
-    blocking_mutex::raw::{NoopRawMutex, RawMutex},
+    blocking_mutex::raw::NoopRawMutex,
     zerocopy_channel::{Channel, Receiver, Sender},
 };
 use rs_matter::{
@@ -49,16 +50,16 @@ use rs_matter::{
     handler_chain_type,
     interaction_model::core::{OpCode, PROTO_ID_INTERACTION_MODEL},
     mdns::DummyMdns,
-    secure_channel::{self, common::PROTO_ID_SECURE_CHANNEL, spake2p::VerifierData},
+    respond::Responder,
     tlv::{TLVWriter, TagType, ToTLV},
     transport::{
-        core::PacketBuffers,
-        network::{Address, Ipv4Addr, SocketAddr, SocketAddrV4, UdpBuffers, UdpReceive, UdpSend},
-        packet::{Packet, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
-        session::{CaseDetails, CloneData, NocCatIds, SessionMode},
+        exchange::{Exchange, ExchangeMeta},
+        network::{Address, Ipv4Addr, SocketAddr, SocketAddrV4, UdpReceive, UdpSend},
+        packet::{MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
+        session::{CaseDetails, NocCatIds, ReservedSession, SessionMode},
     },
-    utils::select::{EitherUnwrap, Notification},
-    CommissioningData, Matter, MATTER_PORT,
+    utils::select::EitherUnwrap,
+    Matter, MATTER_PORT,
 };
 
 use super::echo_cluster::EchoCluster;
@@ -209,28 +210,10 @@ impl<'a> ImEngine<'a> {
 
     /// Create the interaction model engine
     pub fn new(cat_ids: NocCatIds) -> Self {
-        #[cfg(feature = "std")]
-        use rs_matter::utils::epoch::sys_epoch as epoch;
-
-        #[cfg(not(feature = "std"))]
-        use rs_matter::utils::epoch::dummy_epoch as epoch;
-
-        #[cfg(feature = "std")]
-        use rs_matter::utils::rand::sys_rand as rand;
-
-        #[cfg(not(feature = "std"))]
-        use rs_matter::utils::rand::dummy_rand as rand;
-
-        let matter = Matter::new(
-            &BASIC_INFO,
-            &DummyDevAtt,
-            unsafe { &mut DNS },
-            epoch,
-            rand,
-            MATTER_PORT,
-        );
-
-        Self { matter, cat_ids }
+        Self {
+            matter: Self::new_matter(),
+            cat_ids,
+        }
     }
 
     pub fn add_default_acl(&self) {
@@ -244,77 +227,118 @@ impl<'a> ImEngine<'a> {
         ImEngineHandler::new(&self.matter)
     }
 
+    fn new_matter() -> Matter<'static> {
+        #[cfg(feature = "std")]
+        use rs_matter::utils::epoch::sys_epoch as epoch;
+
+        #[cfg(not(feature = "std"))]
+        use rs_matter::utils::epoch::dummy_epoch as epoch;
+
+        #[cfg(feature = "std")]
+        use rs_matter::utils::rand::sys_rand as rand;
+
+        #[cfg(not(feature = "std"))]
+        use rs_matter::utils::rand::dummy_rand as rand;
+
+        Matter::new(
+            &BASIC_INFO,
+            &DummyDevAtt,
+            unsafe { &mut DNS },
+            epoch,
+            rand,
+            MATTER_PORT,
+        )
+    }
+
+    fn init_matter(matter: &Matter, local_nodeid: u64, remote_nodeid: u64, cat_ids: &NocCatIds) {
+        matter.transport_mgr.reset();
+
+        let mut session = ReservedSession::reserve_now(matter).unwrap();
+
+        session
+            .update(
+                local_nodeid,
+                remote_nodeid,
+                1,
+                1,
+                Address::default(),
+                SessionMode::Case(CaseDetails::new(1, cat_ids)),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        session.complete();
+    }
+
     pub fn process<const N: usize>(
         &self,
         handler: &ImEngineHandler,
         input: &[&ImInput],
         out: &mut heapless::Vec<ImOutput, N>,
     ) -> Result<(), Error> {
-        self.matter.reset_transport();
+        out.clear();
 
-        let clone_data = CloneData::new(
+        Self::init_matter(
+            &self.matter,
             IM_ENGINE_REMOTE_PEER_ID,
             IM_ENGINE_PEER_ID,
-            1,
-            1,
-            Address::default(),
-            SessionMode::Case(CaseDetails::new(1, &self.cat_ids)),
+            &self.cat_ids,
         );
 
-        let sess_idx = self
-            .matter
-            .session_mgr
-            .borrow_mut()
-            .clone_session(&clone_data)
-            .unwrap();
+        let matter_client = Self::new_matter();
+        Self::init_matter(
+            &matter_client,
+            IM_ENGINE_PEER_ID,
+            IM_ENGINE_REMOTE_PEER_ID,
+            &self.cat_ids,
+        );
 
-        let mut send_channel_buf = [heapless::Vec::new(); 1];
-        let mut recv_channel_buf = [heapless::Vec::new(); 1];
+        let mut buf1 = [heapless::Vec::new(); 1];
+        let mut buf2 = [heapless::Vec::new(); 1];
 
-        let mut send_channel = Channel::<NoopRawMutex, _>::new(&mut send_channel_buf);
-        let mut recv_channel = Channel::<NoopRawMutex, _>::new(&mut recv_channel_buf);
+        let mut pipe1 = PseudoUdpPipe::<MAX_RX_BUF_SIZE>::new(&mut buf1);
+        let mut pipe2 = PseudoUdpPipe::<MAX_TX_BUF_SIZE>::new(&mut buf2);
 
-        let handler = &handler;
+        let (send_remote, recv_local) = pipe1.split();
+        let (send_local, recv_remote) = pipe2.split();
 
-        let mut msg_ctr = self
-            .matter
-            .session_mgr
-            .borrow_mut()
-            .mut_by_index(sess_idx)
-            .unwrap()
-            .get_msg_ctr();
+        let matter_client = &matter_client;
 
-        let resp_notif = Notification::new();
-        let resp_notif = &resp_notif;
-
-        let mut buffers = PacketBuffers::new();
-        let buffers = &mut buffers;
-
-        let (send, mut send_dest) = send_channel.split();
-        let (mut recv_dest, recv) = recv_channel.split();
-
-        let mut udp_buffers = UdpBuffers::new();
-        let udp_buffers = &mut udp_buffers;
+        let responder = Responder::new(HandlerCompat(handler));
 
         embassy_futures::block_on(async move {
-            select3(
-                self.matter.run(
-                    UdpSender(send),
-                    UdpReceiver(recv),
-                    udp_buffers,
-                    buffers,
-                    CommissioningData {
-                        // TODO: Hard-coded for now
-                        verifier: VerifierData::new_with_pw(123456, *self.matter.borrow()),
-                        discriminator: 250,
-                    },
-                    &HandlerCompat(handler),
-                ),
+            select4(
+                matter_client.run(PseudoUdpSend(send_local), PseudoUdpReceive(recv_local)),
+                self.matter
+                    .run(PseudoUdpSend(send_remote), PseudoUdpReceive(recv_remote)),
+                responder.run::<4>(&self.matter),
                 async move {
-                    let mut acknowledge = false;
+                    let mut exchange = Exchange::initiate(matter_client, 0).await?;
+
                     for ip in input {
-                        Self::send(ip, &mut recv_dest, msg_ctr, acknowledge).await?;
-                        resp_notif.wait().await;
+                        exchange
+                            .send_with(|wb| {
+                                ip.data
+                                    .to_tlv(&mut TLVWriter::new(wb), TagType::Anonymous)?;
+
+                                Ok(ExchangeMeta {
+                                    proto_id: PROTO_ID_INTERACTION_MODEL,
+                                    proto_opcode: ip.action as _,
+                                    reliable: true,
+                                })
+                            })
+                            .await?;
+
+                        let rx = exchange.recv().await?;
+
+                        out.push(ImOutput {
+                            action: rx.meta().opcode()?,
+                            data: heapless::Vec::from_slice(rx.payload())
+                                .map_err(|_| ErrorCode::NoSpace)?,
+                        })
+                        .map_err(|_| ErrorCode::NoSpace)?;
 
                         if let Some(delay) = ip.delay {
                             if delay > 0 {
@@ -322,41 +346,6 @@ impl<'a> ImEngine<'a> {
                                 std::thread::sleep(Duration::from_millis(delay as _));
                             }
                         }
-
-                        msg_ctr += 2;
-                        acknowledge = true;
-                    }
-
-                    pending::<()>().await;
-
-                    Ok(())
-                },
-                async move {
-                    out.clear();
-
-                    while out.len() < input.len() {
-                        let vec = send_dest.receive().await;
-
-                        let mut rx = Packet::new_rx(vec);
-
-                        rx.plain_hdr_decode()?;
-                        rx.proto_decode(IM_ENGINE_REMOTE_PEER_ID, Some(&[0u8; 16]))?;
-
-                        if rx.get_proto_id() != PROTO_ID_SECURE_CHANNEL
-                            || rx.get_proto_opcode::<secure_channel::common::OpCode>()?
-                                != secure_channel::common::OpCode::MRPStandAloneAck
-                        {
-                            out.push(ImOutput {
-                                action: rx.get_proto_opcode()?,
-                                data: heapless::Vec::from_slice(rx.as_slice())
-                                    .map_err(|_| ErrorCode::NoSpace)?,
-                            })
-                            .map_err(|_| ErrorCode::NoSpace)?;
-
-                            resp_notif.signal(());
-                        }
-
-                        send_dest.receive_done();
                     }
 
                     Ok(())
@@ -368,63 +357,15 @@ impl<'a> ImEngine<'a> {
 
         Ok(())
     }
-
-    async fn send(
-        input: &ImInput<'_>,
-        sender: &mut Sender<'_, impl RawMutex, heapless::Vec<u8, MAX_RX_BUF_SIZE>>,
-        msg_ctr: u32,
-        acknowledge: bool,
-    ) -> Result<(), Error> {
-        let vec = sender.send().await;
-
-        vec.clear();
-        vec.extend(core::iter::repeat(0).take(MAX_RX_BUF_SIZE));
-
-        let mut tx = Packet::new_tx(vec);
-
-        tx.set_proto_id(PROTO_ID_INTERACTION_MODEL);
-        tx.set_proto_opcode(input.action as u8);
-
-        let mut tw = TLVWriter::new(tx.get_writebuf()?);
-
-        input.data.to_tlv(&mut tw, TagType::Anonymous)?;
-
-        tx.plain.ctr = msg_ctr + 1;
-        tx.plain.sess_id = 1;
-        tx.proto.set_initiator();
-
-        if acknowledge {
-            tx.proto.set_ack(msg_ctr - 1);
-        }
-
-        tx.proto_encode(
-            Address::default(),
-            Some(IM_ENGINE_REMOTE_PEER_ID),
-            IM_ENGINE_PEER_ID,
-            false,
-            Some(&[0u8; 16]),
-        )?;
-
-        let start = tx.get_writebuf()?.get_start();
-        let end = tx.get_writebuf()?.get_tail();
-
-        if start > 0 {
-            for offset in 0..(end - start) {
-                vec[offset] = vec[start + offset];
-            }
-        }
-
-        vec.truncate(end - start);
-
-        sender.send_done();
-
-        Ok(())
-    }
 }
 
-struct UdpSender<'a>(Sender<'a, NoopRawMutex, heapless::Vec<u8, MAX_TX_BUF_SIZE>>);
+const SOCKET_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
 
-impl<'a> UdpSend for UdpSender<'a> {
+type PseudoUdpPipe<'a, const N: usize> = Channel<'a, NoopRawMutex, heapless::Vec<u8, N>>;
+struct PseudoUdpReceive<'a, const N: usize>(Receiver<'a, NoopRawMutex, heapless::Vec<u8, N>>);
+struct PseudoUdpSend<'a, const N: usize>(Sender<'a, NoopRawMutex, heapless::Vec<u8, N>>);
+
+impl<'a, const N: usize> UdpSend for PseudoUdpSend<'a, N> {
     async fn send_to(&mut self, data: &[u8], _addr: SocketAddr) -> Result<(), Error> {
         let vec = self.0.send().await;
 
@@ -437,20 +378,15 @@ impl<'a> UdpSend for UdpSender<'a> {
     }
 }
 
-struct UdpReceiver<'a>(Receiver<'a, NoopRawMutex, heapless::Vec<u8, MAX_RX_BUF_SIZE>>);
-
-impl<'a> UdpReceive for UdpReceiver<'a> {
+impl<'a, const N: usize> UdpReceive for PseudoUdpReceive<'a, N> {
     async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), Error> {
         let vec = self.0.receive().await;
 
-        buffer[..vec.len()].copy_from_slice(&vec);
+        buffer[..vec.len()].copy_from_slice(vec);
         let len = vec.len();
 
         self.0.receive_done();
 
-        Ok((
-            len,
-            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
-        ))
+        Ok((len, SOCKET_ADDR))
     }
 }

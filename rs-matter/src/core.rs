@@ -17,8 +17,6 @@
 
 use core::{borrow::Borrow, cell::RefCell};
 
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-
 use crate::{
     acl::AclMgr,
     data_model::{
@@ -31,8 +29,8 @@ use crate::{
     pairing::{print_pairing_code_and_qr, DiscoveryCapabilities},
     secure_channel::{pake::PaseMgr, spake2p::VerifierData},
     transport::{
-        exchange::{ExchangeCtx, MAX_EXCHANGES},
-        session::SessionMgr,
+        core::TransportMgr,
+        network::{UdpReceive, UdpSend},
     },
     utils::{epoch::Epoch, rand::Rand, select::Notification},
 };
@@ -50,28 +48,24 @@ pub struct CommissioningData {
 
 /// The primary Matter Object
 pub struct Matter<'a> {
-    fabric_mgr: RefCell<FabricMgr>,
+    pub(crate) fabric_mgr: RefCell<FabricMgr>,
     pub acl_mgr: RefCell<AclMgr>, // Public for tests
-    pase_mgr: RefCell<PaseMgr>,
-    failsafe: RefCell<FailSafe>,
+    pub(crate) pase_mgr: RefCell<PaseMgr>,
+    pub(crate) failsafe: RefCell<FailSafe>,
+    pub transport_mgr: TransportMgr, // Public for tests
     persist_notification: Notification,
-    pub(crate) send_notification: Notification,
-    mdns: &'a dyn Mdns,
+    pub(crate) mdns: &'a dyn Mdns,
     pub(crate) epoch: Epoch,
     pub(crate) rand: Rand,
     dev_det: &'a BasicInfoConfig<'a>,
     dev_att: &'a dyn DevAttDataFetcher,
     pub(crate) port: u16,
-    pub(crate) exchanges: RefCell<heapless::Vec<ExchangeCtx, MAX_EXCHANGES>>,
-    pub(crate) ephemeral: RefCell<Option<ExchangeCtx>>,
-    pub(crate) ephemeral_mutex: Mutex<NoopRawMutex, ()>,
-    pub session_mgr: RefCell<SessionMgr>, // Public for tests
 }
 
 impl<'a> Matter<'a> {
     #[cfg(feature = "std")]
     #[inline(always)]
-    pub fn new_default(
+    pub const fn new_default(
         dev_det: &'a BasicInfoConfig<'a>,
         dev_att: &'a dyn DevAttDataFetcher,
         mdns: &'a dyn Mdns,
@@ -90,7 +84,7 @@ impl<'a> Matter<'a> {
     /// requires a set of device attestation certificates and keys. It is the responsibility of
     /// this object to return the device attestation details when queried upon.
     #[inline(always)]
-    pub fn new(
+    pub const fn new(
         dev_det: &'a BasicInfoConfig<'a>,
         dev_att: &'a dyn DevAttDataFetcher,
         mdns: &'a dyn Mdns,
@@ -103,18 +97,14 @@ impl<'a> Matter<'a> {
             acl_mgr: RefCell::new(AclMgr::new()),
             pase_mgr: RefCell::new(PaseMgr::new(epoch, rand)),
             failsafe: RefCell::new(FailSafe::new()),
+            transport_mgr: TransportMgr::new(epoch, rand),
             persist_notification: Notification::new(),
-            send_notification: Notification::new(),
             mdns,
             epoch,
             rand,
             dev_det,
             dev_att,
             port,
-            exchanges: RefCell::new(heapless::Vec::new()),
-            ephemeral: RefCell::new(None),
-            ephemeral_mutex: Mutex::new(()),
-            session_mgr: RefCell::new(SessionMgr::new(epoch, rand)),
         }
     }
 
@@ -174,6 +164,14 @@ impl<'a> Matter<'a> {
         } else {
             Ok(false)
         }
+    }
+
+    pub async fn run<S, R>(&self, send: S, recv: R) -> Result<(), Error>
+    where
+        S: UdpSend,
+        R: UdpReceive,
+    {
+        self.transport_mgr.run(send, recv).await
     }
 
     pub fn notify_changed(&self) {

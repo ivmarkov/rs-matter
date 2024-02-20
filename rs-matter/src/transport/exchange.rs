@@ -1,18 +1,68 @@
-use crate::{
-    acl::Accessor,
-    error::{Error, ErrorCode},
-    utils::{epoch::Epoch, select::Notification},
-    Matter,
-};
+/*
+ *
+ *    Copyright (c) 2020-2022 Project CHIP Authors
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
 
-use super::{
-    mrp::ReliableMessage,
-    network::Address,
-    packet::Packet,
-    session::{CloneData, Session, SessionMgr},
-};
+use core::fmt::{self, Display};
 
-pub const MAX_EXCHANGES: usize = 8;
+use embassy_futures::select::select;
+use embassy_time::Timer;
+
+use log::{info, warn};
+
+use crate::acl::Accessor;
+use crate::error::{Error, ErrorCode};
+use crate::interaction_model::{self, core::PROTO_ID_INTERACTION_MODEL};
+use crate::secure_channel::{self, common::PROTO_ID_SECURE_CHANNEL};
+use crate::utils::{epoch::Epoch, writebuf::WriteBuf};
+use crate::Matter;
+
+use super::core::{Packet, PacketAccess, RxPacket, TxPacket};
+use super::mrp::{ReliableMessage, RetransEntry};
+use super::network::Address;
+use super::packet::{PacketHdr, MAX_TX_BUF_SIZE};
+use super::plain_hdr::PlainHdr;
+use super::proto_hdr::ProtoHdr;
+use super::session::Session;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ExchangeId(u32);
+
+impl ExchangeId {
+    pub fn new(session_id: u32, exchange_index: usize) -> Self {
+        if exchange_index >= 16 {
+            panic!("Exchange index out of range");
+        }
+
+        Self((exchange_index as u32) << 28 | session_id)
+    }
+
+    pub fn session_id(&self) -> u32 {
+        self.0 & 0x0fff_ffff
+    }
+
+    pub fn exchange_index(&self) -> usize {
+        (self.0 >> 28) as _
+    }
+}
+
+impl Display for ExchangeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}::{}", self.session_id(), self.exchange_index())
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
 pub(crate) enum Role {
@@ -31,402 +81,548 @@ impl Role {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct ExchangeCtx {
-    pub(crate) id: ExchangeId,
-    pub(crate) role: Role,
-    pub(crate) mrp: ReliableMessage,
-    pub(crate) state: ExchangeState,
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub(crate) enum OwnedState {
+    NotAccepted,
+    Owned,
+    Closed,
+    Orphaned,
+    OrphanedClosing,
 }
 
-impl ExchangeCtx {
-    pub(crate) fn get<'r>(
-        exchanges: &'r mut heapless::Vec<ExchangeCtx, MAX_EXCHANGES>,
-        id: &ExchangeId,
-    ) -> Option<&'r mut ExchangeCtx> {
-        exchanges.iter_mut().find(|exchange| exchange.id == *id)
+#[derive(Debug)]
+pub(crate) struct ExchangeState {
+    pub(crate) exch_id: u16,
+    pub(crate) role: Role,
+    pub(crate) owned_state: OwnedState,
+    pub(crate) last_received: Option<ExchangeMeta>,
+    pub(crate) mrp: ReliableMessage,
+}
+
+impl ExchangeState {
+    pub fn is_for(&self, proto: &ProtoHdr) -> bool {
+        self.exch_id == proto.exch_id && self.role == Role::complementary(proto.is_initiator())
     }
 
-    pub fn new_ephemeral(session_id: SessionId, reply_to: Option<&Packet<'_>>) -> Self {
-        Self {
-            id: ExchangeId {
-                id: if let Some(rx) = reply_to {
-                    rx.proto.exch_id
-                } else {
-                    0
-                },
-                session_id: session_id.clone(),
-            },
-            role: if reply_to.is_some() {
-                Role::Responder
-            } else {
-                Role::Initiator
-            },
-            mrp: ReliableMessage::new(),
-            state: ExchangeState::Active,
-        }
+    pub fn is_closable(&self) -> bool {
+        self.mrp.ack.is_none()
+            && self.mrp.retrans.is_none()
+            && self
+                .last_received
+                .map(|meta| !meta.reliable)
+                .unwrap_or(true)
     }
 
-    pub(crate) fn prep_ephemeral(
-        session_id: SessionId,
-        session_mgr: &mut SessionMgr,
-        reply_to: Option<&Packet<'_>>,
-        tx: &mut Packet<'_>,
-    ) -> Result<ExchangeCtx, Error> {
-        let mut ctx = Self::new_ephemeral(session_id.clone(), reply_to);
-
-        let sess_index = session_mgr.get(
-            session_id.id,
-            session_id.peer_addr,
-            session_id.peer_nodeid,
-            session_id.is_encrypted,
-        );
-
-        let epoch = session_mgr.epoch;
-        let rand = session_mgr.rand;
-
-        if let Some(rx) = reply_to {
-            ctx.mrp.recv(rx, epoch)?;
-        } else {
-            tx.proto.set_initiator();
-        }
-
-        tx.unset_reliable();
-
-        if let Some(sess_index) = sess_index {
-            let session = session_mgr.mut_by_index(sess_index).unwrap();
-            ctx.pre_send_sess(session, tx, epoch)?;
-        } else {
-            let mut session =
-                Session::new(session_id.peer_addr, session_id.peer_nodeid, epoch, rand);
-            ctx.pre_send_sess(&mut session, tx, epoch)?;
-        }
-
-        Ok(ctx)
+    pub fn is_retrans(&self) -> bool {
+        self.mrp.retrans.is_some()
     }
 
-    pub(crate) fn pre_send(
+    pub fn is_retrans_due(&self, epoch: Epoch) -> bool {
+        self.mrp
+            .retrans
+            .as_ref()
+            .map(|retrans| retrans.is_due(epoch))
+            .unwrap_or(true)
+    }
+
+    pub fn post_recv(
         &mut self,
-        session_mgr: &mut SessionMgr,
-        tx: &mut Packet,
-    ) -> Result<(), Error> {
-        let epoch = session_mgr.epoch;
-
-        let sess_index = session_mgr
-            .get(
-                self.id.session_id.id,
-                self.id.session_id.peer_addr,
-                self.id.session_id.peer_nodeid,
-                self.id.session_id.is_encrypted,
-            )
-            .ok_or(ErrorCode::NoSession)?;
-
-        let session = session_mgr.mut_by_index(sess_index).unwrap();
-
-        self.pre_send_sess(session, tx, epoch)
-    }
-
-    pub(crate) fn pre_send_sess(
-        &mut self,
-        session: &mut Session,
-        tx: &mut Packet,
+        plain: &PlainHdr,
+        proto: &ProtoHdr,
         epoch: Epoch,
     ) -> Result<(), Error> {
-        tx.proto.exch_id = self.id.id;
-        if self.role == Role::Initiator {
-            tx.proto.set_initiator();
+        self.mrp.post_recv(plain, proto, epoch)?;
+        self.last_received = Some(ExchangeMeta::from(proto));
+
+        Ok(())
+    }
+
+    pub fn pre_send(
+        &mut self,
+        plain: &PlainHdr,
+        proto: &mut ProtoHdr,
+        epoch: Epoch,
+    ) -> Result<(), Error> {
+        if matches!(self.role, Role::Initiator) {
+            proto.set_initiator();
+        } else {
+            proto.unset_initiator();
         }
 
-        session.pre_send(tx)?;
-        self.mrp.pre_send(tx)?;
-        session.send(epoch, tx)
+        proto.exch_id = self.exch_id;
+
+        self.mrp.pre_send(plain, proto, epoch)
+    }
+
+    pub fn retrans_delay_ms(&mut self) -> Option<u64> {
+        self.mrp.retrans().map(RetransEntry::delay_ms)
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum ExchangeState {
-    Construction {
-        rx: *mut Packet<'static>,
-        notification: *const Notification,
-    },
-    Active,
-    Acknowledge {
-        notification: *const Notification,
-    },
-    ExchangeSend {
-        tx: *const Packet<'static>,
-        rx: *mut Packet<'static>,
-        notification: *const Notification,
-    },
-    ExchangeRecv {
-        _tx: *const Packet<'static>,
-        tx_acknowledged: bool,
-        rx: *mut Packet<'static>,
-        notification: *const Notification,
-    },
-    Complete {
-        tx: *const Packet<'static>,
-        notification: *const Notification,
-    },
-    CompleteAcknowledge {
-        _tx: *const Packet<'static>,
-        notification: *const Notification,
-    },
-    Closed,
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub struct ExchangeMeta {
+    pub proto_id: u16,
+    pub proto_opcode: u8,
+    pub reliable: bool,
 }
 
-pub struct ExchangeCtr<'a> {
-    pub(crate) exchange: Exchange<'a>,
-    pub(crate) construction_notification: &'a Notification,
-}
-
-impl<'a> ExchangeCtr<'a> {
-    pub const fn id(&self) -> &ExchangeId {
-        self.exchange.id()
+impl ExchangeMeta {
+    pub const fn new(proto_id: u16, proto_opcode: u8, reliable: bool) -> Self {
+        Self {
+            proto_id,
+            proto_opcode,
+            reliable,
+        }
     }
 
-    #[allow(clippy::all)]
-    // Should be #[allow(clippy::needless_pass_by_ref_mut)], but this is only in 1.73 which is not released yet
-    // rx is actually modified, but via an unsafe `*mut Packet<'static>` and apparently Clippy can't see this
-    pub async fn get(mut self, rx: &mut Packet<'_>) -> Result<Exchange<'a>, Error> {
-        let construction_notification = self.construction_notification;
+    pub fn opcode<T: num::FromPrimitive>(&self) -> Result<T, Error> {
+        num::FromPrimitive::from_u8(self.proto_opcode).ok_or(ErrorCode::Invalid.into())
+    }
 
-        self.exchange.with_ctx_mut(move |exchange, ctx| {
-            if !matches!(ctx.state, ExchangeState::Active) {
-                Err(ErrorCode::NoExchange)?;
-            }
-
-            let rx: &'static mut Packet<'static> = unsafe { core::mem::transmute(rx) };
-            let notification: &'static Notification =
-                unsafe { core::mem::transmute(&exchange.notification) };
-
-            ctx.state = ExchangeState::Construction { rx, notification };
-
-            construction_notification.signal(());
-
+    pub fn check_opcode<T: num::FromPrimitive + PartialEq>(&self, opcode: T) -> Result<(), Error> {
+        if self.opcode::<T>()? == opcode {
             Ok(())
-        })?;
-
-        self.exchange.notification.wait().await;
-
-        Ok(self.exchange)
+        } else {
+            Err(ErrorCode::Invalid.into())
+        }
     }
-}
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ExchangeId {
-    pub id: u16,
-    pub session_id: SessionId,
-}
-
-impl ExchangeId {
-    pub fn load(rx: &Packet) -> Self {
+    pub fn from(proto: &ProtoHdr) -> Self {
         Self {
-            id: rx.proto.exch_id,
-            session_id: SessionId::load(rx),
+            proto_id: proto.proto_id,
+            proto_opcode: proto.proto_opcode,
+            reliable: proto.is_reliable(),
+        }
+    }
+
+    pub fn set_into(&self, proto: &mut ProtoHdr) {
+        proto.proto_id = self.proto_id;
+        proto.proto_opcode = self.proto_opcode;
+        proto.set_vendor(None);
+
+        if self.reliable {
+            proto.set_reliable();
+        } else {
+            proto.unset_reliable();
+        }
+    }
+
+    pub fn reliable(self, reliable: bool) -> Self {
+        Self { reliable, ..self }
+    }
+
+    pub fn is_tlv(&self) -> bool {
+        match self.proto_id {
+            PROTO_ID_SECURE_CHANNEL => self
+                .opcode::<secure_channel::common::OpCode>()
+                .ok()
+                .map(|op| op.is_tlv())
+                .unwrap_or(false),
+            PROTO_ID_INTERACTION_MODEL => self
+                .opcode::<interaction_model::core::OpCode>()
+                .ok()
+                .map(|op| op.is_tlv())
+                .unwrap_or(false),
+            _ => false,
         }
     }
 }
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct SessionId {
-    pub id: u16,
-    pub peer_addr: Address,
-    pub peer_nodeid: Option<u64>,
-    pub is_encrypted: bool,
-}
 
-impl SessionId {
-    pub fn load(rx: &Packet) -> Self {
-        Self {
-            id: rx.plain.sess_id,
-            peer_addr: rx.peer,
-            peer_nodeid: rx.plain.get_src_u64(),
-            is_encrypted: rx.plain.is_encrypted(),
+impl Display for ExchangeMeta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.proto_id {
+            PROTO_ID_SECURE_CHANNEL => {
+                if let Ok(opcode) = self.opcode::<secure_channel::common::OpCode>() {
+                    write!(f, "SC::{:?}", opcode)
+                } else {
+                    write!(f, "SC::{:02x}", self.proto_opcode)
+                }
+            }
+            PROTO_ID_INTERACTION_MODEL => {
+                if let Ok(opcode) = self.opcode::<interaction_model::core::OpCode>() {
+                    write!(f, "IM::{:?}", opcode)
+                } else {
+                    write!(f, "IM::{:02x}", self.proto_opcode)
+                }
+            }
+            _ => write!(f, "{:02x}::{:02x}", self.proto_id, self.proto_opcode),
         }
     }
 }
+
+pub struct Rx<'a, 'b> {
+    exchange: &'a Exchange<'a>,
+    packet: PacketAccess<'b, RxPacket>,
+    consumed: bool,
+}
+
+impl<'a, 'b> Rx<'a, 'b> {
+    pub fn meta(&self) -> ExchangeMeta {
+        ExchangeMeta::from(&self.packet.packet_ref().header.proto)
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.packet.packet_ref().buf[self.packet.packet_ref().payload_start..]
+    }
+
+    pub fn consume(&mut self) -> &mut Self {
+        self.consumed = true;
+        self
+    }
+
+    pub fn exchange(&self) -> &Exchange<'a> {
+        self.exchange
+    }
+}
+
+impl<'a, 'b> Drop for Rx<'a, 'b> {
+    fn drop(&mut self) {
+        if self.consumed {
+            self.packet.buf.clear();
+        }
+    }
+}
+
+pub struct Tx<'a, 'b> {
+    exchange: &'a Exchange<'a>,
+    packet: PacketAccess<'b, TxPacket>,
+    completed: Option<(usize, usize)>,
+}
+
+impl<'a, 'b> Tx<'a, 'b> {
+    pub fn payload(&mut self) -> Result<TxPayload<'a, '_>, Error> {
+        self.completed = None;
+
+        let packet = self.packet.packet_mut();
+        packet.buf.resize_default(MAX_TX_BUF_SIZE).unwrap();
+
+        let mut writebuf = WriteBuf::new(&mut packet.buf);
+        writebuf.reserve(PacketHdr::HDR_RESERVE)?;
+
+        Ok(TxPayload {
+            exchange: self.exchange,
+            header: &mut packet.header,
+            peer: &mut packet.peer,
+            writebuf,
+            completed: &mut self.completed,
+        })
+    }
+}
+
+impl<'a, 'b> Drop for Tx<'a, 'b> {
+    fn drop(&mut self) {
+        if let Some((start, end)) = self.completed {
+            self.packet.payload_start = start;
+            self.packet.buf.truncate(end);
+        } else {
+            self.packet.buf.clear();
+        }
+    }
+}
+
+pub struct TxPayload<'a, 'b> {
+    exchange: &'a Exchange<'a>,
+    header: &'b mut PacketHdr,
+    peer: &'b mut Address,
+    writebuf: WriteBuf<'b>,
+    completed: &'b mut Option<(usize, usize)>,
+}
+
+impl<'a, 'b> TxPayload<'a, 'b> {
+    pub fn writebuf(&mut self) -> &mut WriteBuf<'b> {
+        &mut self.writebuf
+    }
+
+    pub fn complete(mut self, meta: impl Into<ExchangeMeta>) -> Result<bool, Error> {
+        let meta: ExchangeMeta = meta.into();
+
+        self.header.reset();
+
+        meta.set_into(&mut self.header.proto);
+
+        let mut session_mgr = self.exchange.matter.transport_mgr.session_mgr.borrow_mut();
+
+        let session = session_mgr
+            .get(self.exchange.id.session_id())
+            .ok_or(ErrorCode::NoSession)?;
+
+        *self.peer = session.pre_send(
+            Some(self.exchange.id.exchange_index()),
+            self.header,
+            self.exchange.matter.epoch,
+        )?;
+
+        if self.header.proto.is_reliable()
+            || self.header.proto.proto_id != PROTO_ID_SECURE_CHANNEL
+            || self.header.proto.proto_opcode
+                != secure_channel::common::OpCode::MRPStandAloneAck as u8
+            || self.header.proto.get_ack().is_none()
+        {
+            info!(
+                "<<< {} => Sending",
+                Packet::<0>::display(self.peer, self.header, self.writebuf.as_slice())
+            );
+
+            session.encode(self.header, &mut self.writebuf)?;
+
+            *self.completed = Some((self.writebuf.get_start(), self.writebuf.get_tail()));
+
+            Ok(true)
+        } else {
+            // No need to send a standalone ACK when there is nothing to acknowledge
+            *self.completed = None;
+            Ok(false)
+        }
+    }
+}
+
 pub struct Exchange<'a> {
-    pub(crate) id: ExchangeId,
-    pub(crate) matter: &'a Matter<'a>,
-    pub(crate) notification: Notification,
+    id: ExchangeId,
+    matter: &'a Matter<'a>,
 }
 
 impl<'a> Exchange<'a> {
-    pub const fn id(&self) -> &ExchangeId {
-        &self.id
+    pub(crate) const fn new(id: ExchangeId, matter: &'a Matter<'a>) -> Self {
+        Self { id, matter }
     }
 
-    pub fn accessor(&self) -> Result<Accessor<'a>, Error> {
-        self.with_session(|sess| Ok(Accessor::for_session(sess, &self.matter.acl_mgr)))
+    pub fn id(&self) -> ExchangeId {
+        self.id
     }
 
-    pub fn with_session_mut<F, T>(&self, f: F) -> Result<T, Error>
-    where
-        F: FnOnce(&mut Session) -> Result<T, Error>,
-    {
-        self.with_ctx(|_self, ctx| {
-            let mut session_mgr = _self.matter.session_mgr.borrow_mut();
-
-            let sess_index = session_mgr
-                .get(
-                    ctx.id.session_id.id,
-                    ctx.id.session_id.peer_addr,
-                    ctx.id.session_id.peer_nodeid,
-                    ctx.id.session_id.is_encrypted,
-                )
-                .ok_or(ErrorCode::NoSession)?;
-
-            f(session_mgr.mut_by_index(sess_index).unwrap())
-        })
+    pub fn matter(&self) -> &'a Matter<'a> {
+        self.matter
     }
 
-    pub fn with_session<F, T>(&self, f: F) -> Result<T, Error>
-    where
-        F: FnOnce(&Session) -> Result<T, Error>,
-    {
-        self.with_session_mut(|sess| f(sess))
+    /// TODO: This signature will change in future
+    pub async fn initiate(matter: &'a Matter<'a>, session_id: u32) -> Result<Self, Error> {
+        matter.transport_mgr.initiate(matter, session_id).await
+    }
+
+    pub async fn accept(matter: &'a Matter<'a>) -> Result<Self, Error> {
+        matter.transport_mgr.accept(matter).await
+    }
+
+    pub async fn rx(&mut self) -> Result<Rx<'_, 'a>, Error> {
+        self.with_ctx(|_, _| Ok(()))?;
+
+        let transport_mgr = &self.matter.transport_mgr;
+
+        let packet = transport_mgr
+            .get_if(&transport_mgr.rx, |packet| {
+                if packet.buf.is_empty() {
+                    false
+                } else {
+                    let for_us = self.with_ctx(|sess, exch_index| {
+                        if sess.is_for(&packet.peer, &packet.header.plain) {
+                            let exchange = sess.exchanges[exch_index].as_ref().unwrap();
+
+                            return Ok(exchange.is_for(&packet.header.proto));
+                        }
+
+                        Ok(false)
+                    });
+
+                    for_us.unwrap_or(true)
+                }
+            })
+            .await;
+
+        self.with_ctx(|_, _| Ok(()))?;
+
+        let rx = Rx {
+            exchange: self,
+            packet,
+            consumed: false,
+        };
+
+        Ok(rx)
+    }
+
+    pub async fn recv(&mut self) -> Result<Rx<'_, 'a>, Error> {
+        let mut rx = self.rx().await?;
+
+        rx.consume();
+
+        Ok(rx)
+    }
+
+    pub async fn recv_into(&mut self, wb: &mut WriteBuf<'_>) -> Result<ExchangeMeta, Error> {
+        let rx = self.recv().await?;
+
+        wb.reset();
+        wb.append(rx.payload())?;
+
+        Ok(rx.meta())
+    }
+
+    pub async fn tx(&mut self) -> Result<Tx<'_, 'a>, Error> {
+        self.with_ctx(|_, _| Ok(()))?;
+
+        let transport_mgr = &self.matter.transport_mgr;
+
+        let packet = transport_mgr
+            .get_if(&transport_mgr.tx, |packet| {
+                packet.buf.is_empty() || self.with_ctx(|_, _| Ok(())).is_err()
+            })
+            .await;
+
+        self.with_ctx(|_, _| Ok(()))?;
+
+        let tx = Tx {
+            exchange: self,
+            packet,
+            completed: None,
+        };
+
+        Ok(tx)
+    }
+
+    pub async fn wait_ack(&mut self) -> Result<bool, Error> {
+        if let Some(delay) = self.retrans_delay_ms()? {
+            let notification = self.internal_wait_ack();
+            let timer = Timer::after(embassy_time::Duration::from_millis(delay));
+
+            select(notification, timer).await;
+
+            Ok(self.retrans_delay_ms()?.is_none())
+        } else {
+            Ok(true)
+        }
     }
 
     pub async fn acknowledge(&mut self) -> Result<(), Error> {
-        let wait = self.with_ctx_mut(|_self, ctx| {
-            if !matches!(ctx.state, ExchangeState::Active) {
-                Err(ErrorCode::NoExchange)?;
-            }
-
-            if ctx.mrp.is_empty() {
-                Ok(false)
-            } else {
-                ctx.state = ExchangeState::Acknowledge {
-                    notification: &_self.notification as *const _,
-                };
-                _self.matter.send_notification.signal(());
-
-                Ok(true)
-            }
-        })?;
-
-        if wait {
-            self.notification.wait().await;
-        }
-
-        Ok(())
+        self.send_with(|_| Ok(secure_channel::common::OpCode::MRPStandAloneAck.into()))
+            .await
     }
 
-    pub async fn exchange(
-        &mut self,
-        tx: &mut Packet<'_>,
-        rx: &mut Packet<'_>,
-    ) -> Result<(), Error> {
-        let tx: &mut Packet<'static> = unsafe { core::mem::transmute(tx) };
-        let rx: &mut Packet<'static> = unsafe { core::mem::transmute(rx) };
+    pub async fn send_with<F>(&mut self, mut f: F) -> Result<(), Error>
+    where
+        F: FnMut(&mut WriteBuf) -> Result<ExchangeMeta, Error>,
+    {
+        let mut retrans = false;
 
-        self.with_ctx_mut(|_self, ctx| {
-            if !matches!(ctx.state, ExchangeState::Active) {
-                Err(ErrorCode::NoExchange)?;
-            }
-
-            let mut session_mgr = _self.matter.session_mgr.borrow_mut();
-            ctx.pre_send(&mut session_mgr, tx)?;
-
-            ctx.state = ExchangeState::ExchangeSend {
-                tx: tx as *const _,
-                rx: rx as *mut _,
-                notification: &_self.notification as *const _,
-            };
-            _self.matter.send_notification.signal(());
-
-            Ok(())
-        })?;
-
-        self.notification.wait().await;
-
-        Ok(())
-    }
-
-    pub async fn complete(mut self, tx: &mut Packet<'_>) -> Result<(), Error> {
-        self.send_complete(tx).await
-    }
-
-    pub async fn send_complete(&mut self, tx: &mut Packet<'_>) -> Result<(), Error> {
-        let tx: &mut Packet<'static> = unsafe { core::mem::transmute(tx) };
-
-        self.with_ctx_mut(|_self, ctx| {
-            if !matches!(ctx.state, ExchangeState::Active) {
-                Err(ErrorCode::NoExchange)?;
-            }
-
-            let mut session_mgr = _self.matter.session_mgr.borrow_mut();
-            ctx.pre_send(&mut session_mgr, tx)?;
-
-            ctx.state = ExchangeState::Complete {
-                tx: tx as *const _,
-                notification: &_self.notification as *const _,
-            };
-            _self.matter.send_notification.signal(());
-
-            Ok(())
-        })?;
-
-        self.notification.wait().await;
-
-        Ok(())
-    }
-
-    pub(crate) fn get_next_sess_id(&mut self) -> u16 {
-        self.matter.session_mgr.borrow_mut().get_next_sess_id()
-    }
-
-    pub(crate) async fn clone_session(
-        &mut self,
-        tx: &mut Packet<'_>,
-        clone_data: &CloneData,
-    ) -> Result<usize, Error> {
         loop {
-            let result = self
-                .matter
-                .session_mgr
-                .borrow_mut()
-                .clone_session(clone_data);
+            let reliable = {
+                let mut tx = self.tx().await?;
 
-            match result {
-                Err(err) if err.code() == ErrorCode::NoSpaceSessions => {
-                    self.matter.evict_session(tx).await?
+                if !retrans || tx.exchange.retrans_delay_ms()?.is_some() {
+                    let mut payload = tx.payload()?;
+
+                    let meta = f(payload.writebuf())?;
+
+                    if !payload.complete(meta)? {
+                        break;
+                    }
+
+                    meta.reliable
+                } else {
+                    break;
                 }
-                other => break other,
+            };
+
+            if !reliable || self.wait_ack().await? {
+                break;
             }
+
+            retrans = true;
+        }
+
+        Ok(())
+    }
+
+    pub async fn send(
+        &mut self,
+        meta: impl Into<ExchangeMeta>,
+        payload: &[u8],
+    ) -> Result<(), Error> {
+        let meta = meta.into();
+
+        self.send_with(|wb| {
+            wb.append(payload)?;
+
+            Ok(meta)
+        })
+        .await
+    }
+
+    pub async fn close(mut self) -> Result<(), Error> {
+        self.acknowledge().await?;
+
+        self.with_ctx(|sess, exch_index| {
+            let exchange = sess.exchanges[exch_index].as_mut().unwrap();
+
+            if exchange.is_closable() {
+                exchange.owned_state = OwnedState::Closed;
+
+                Ok(())
+            } else {
+                warn!("Exchange {}: Cannot be closed yet", self.id);
+                Err(ErrorCode::InvalidState.into())
+            }
+        })
+    }
+
+    pub(crate) fn accessor(&self) -> Result<Accessor<'a>, Error> {
+        self.with_session(|sess| Ok(Accessor::for_session(sess, &self.matter.acl_mgr)))
+    }
+
+    pub(crate) fn with_session<F, T>(&self, f: F) -> Result<T, Error>
+    where
+        F: FnOnce(&mut Session) -> Result<T, Error>,
+    {
+        self.with_ctx(|sess, _| f(sess))
+    }
+
+    pub(crate) fn with_ctx<F, T>(&self, f: F) -> Result<T, Error>
+    where
+        F: FnOnce(&mut Session, usize) -> Result<T, Error>,
+    {
+        let mut session_mgr = self.matter.transport_mgr.session_mgr.borrow_mut();
+
+        if let Some(session) = session_mgr.get(self.id.session_id()) {
+            f(session, self.id.exchange_index())
+        } else {
+            warn!("Exchange {}: No session", self.id);
+            Err(ErrorCode::NoSession.into())
         }
     }
 
-    fn with_ctx<F, T>(&self, f: F) -> Result<T, Error>
-    where
-        F: FnOnce(&Self, &ExchangeCtx) -> Result<T, Error>,
-    {
-        let mut exchanges = self.matter.exchanges.borrow_mut();
+    async fn internal_wait_ack(&self) -> Result<(), Error> {
+        let transport_mgr = &self.matter.transport_mgr;
 
-        let exchange = ExchangeCtx::get(&mut exchanges, &self.id).ok_or(ErrorCode::NoExchange)?; // TODO
+        transport_mgr
+            .get_if(&transport_mgr.rx, |_| {
+                self.retrans_delay_ms()
+                    .map(|retrans| retrans.is_none())
+                    .unwrap_or(true)
+            })
+            .await;
 
-        f(self, exchange)
+        self.with_ctx(|_, _| Ok(()))
     }
 
-    fn with_ctx_mut<F, T>(&mut self, f: F) -> Result<T, Error>
-    where
-        F: FnOnce(&mut Self, &mut ExchangeCtx) -> Result<T, Error>,
-    {
-        let mut exchanges = self.matter.exchanges.borrow_mut();
+    fn retrans_delay_ms(&self) -> Result<Option<u64>, Error> {
+        self.with_ctx(|sess, exch_index| {
+            let exchange = sess.exchanges[exch_index].as_mut().unwrap();
 
-        let exchange = ExchangeCtx::get(&mut exchanges, &self.id).ok_or(ErrorCode::NoExchange)?; // TODO
-
-        f(self, exchange)
+            Ok(exchange.retrans_delay_ms())
+        })
     }
 }
 
 impl<'a> Drop for Exchange<'a> {
     fn drop(&mut self) {
-        let _ = self.with_ctx_mut(|_self, ctx| {
-            ctx.state = ExchangeState::Closed;
-            _self.matter.send_notification.signal(());
+        let closed = self.with_ctx(|sess, exch_index| Ok(sess.close_exchange(exch_index)));
 
-            Ok(())
-        });
+        if !matches!(closed, Ok(true)) {
+            self.matter.transport_mgr.orphaned.signal(());
+        }
+    }
+}
+
+impl<'a> Display for Exchange<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.id)
     }
 }

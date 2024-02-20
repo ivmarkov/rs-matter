@@ -17,19 +17,7 @@ pub struct MdnsService<'a> {
 }
 
 impl<'a> MdnsService<'a> {
-    /// This constructor takes extra parameters for API-compatibility with builtin::MdnsService
-    pub fn new(
-        _id: u16,
-        _hostname: &str,
-        _ip: [u8; 4],
-        _ipv6: Option<([u8; 16], u32)>,
-        dev_det: &'a BasicInfoConfig<'a>,
-        matter_port: u16,
-    ) -> Self {
-        Self::native_new(dev_det, matter_port)
-    }
-
-    pub fn native_new(dev_det: &'a BasicInfoConfig<'a>, matter_port: u16) -> Self {
+    pub const fn new(dev_det: &'a BasicInfoConfig<'a>, matter_port: u16) -> Self {
         Self {
             dev_det,
             matter_port,

@@ -194,7 +194,7 @@ pub mod msg {
         pub supress_response: Option<bool>,
         timed_request: Option<bool>,
         pub write_requests: TLVArray<'a, AttrData<'a>>,
-        more_chunked: Option<bool>,
+        pub more_chunked: Option<bool>,
     }
 
     impl<'a> WriteReq<'a> {

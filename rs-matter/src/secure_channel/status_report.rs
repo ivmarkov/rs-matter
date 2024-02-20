@@ -15,8 +15,7 @@
  *    limitations under the License.
  */
 
-use super::common::*;
-use crate::{error::Error, transport::packet::Packet};
+use crate::{error::Error, utils::writebuf::WriteBuf};
 
 #[allow(dead_code)]
 #[derive(Debug, Copy, Clone)]
@@ -40,17 +39,13 @@ pub enum GeneralCode {
     DataLoss = 16,
 }
 
-pub fn create_status_report(
-    proto_tx: &mut Packet,
+pub fn write(
+    wb: &mut WriteBuf,
     general_code: GeneralCode,
     proto_id: u32,
     proto_code: u16,
     proto_data: Option<&[u8]>,
 ) -> Result<(), Error> {
-    proto_tx.reset();
-    proto_tx.set_proto_id(PROTO_ID_SECURE_CHANNEL);
-    proto_tx.set_proto_opcode(OpCode::StatusReport as u8);
-    let wb = proto_tx.get_writebuf()?;
     wb.le_u16(general_code as u16)?;
     wb.le_u32(proto_id)?;
     wb.le_u16(proto_code)?;

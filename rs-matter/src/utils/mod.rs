@@ -16,6 +16,7 @@
  */
 
 pub mod epoch;
+pub mod ifmutex;
 pub mod parsebuf;
 pub mod rand;
 pub mod select;

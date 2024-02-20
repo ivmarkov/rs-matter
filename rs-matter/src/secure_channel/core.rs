@@ -15,87 +15,53 @@
  *    limitations under the License.
  */
 
-use core::borrow::Borrow;
-use core::cell::RefCell;
-
 use log::error;
 
 use crate::{
+    alloc,
     error::*,
-    fabric::FabricMgr,
-    mdns::Mdns,
     secure_channel::{common::*, pake::Pake},
-    transport::{exchange::Exchange, packet::Packet},
-    utils::{epoch::Epoch, rand::Rand},
+    transport::exchange::Exchange,
 };
 
-use super::{case::Case, pake::PaseMgr};
+use super::{
+    case::{Case, CaseSession},
+    spake2p::Spake2P,
+};
 
 /* Handle messages related to the Secure Channel
  */
 
-pub struct SecureChannel<'a> {
-    pase: &'a RefCell<PaseMgr>,
-    fabric: &'a RefCell<FabricMgr>,
-    mdns: &'a dyn Mdns,
-    rand: Rand,
-}
+pub struct SecureChannel(());
 
-impl<'a> SecureChannel<'a> {
+impl SecureChannel {
     #[inline(always)]
-    pub fn new<
-        T: Borrow<RefCell<FabricMgr>>
-            + Borrow<RefCell<PaseMgr>>
-            + Borrow<dyn Mdns + 'a>
-            + Borrow<Epoch>
-            + Borrow<Rand>,
-    >(
-        matter: &'a T,
-    ) -> Self {
-        Self::wrap(
-            matter.borrow(),
-            matter.borrow(),
-            matter.borrow(),
-            *matter.borrow(),
-        )
+    pub const fn new() -> Self {
+        Self(())
     }
 
-    #[inline(always)]
-    pub fn wrap(
-        pase: &'a RefCell<PaseMgr>,
-        fabric: &'a RefCell<FabricMgr>,
-        mdns: &'a dyn Mdns,
-        rand: Rand,
-    ) -> Self {
-        Self {
-            fabric,
-            pase,
-            mdns,
-            rand,
-        }
-    }
+    pub async fn handle(&self, mut exchange: Exchange<'_>) -> Result<(), Error> {
+        let opcode = exchange.rx().await?.meta().opcode()?;
 
-    pub async fn handle(
-        &self,
-        exchange: &mut Exchange<'_>,
-        rx: &mut Packet<'_>,
-        tx: &mut Packet<'_>,
-    ) -> Result<(), Error> {
-        match rx.get_proto_opcode()? {
+        match opcode {
             OpCode::PBKDFParamRequest => {
-                Pake::new(self.pase)
-                    .handle(exchange, rx, tx, self.mdns)
-                    .await
+                let mut spake2p = alloc!(Spake2P::new());
+                Pake::new().handle(exchange, &mut spake2p).await
             }
             OpCode::CASESigma1 => {
-                Case::new(self.fabric, self.rand)
-                    .handle(exchange, rx, tx)
-                    .await
+                let mut case_session = alloc!(CaseSession::new());
+                Case::new().handle(exchange, &mut case_session).await
             }
             proto_opcode => {
                 error!("OpCode not handled: {:?}", proto_opcode);
                 Err(ErrorCode::InvalidOpcode.into())
             }
         }
+    }
+}
+
+impl Default for SecureChannel {
+    fn default() -> Self {
+        Self::new()
     }
 }

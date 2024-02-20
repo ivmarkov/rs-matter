@@ -17,9 +17,10 @@
 
 use core::borrow::Borrow;
 use core::pin::pin;
+use std::cell::OnceCell;
 use std::net::UdpSocket;
 
-use embassy_futures::select::select3;
+use embassy_futures::select::{select3, select4};
 
 use log::info;
 
@@ -34,10 +35,12 @@ use rs_matter::error::Error;
 use rs_matter::mdns::builtin::{
     MDNS_IPV4_BROADCAST_ADDR, MDNS_IPV6_BROADCAST_ADDR, MDNS_SOCKET_BIND_ADDR,
 };
+use rs_matter::mdns::proto::Host;
 use rs_matter::mdns::MdnsService;
 use rs_matter::persist::Psm;
+use rs_matter::respond::Responder;
 use rs_matter::secure_channel::spake2p::VerifierData;
-use rs_matter::transport::core::{PacketBuffers, MATTER_SOCKET_BIND_ADDR};
+use rs_matter::transport::core::MATTER_SOCKET_BIND_ADDR;
 use rs_matter::transport::network::{Ipv4Addr, Ipv6Addr, UdpBuffers};
 use rs_matter::utils::select::EitherUnwrap;
 use rs_matter::MATTER_PORT;
@@ -53,7 +56,7 @@ fn main() -> Result<(), Error> {
         // e.g., an opt-level of "0" will require a several times' larger stack.
         //
         // Optimizing/lowering `rs-matter` memory consumption is an ongoing topic.
-        .stack_size(180 * 1024)
+        .stack_size(70 * 1024)
         .spawn(run)
         .unwrap();
 
@@ -66,12 +69,15 @@ fn run() -> Result<(), Error> {
     );
 
     info!(
-        "Matter memory: mDNS={}, Matter={}, UdpBuffers={}, PacketBuffers={}",
+        "Matter memory: mDNS={}, Matter={}, UdpBuffers={}",
         core::mem::size_of::<MdnsService>(),
         core::mem::size_of::<Matter>(),
         core::mem::size_of::<UdpBuffers>(),
-        core::mem::size_of::<PacketBuffers>(),
     );
+
+    let (ipv4_addr, ipv6_addr, interface) = initialize_network()?;
+
+    let mut udp_buffers = UdpBuffers::new();
 
     let dev_det = BasicInfoConfig {
         vid: 0xFFF1,
@@ -85,35 +91,28 @@ fn run() -> Result<(), Error> {
         vendor_name: "Vendor PQR",
     };
 
-    let (ipv4_addr, ipv6_addr, interface) = initialize_network()?;
+    let mdns = MdnsService::new(&dev_det, MATTER_PORT);
 
     let dev_att = dev_att::HardCodedDevAtt::new();
-
-    // NOTE:
-    // For `no_std` environments, provide your own epoch and rand functions here
-    let epoch = rs_matter::utils::epoch::sys_epoch;
-    let rand = rs_matter::utils::rand::sys_rand;
-
-    let mdns = MdnsService::new(
-        0,
-        "rs-matter-demo",
-        ipv4_addr.octets(),
-        Some((ipv6_addr.octets(), interface)),
-        &dev_det,
-        MATTER_PORT,
-    );
-
-    info!("mDNS initialized");
-
     let matter = Matter::new(
-        // vid/pid should match those in the DAC
         &dev_det,
         &dev_att,
         &mdns,
-        epoch,
-        rand,
+        // NOTE:
+        // For `no_std` environments, provide your own epoch and rand functions here
+        rs_matter::utils::epoch::sys_epoch,
+        rs_matter::utils::rand::sys_rand,
         MATTER_PORT,
     );
+
+    matter.start_comissioning(
+        CommissioningData {
+            // TODO: Hard-coded for now
+            verifier: VerifierData::new_with_pw(123456, *matter.borrow()),
+            discriminator: 250,
+        },
+        udp_buffers.split().0,
+    )?;
 
     info!("Matter initialized");
 
@@ -130,37 +129,40 @@ fn run() -> Result<(), Error> {
         .get_ref()
         .join_multicast_v4(&MDNS_IPV4_BROADCAST_ADDR, &ipv4_addr)?;
 
-    let mut udp_buffers = UdpBuffers::new();
-    let mut mdns_runner = pin!(mdns.run(&socket, &socket, &mut udp_buffers));
+    let mut mdns_runner = pin!(mdns.run(
+        &socket,
+        &socket,
+        &mut udp_buffers,
+        Host {
+            id: 0,
+            hostname: "rs-matter-demo",
+            ip: ipv4_addr.octets(),
+            ipv6: Some(ipv6_addr.octets()),
+        },
+        Some(interface),
+    ));
 
     // NOTE:
     // When using a custom UDP stack (e.g. for `no_std` environments), replace with a UDP socket bind for your custom UDP stack
     // The returned socket should be splittable into two halves, where each half implements `UdpSend` and `UdpReceive` respectively
     let socket = async_io::Async::<UdpSocket>::bind(MATTER_SOCKET_BIND_ADDR)?;
 
-    let mut udp_buffers = UdpBuffers::new();
-    let mut packet_buffers = PacketBuffers::new();
-    let runner = pin!(matter.run(
-        &socket,
-        &socket,
-        &mut udp_buffers,
-        &mut packet_buffers,
-        CommissioningData {
-            // TODO: Hard-coded for now
-            verifier: VerifierData::new_with_pw(123456, *matter.borrow()),
-            discriminator: 250,
-        },
-        &handler,
-    ));
-
-    let mut runner = pin!(runner);
+    let mut runner = pin!(matter.run(&socket, &socket));
 
     // NOTE:
     // Replace with your own persister for e.g. `no_std` environments
-    let mut psm = Psm::new(&matter, std::env::temp_dir().join("rs-matter"))?;
-    let mut psm_runner = pin!(psm.run());
+    //let mut psm = Psm::new(matter, std::env::temp_dir().join("rs-matter"))?;
+    //let mut psm_runner = pin!(psm.run());
 
-    let runner = select3(&mut runner, &mut mdns_runner, &mut psm_runner);
+    let responder = Responder::new(handler);
+    let mut responder_runner = pin!(responder.run::<4>(&matter));
+
+    let runner = select3(
+        &mut runner,
+        &mut mdns_runner,
+        //&mut psm_runner,
+        &mut responder_runner,
+    );
 
     // NOTE:
     // Replace with a different executor for e.g. `no_std` environments

@@ -33,6 +33,10 @@ pub enum Address {
 }
 
 impl Address {
+    pub const fn new() -> Self {
+        Self::Udp(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+    }
+
     pub fn unwrap_udp(self) -> SocketAddr {
         match self {
             Self::Udp(addr) => addr,
@@ -42,14 +46,14 @@ impl Address {
 
 impl Default for Address {
     fn default() -> Self {
-        Address::Udp(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+        Self::new()
     }
 }
 
 impl Display for Address {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Address::Udp(addr) => writeln!(f, "{}", addr),
+            Address::Udp(addr) => write!(f, "UDP {}", addr),
         }
     }
 }

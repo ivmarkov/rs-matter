@@ -27,9 +27,6 @@ pub const MDNS_IPV4_BROADCAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 pub const MDNS_PORT: u16 = 5353;
 
 pub struct MdnsService<'a> {
-    host: Host<'a>,
-    #[allow(unused)]
-    interface: Option<u32>,
     dev_det: &'a BasicInfoConfig<'a>,
     matter_port: u16,
     services: RefCell<heapless::Vec<(heapless::String<40>, ServiceMode), 4>>,
@@ -38,30 +35,8 @@ pub struct MdnsService<'a> {
 
 impl<'a> MdnsService<'a> {
     #[inline(always)]
-    pub const fn new(
-        id: u16,
-        hostname: &'a str,
-        ip: [u8; 4],
-        ipv6: Option<([u8; 16], u32)>,
-        dev_det: &'a BasicInfoConfig<'a>,
-        matter_port: u16,
-    ) -> Self {
+    pub const fn new(dev_det: &'a BasicInfoConfig<'a>, matter_port: u16) -> Self {
         Self {
-            host: Host {
-                id,
-                hostname,
-                ip,
-                ipv6: if let Some((ipv6, _)) = ipv6 {
-                    Some(ipv6)
-                } else {
-                    None
-                },
-            },
-            interface: if let Some((_, interface)) = ipv6 {
-                Some(interface)
-            } else {
-                None
-            },
             dev_det,
             matter_port,
             services: RefCell::new(heapless::Vec::new()),
@@ -110,6 +85,8 @@ impl<'a> MdnsService<'a> {
         send: S,
         recv: R,
         udp_buffers: &mut UdpBuffers,
+        host: Host<'_>,
+        interface: Option<u32>,
     ) -> Result<(), Error>
     where
         S: UdpSend,
@@ -119,13 +96,18 @@ impl<'a> MdnsService<'a> {
 
         let send = Mutex::<NoopRawMutex, _>::new((send, send_buf));
 
-        let mut broadcast = pin!(self.broadcast(&send));
-        let mut respond = pin!(self.respond(recv, recv_buf, &send));
+        let mut broadcast = pin!(self.broadcast(&send, &host, interface));
+        let mut respond = pin!(self.respond(recv, recv_buf, &send, &host, interface));
 
         select(&mut broadcast, &mut respond).await.unwrap()
     }
 
-    async fn broadcast<S>(&self, send: &Mutex<impl RawMutex, (S, &mut [u8])>) -> Result<(), Error>
+    async fn broadcast<S>(
+        &self,
+        send: &Mutex<impl RawMutex, (S, &mut [u8])>,
+        host: &Host<'_>,
+        interface: Option<u32>,
+    ) -> Result<(), Error>
     where
         S: UdpSend,
     {
@@ -141,7 +123,7 @@ impl<'a> MdnsService<'a> {
                 MDNS_PORT,
             )))
             .chain(
-                self.interface
+                interface
                     .map(|interface| {
                         SocketAddr::V6(SocketAddrV6::new(
                             MDNS_IPV6_BROADCAST_ADDR,
@@ -155,7 +137,7 @@ impl<'a> MdnsService<'a> {
                 let mut guard = send.lock().await;
                 let (send, send_buf) = &mut *guard;
 
-                let len = self.host.broadcast(self, send_buf, 60)?;
+                let len = host.broadcast(self, send_buf, 60)?;
 
                 if len > 0 {
                     info!("Broadcasting mDNS entry to {addr}");
@@ -170,6 +152,8 @@ impl<'a> MdnsService<'a> {
         mut recv: R,
         recv_buf: &mut [u8],
         send: &Mutex<impl RawMutex, (S, &mut [u8])>,
+        host: &Host<'_>,
+        _interface: Option<u32>,
     ) -> Result<(), Error>
     where
         S: UdpSend,
@@ -181,7 +165,7 @@ impl<'a> MdnsService<'a> {
             let mut guard = send.lock().await;
             let (send, send_buf) = &mut *guard;
 
-            let len = match self.host.respond(self, &recv_buf[..len], send_buf, 60) {
+            let len = match host.respond(self, &recv_buf[..len], send_buf, 60) {
                 Ok(len) => len,
                 Err(err) => match err.code() {
                     ErrorCode::MdnsError => {

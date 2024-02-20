@@ -15,142 +15,313 @@
  *    limitations under the License.
  */
 
+use core::time::Duration;
+
+use embassy_time::Timer;
+use log::warn;
 use portable_atomic::{AtomicU32, Ordering};
 
 use super::objects::*;
 use crate::{
-    alloc,
     error::*,
-    interaction_model::core::Interaction,
-    transport::{exchange::Exchange, packet::Packet},
+    interaction_model::{
+        core::{
+            IMStatusCode, Interaction, InvStreamingResp, OpCode, ReportDataReq,
+            ReportDataStreamingResp, WriteStreamingResp,
+        },
+        messages::msg::{
+            InvReq, ReadReq, StatusResp, SubscribeReq, SubscribeResp, TimedReq, WriteReq,
+        },
+    },
+    tlv::{get_root_node_struct, FromTLV},
+    transport::exchange::Exchange,
+    utils::writebuf::WriteBuf,
 };
 
-// TODO: For now...
 static SUBS_ID: AtomicU32 = AtomicU32::new(1);
 
 /// The Maximum number of expanded writer request per transaction
 ///
 /// The write requests are first wildcard-expanded, and these many number of
 /// write requests per-transaction will be supported.
-pub const MAX_WRITE_ATTRS_IN_ONE_TRANS: usize = 7;
+const MAX_WRITE_ATTRS_IN_ONE_TRANS: usize = 7;
 
 pub struct DataModel<T>(T);
 
-impl<T> DataModel<T> {
+impl<T> DataModel<T>
+where
+    T: DataModelHandler,
+{
     pub fn new(handler: T) -> Self {
         Self(handler)
     }
 
-    pub async fn handle<'r, 'p>(
+    pub async fn handle(
         &self,
-        exchange: &'r mut Exchange<'_>,
-        rx: &'r mut Packet<'p>,
-        tx: &'r mut Packet<'p>,
-        rx_status: &'r mut Packet<'p>,
-    ) -> Result<(), Error>
-    where
-        T: DataModelHandler,
-    {
-        let timeout = Interaction::timeout(exchange, rx, tx).await?;
+        mut exchange: Exchange<'_>,
+        rb: &mut WriteBuf<'_>,
+        tb: &mut WriteBuf<'_>,
+    ) -> Result<(), Error> {
+        let mut timeout_instant = None;
 
-        let mut interaction = alloc!(Interaction::new(
-            exchange,
-            rx,
-            tx,
-            rx_status,
-            || SUBS_ID.fetch_add(1, Ordering::SeqCst),
-            timeout,
-        )?);
+        loop {
+            let meta = exchange.recv_into(rb).await?;
 
-        #[cfg(feature = "alloc")]
-        let interaction = &mut *interaction;
+            let interaction = Interaction::new(meta.opcode()?, rb.as_slice())?;
 
-        #[cfg(not(feature = "alloc"))]
-        let interaction = &mut interaction;
+            tb.reset();
+
+            match &interaction {
+                Interaction::Read(req) => self.read(&mut exchange, req, tb).await?,
+                Interaction::Write(req) => {
+                    self.write(&mut exchange, req, tb, timeout_instant).await?
+                }
+                Interaction::Invoke(req) => {
+                    self.invoke(&mut exchange, req, tb, timeout_instant).await?
+                }
+                Interaction::Subscribe(req) => self.subscribe(&mut exchange, req, tb).await?,
+                Interaction::Timed(req) => {
+                    timeout_instant = Some(self.timed(&mut exchange, req, tb).await?)
+                }
+            }
+
+            if !matches!(interaction, Interaction::Timed(_))
+                && !matches!(
+                    interaction,
+                    Interaction::Write(WriteReq {
+                        more_chunked: Some(true),
+                        ..
+                    })
+                )
+            {
+                break;
+            }
+        }
+
+        exchange.matter().notify_changed();
+
+        exchange.close().await
+    }
+
+    async fn read(
+        &self,
+        exchange: &mut Exchange<'_>,
+        req: &ReadReq<'_>,
+        wb: &mut WriteBuf<'_>,
+    ) -> Result<(), Error> {
+        self.report_data(exchange, &ReportDataReq::Read(req), None, wb, true)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn report_data(
+        &self,
+        exchange: &mut Exchange<'_>,
+        req: &ReportDataReq<'_>,
+        subscription_id: Option<u32>,
+        wb: &mut WriteBuf<'_>,
+        suppress_resp: bool,
+    ) -> Result<bool, Error> {
+        let metadata = self.0.lock().await;
+
+        let mut resp = ReportDataStreamingResp::new(wb);
+
+        resp.start(req, subscription_id)?;
+
+        let accessor = exchange.accessor()?;
+
+        for item in metadata.node().read(req, None, &accessor) {
+            while !AttrDataEncoder::handle_read(&item, &self.0, &mut resp.writer()).await? {
+                exchange
+                    .send(OpCode::ReportData, resp.finish_chunk(req)?)
+                    .await?;
+
+                if !Self::recv_confirm(exchange).await? {
+                    return Ok(false);
+                }
+
+                resp.start(req, subscription_id)?;
+            }
+        }
+
+        exchange
+            .send(OpCode::ReportData, resp.finish(req, suppress_resp)?)
+            .await?;
+
+        if !suppress_resp {
+            Self::recv_confirm(exchange).await
+        } else {
+            Ok(true)
+        }
+    }
+
+    async fn write(
+        &self,
+        exchange: &mut Exchange<'_>,
+        req: &WriteReq<'_>,
+        wb: &mut WriteBuf<'_>,
+        timeout_instant: Option<Duration>,
+    ) -> Result<(), Error> {
+        if timeout_instant
+            .map(|timeout_instant| (exchange.matter().epoch)() > timeout_instant)
+            .unwrap_or(false)
+        {
+            StatusResp::write(wb, IMStatusCode::Timeout)?;
+
+            return exchange.send(OpCode::StatusResponse, wb.as_slice()).await;
+        }
 
         let metadata = self.0.lock().await;
 
-        if interaction.start().await? {
-            match interaction {
-                Interaction::Read {
-                    req,
-                    ref mut driver,
-                } => {
-                    let accessor = driver.accessor()?;
+        let mut resp = WriteStreamingResp::new(wb);
 
-                    'outer: for item in metadata.node().read(req, None, &accessor) {
-                        while !AttrDataEncoder::handle_read(&item, &self.0, &mut driver.writer()?)
-                            .await?
-                        {
-                            if !driver.send_chunk(req).await? {
-                                break 'outer;
-                            }
-                        }
-                    }
+        resp.start()?;
 
-                    driver.complete(req).await?;
+        let accessor = exchange.accessor()?;
+
+        // The spec expects that a single write request like DeleteList + AddItem
+        // should cause all ACLs of that fabric to be deleted and the new one to be added (Case 1).
+        //
+        // This is in conflict with the immediate-effect expectation of ACL: an ACL
+        // write should instantaneously update the ACL so that immediate next WriteAttribute
+        // *in the same WriteRequest* should see that effect (Case 2).
+        //
+        // As with the C++ SDK, here we do all the ACLs checks first, before any write begins.
+        // Thus we support the Case1 by doing this. It does come at the cost of maintaining an
+        // additional list of expanded write requests as we start processing those.
+        let node = metadata.node();
+        let write_attrs: heapless::Vec<_, MAX_WRITE_ATTRS_IN_ONE_TRANS> =
+            node.write(req, &accessor).collect();
+
+        for item in write_attrs {
+            AttrDataEncoder::handle_write(&item, &self.0, &mut resp.writer()).await?;
+        }
+
+        exchange.send(OpCode::WriteResponse, resp.finish()?).await
+    }
+
+    async fn invoke(
+        &self,
+        exchange: &mut Exchange<'_>,
+        req: &InvReq<'_>,
+        wb: &mut WriteBuf<'_>,
+        timeout_instant: Option<Duration>,
+    ) -> Result<(), Error> {
+        if timeout_instant
+            .map(|timeout_instant| (exchange.matter().epoch)() > timeout_instant)
+            .unwrap_or(false)
+        {
+            StatusResp::write(wb, IMStatusCode::Timeout)?;
+
+            exchange.send(OpCode::StatusResponse, wb.as_slice()).await
+        } else {
+            let mut resp = InvStreamingResp::new(wb);
+
+            if resp.timeout(req, timeout_instant)? {
+                exchange.send(OpCode::StatusResponse, wb.as_slice()).await
+            } else {
+                resp.start(req)?;
+
+                let accessor = exchange.accessor()?;
+
+                let metadata = self.0.lock().await;
+
+                let node = metadata.node();
+
+                for item in node.invoke(req, &accessor) {
+                    CmdDataEncoder::handle(&item, &self.0, &mut resp.writer(), exchange).await?;
                 }
-                Interaction::Write {
-                    req,
-                    ref mut driver,
-                } => {
-                    let accessor = driver.accessor()?;
-                    // The spec expects that a single write request like DeleteList + AddItem
-                    // should cause all ACLs of that fabric to be deleted and the new one to be added (Case 1).
-                    //
-                    // This is in conflict with the immediate-effect expectation of ACL: an ACL
-                    // write should instantaneously update the ACL so that immediate next WriteAttribute
-                    // *in the same WriteRequest* should see that effect (Case 2).
-                    //
-                    // As with the C++ SDK, here we do all the ACLs checks first, before any write begins.
-                    // Thus we support the Case1 by doing this. It does come at the cost of maintaining an
-                    // additional list of expanded write requests as we start processing those.
-                    let node = metadata.node();
-                    let write_attrs: heapless::Vec<_, MAX_WRITE_ATTRS_IN_ONE_TRANS> =
-                        node.write(req, &accessor).collect();
 
-                    for item in write_attrs {
-                        AttrDataEncoder::handle_write(&item, &self.0, &mut driver.writer()?)
-                            .await?;
-                    }
+                exchange
+                    .send(OpCode::InvokeResponse, resp.finish(req)?)
+                    .await
+            }
+        }
+    }
 
-                    driver.complete(req).await?;
-                }
-                Interaction::Invoke {
-                    req,
-                    ref mut driver,
-                } => {
-                    let accessor = driver.accessor()?;
+    async fn subscribe(
+        &self,
+        exchange: &mut Exchange<'_>,
+        req: &SubscribeReq<'_>,
+        wb: &mut WriteBuf<'_>,
+    ) -> Result<(), Error> {
+        let subscription_id = SUBS_ID.fetch_add(1, Ordering::SeqCst);
 
-                    for item in metadata.node().invoke(req, &accessor) {
-                        let (mut tw, exchange) = driver.writer_exchange()?;
+        let mut subscribed = self
+            .report_data(
+                exchange,
+                &ReportDataReq::Subscribe(req),
+                Some(subscription_id),
+                wb,
+                false,
+            )
+            .await?;
 
-                        CmdDataEncoder::handle(&item, &self.0, &mut tw, exchange).await?;
-                    }
+        if subscribed {
+            exchange
+                .send_with(|wb| {
+                    SubscribeResp::write(wb, subscription_id)?;
+                    Ok(OpCode::SubscribeResponse.into())
+                })
+                .await?;
 
-                    driver.complete(req).await?;
-                }
-                Interaction::Subscribe {
-                    req,
-                    ref mut driver,
-                } => {
-                    let accessor = driver.accessor()?;
+            while subscribed {
+                Timer::after(embassy_time::Duration::from_secs(100)).await; // TODO
 
-                    'outer: for item in metadata.node().subscribing_read(req, None, &accessor) {
-                        while !AttrDataEncoder::handle_read(&item, &self.0, &mut driver.writer()?)
-                            .await?
-                        {
-                            if !driver.send_chunk(req).await? {
-                                break 'outer;
-                            }
-                        }
-                    }
-
-                    driver.complete(req).await?;
-                }
+                subscribed = self
+                    .report_data(
+                        exchange,
+                        &ReportDataReq::Subscribe(req),
+                        Some(subscription_id),
+                        wb,
+                        true,
+                    )
+                    .await?;
             }
         }
 
         Ok(())
+    }
+
+    async fn timed(
+        &self,
+        exchange: &mut Exchange<'_>,
+        req: &TimedReq,
+        wb: &mut WriteBuf<'_>,
+    ) -> Result<Duration, Error> {
+        let timeout_instant = req.timeout_instant(exchange.matter().epoch);
+
+        StatusResp::write(wb, IMStatusCode::Success)?;
+
+        exchange.send(OpCode::StatusResponse, wb.as_slice()).await?;
+
+        Ok(timeout_instant)
+    }
+
+    async fn recv_confirm(exchange: &mut Exchange<'_>) -> Result<bool, Error> {
+        let rx = exchange.recv().await?;
+
+        let opcode: OpCode = rx.meta().opcode()?;
+
+        if opcode == OpCode::StatusResponse {
+            let resp = StatusResp::from_tlv(&get_root_node_struct(rx.payload())?)?;
+
+            if resp.status == IMStatusCode::Success {
+                Ok(true)
+            } else {
+                warn!(
+                    "Got status response {:?}, aborting interaction",
+                    resp.status
+                );
+
+                drop(rx);
+                exchange.acknowledge().await?;
+
+                Ok(false)
+            }
+        } else {
+            Err(ErrorCode::Invalid.into())
+        }
     }
 }

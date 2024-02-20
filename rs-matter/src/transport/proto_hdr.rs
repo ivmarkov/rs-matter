@@ -47,6 +47,18 @@ pub struct ProtoHdr {
 }
 
 impl ProtoHdr {
+    pub fn opcode<T: num::FromPrimitive>(&self) -> Result<T, Error> {
+        num::FromPrimitive::from_u8(self.proto_opcode).ok_or(ErrorCode::Invalid.into())
+    }
+
+    pub fn check_opcode<T: num::FromPrimitive>(&self, opcode: T) -> Result<(), Error> {
+        if matches!(self.opcode::<T>()?, opcode) {
+            Ok(())
+        } else {
+            Err(ErrorCode::Invalid.into())
+        }
+    }
+
     pub fn is_vendor(&self) -> bool {
         self.exch_flags.contains(ExchFlags::VENDOR)
     }

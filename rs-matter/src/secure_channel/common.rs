@@ -19,10 +19,14 @@ use num_derive::FromPrimitive;
 
 use crate::{
     error::Error,
-    transport::{exchange::Exchange, packet::Packet},
+    transport::{
+        exchange::{Exchange, ExchangeMeta},
+        packet::PacketHeader,
+    },
+    utils::writebuf::WriteBuf,
 };
 
-use super::status_report::{create_status_report, GeneralCode};
+use super::status_report::{create_status_report, write, GeneralCode, SC_META};
 
 /* Interaction Model ID as per the Matter Spec */
 pub const PROTO_ID_SECURE_CHANNEL: u16 = 0x00;
@@ -56,54 +60,39 @@ pub enum SCStatusCodes {
 
 pub async fn complete_with_status(
     exchange: &mut Exchange<'_>,
-    tx: &mut Packet<'_>,
     status_code: SCStatusCodes,
     proto_data: Option<&[u8]>,
 ) -> Result<(), Error> {
-    create_sc_status_report(tx, status_code, proto_data)?;
-
-    exchange.send_complete(tx).await
+    exchange
+        .send_with(|tx, wb| create_sc_status_report(tx, status_code, proto_data))
+        .await
 }
 
-pub fn create_sc_status_report(
-    proto_tx: &mut Packet,
+pub fn sc_write(
+    wb: &mut WriteBuf,
     status_code: SCStatusCodes,
     proto_data: Option<&[u8]>,
-) -> Result<(), Error> {
+) -> Result<ExchangeMeta, Error> {
     let general_code = match status_code {
         SCStatusCodes::SessionEstablishmentSuccess => GeneralCode::Success,
-        SCStatusCodes::CloseSession => {
-            proto_tx.unset_reliable();
-            // No time to manage reliable delivery for close session
-            // the session will be closed soon
-            GeneralCode::Success
-        }
+        SCStatusCodes::CloseSession => GeneralCode::Success,
         SCStatusCodes::Busy => GeneralCode::Busy,
         SCStatusCodes::InvalidParameter
         | SCStatusCodes::NoSharedTrustRoots
         | SCStatusCodes::SessionNotFound => GeneralCode::Failure,
     };
 
-    create_status_report(
-        proto_tx,
+    // No time to manage reliable delivery for close session
+    // the session will be closed soon
+    let reliable = status_code != SCStatusCodes::CloseSession;
+
+    write(
+        wb,
         general_code,
         PROTO_ID_SECURE_CHANNEL as u32,
         status_code as u16,
         proto_data,
-    )
-}
+    )?;
 
-pub fn create_mrp_standalone_ack(proto_tx: &mut Packet) {
-    proto_tx.reset();
-    proto_tx.set_proto_id(PROTO_ID_SECURE_CHANNEL);
-    proto_tx.set_proto_opcode(OpCode::MRPStandAloneAck as u8);
-    proto_tx.unset_reliable();
+    Ok(SC_META)
 }
-
-// TODO
-// pub fn send_mrp_standalone_ack(exch: &mut Exchange, sess: &mut SessionHandle) -> Result<(), Error> {
-//     info!("Sending standalone ACK");
-//     let mut ack_packet = Slab::<PacketPool>::try_new(Packet::new_tx()?).ok_or(Error::NoMemory)?;
-//     create_mrp_standalone_ack(&mut ack_packet);
-//     exch.send(ack_packet, sess)
-// }

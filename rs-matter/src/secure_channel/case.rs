@@ -25,13 +25,13 @@ use crate::{
     crypto::{self, KeyPair, Sha256},
     error::{Error, ErrorCode},
     fabric::{Fabric, FabricMgr},
-    secure_channel::common::{self, OpCode, PROTO_ID_SECURE_CHANNEL},
-    secure_channel::common::{complete_with_status, SCStatusCodes},
+    secure_channel::common::{
+        self, complete_with_status, OpCode, SCStatusCodes, PROTO_ID_SECURE_CHANNEL,
+    },
     tlv::{get_root_node_struct, FromTLV, OctetStr, TLVWriter, TagType},
     transport::{
         exchange::Exchange,
         network::Address,
-        packet::Packet,
         session::{CaseDetails, CloneData, NocCatIds, SessionMode},
     },
     utils::{rand::Rand, writebuf::WriteBuf},
@@ -74,34 +74,27 @@ impl<'a> Case<'a> {
         Self { fabric_mgr, rand }
     }
 
-    pub async fn handle(
-        &mut self,
-        exchange: &mut Exchange<'_>,
-        rx: &mut Packet<'_>,
-        tx: &mut Packet<'_>,
-    ) -> Result<(), Error> {
+    pub async fn handle(&mut self, exchange: &mut Exchange<'_>) -> Result<(), Error> {
         let mut session = alloc!(CaseSession::new()?);
 
-        self.handle_casesigma1(exchange, rx, tx, &mut session)
-            .await?;
-        self.handle_casesigma3(exchange, rx, tx, &mut session).await
+        self.handle_casesigma1(exchange, &mut session).await?;
+        self.handle_casesigma3(exchange, &mut session).await
     }
 
     async fn handle_casesigma3(
         &mut self,
-        exchange: &mut Exchange<'_>,
-        rx: &Packet<'_>,
-        tx: &mut Packet<'_>,
+        mut exchange: &mut Exchange<'_>,
         case_session: &mut CaseSession,
     ) -> Result<(), Error> {
-        rx.check_proto_opcode(OpCode::CASESigma3 as _)?;
+        let rx = exchange.get().await.consume();
+        rx.meta().check_opcode(OpCode::CASESigma3)?;
 
         let result = {
             let fabric_mgr = self.fabric_mgr.borrow();
 
-            let fabric = fabric_mgr.get_fabric(case_session.local_fabric_idx)?;
+            let fabric = fabric_mgr.get_fabric(case_session.local_fabric_idx);
             if let Some(fabric) = fabric {
-                let root = get_root_node_struct(rx.as_slice())?;
+                let root = get_root_node_struct(rx.payload())?;
                 let encrypted = root.find_tag(1)?.slice()?;
 
                 let mut decrypted = alloc!([0; 800]);
@@ -147,7 +140,7 @@ impl<'a> Case<'a> {
                     // Only now do we add this message to the TT Hash
                     let mut peer_catids: NocCatIds = Default::default();
                     initiator_noc.get_cat_ids(&mut peer_catids);
-                    case_session.tt_hash.update(rx.as_slice())?;
+                    case_session.tt_hash.update(rx.payload())?;
 
                     Ok(Case::get_session_clone_data(
                         fabric.ipk.op_key(),
@@ -171,48 +164,31 @@ impl<'a> Case<'a> {
             Err(status) => status,
         };
 
-        complete_with_status(exchange, tx, status, None).await
+        complete_with_status(exchange, status, None).await
     }
 
     async fn handle_casesigma1(
         &mut self,
         exchange: &mut Exchange<'_>,
-        rx: &mut Packet<'_>,
-        tx: &mut Packet<'_>,
         case_session: &mut CaseSession,
     ) -> Result<(), Error> {
-        rx.check_proto_opcode(OpCode::CASESigma1 as _)?;
+        let rx = exchange.get().await;
+        rx.meta().check_opcode(OpCode::CASESigma1)?;
 
-        let rx_buf = rx.as_slice();
+        let rx_buf = rx.payload();
         let root = get_root_node_struct(rx_buf)?;
         let r = Sigma1Req::from_tlv(&root)?;
 
-        let local_fabric_idx = self
-            .fabric_mgr
-            .borrow_mut()
-            .match_dest_id(r.initiator_random.0, r.dest_id.0);
-        if local_fabric_idx.is_err() {
-            error!("Fabric Index mismatch");
-            complete_with_status(
-                exchange,
-                tx,
-                common::SCStatusCodes::NoSharedTrustRoots,
-                None,
-            )
-            .await?;
-
-            return Ok(());
+        if r.peer_pub_key.0.len() != crypto::EC_POINT_LEN_BYTES {
+            error!("Invalid public key length");
+            Err(ErrorCode::Invalid)?;
         }
 
         let local_sessid = exchange.get_next_sess_id();
         case_session.peer_sessid = r.initiator_sessid;
         case_session.local_sessid = local_sessid;
         case_session.tt_hash.update(rx_buf)?;
-        case_session.local_fabric_idx = local_fabric_idx?;
-        if r.peer_pub_key.0.len() != crypto::EC_POINT_LEN_BYTES {
-            error!("Invalid public key length");
-            Err(ErrorCode::Invalid)?;
-        }
+
         case_session.peer_pub_key.copy_from_slice(r.peer_pub_key.0);
         trace!(
             "Destination ID matched to fabric index {}",
@@ -238,13 +214,30 @@ impl<'a> Case<'a> {
         const MAX_ENCRYPTED_SIZE: usize = 800;
 
         let mut encrypted = alloc!([0; MAX_ENCRYPTED_SIZE]);
+        #[cfg(feature = "alloc")]
+        let encrypted_mut = &mut *encrypted;
+        #[cfg(not(feature = "alloc"))]
+        let encrypted_mut = &mut encrypted;
+
         let mut signature = alloc!([0u8; crypto::EC_SIGNATURE_LEN_BYTES]);
 
-        let fabric_found = {
+        let encrypted = {
             let fabric_mgr = self.fabric_mgr.borrow();
+            let local_fabric_idx = self
+                .fabric_mgr
+                .borrow()
+                .match_dest_id(r.initiator_random.0, r.dest_id.0);
 
-            let fabric = fabric_mgr.get_fabric(case_session.local_fabric_idx)?;
-            if let Some(fabric) = fabric {
+            if local_fabric_idx.is_err() {
+                error!("Fabric Index mismatch");
+                None
+            } else {
+                let fabric = fabric_mgr
+                    .get_fabric(case_session.local_fabric_idx)
+                    .unwrap();
+
+                case_session.local_fabric_idx = local_fabric_idx;
+
                 #[cfg(feature = "alloc")]
                 let signature_mut = &mut *signature;
 
@@ -259,12 +252,6 @@ impl<'a> Case<'a> {
                 )?;
                 let signature = &signature[..sign_len];
 
-                #[cfg(feature = "alloc")]
-                let encrypted_mut = &mut *encrypted;
-
-                #[cfg(not(feature = "alloc"))]
-                let encrypted_mut = &mut encrypted;
-
                 let encrypted_len = Case::get_sigma2_encryption(
                     fabric,
                     self.rand,
@@ -274,39 +261,35 @@ impl<'a> Case<'a> {
                     encrypted_mut,
                 )?;
 
-                let encrypted = &encrypted[0..encrypted_len];
-
-                // Generate our Response Body
-                tx.reset();
-                tx.set_proto_id(PROTO_ID_SECURE_CHANNEL);
-                tx.set_proto_opcode(OpCode::CASESigma2 as u8);
-
-                let mut tw = TLVWriter::new(tx.get_writebuf()?);
-                tw.start_struct(TagType::Anonymous)?;
-                tw.str8(TagType::Context(1), &our_random)?;
-                tw.u16(TagType::Context(2), local_sessid)?;
-                tw.str8(TagType::Context(3), &case_session.our_pub_key)?;
-                tw.str16(TagType::Context(4), encrypted)?;
-                tw.end_container()?;
-
-                case_session.tt_hash.update(tx.as_mut_slice())?;
-
-                true
-            } else {
-                false
+                Some(&encrypted[0..encrypted_len])
             }
         };
 
-        if fabric_found {
-            exchange.exchange(tx, rx).await
+        if let Some(encrypted) = encrypted {
+            let mut hash_updated = false;
+
+            exchange
+                .send
+                .send_with(|wb| {
+                    // Generate our Response Body
+                    let mut tw = TLVWriter::new(wb);
+                    tw.start_struct(TagType::Anonymous)?;
+                    tw.str8(TagType::Context(1), &our_random)?;
+                    tw.u16(TagType::Context(2), local_sessid)?;
+                    tw.str8(TagType::Context(3), &case_session.our_pub_key)?;
+                    tw.str16(TagType::Context(4), encrypted)?;
+                    tw.end_container()?;
+
+                    if !hash_updated {
+                        case_session.tt_hash.update(wb.as_slice())?;
+                        hash_updated = true;
+                    }
+
+                    Ok(meta(OpCode::CASESigma2))
+                })
+                .await
         } else {
-            complete_with_status(
-                exchange,
-                tx,
-                common::SCStatusCodes::NoSharedTrustRoots,
-                None,
-            )
-            .await
+            complete_with_status(exchange, common::SCStatusCodes::NoSharedTrustRoots, None).await
         }
     }
 

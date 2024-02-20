@@ -25,7 +25,7 @@ use crate::{
     fabric::FabricMgr,
     mdns::Mdns,
     secure_channel::{common::*, pake::Pake},
-    transport::{exchange::Exchange, packet::Packet},
+    transport::exchange::Exchange,
     utils::{epoch::Epoch, rand::Rand},
 };
 
@@ -75,23 +75,10 @@ impl<'a> SecureChannel<'a> {
         }
     }
 
-    pub async fn handle(
-        &self,
-        exchange: &mut Exchange<'_>,
-        rx: &mut Packet<'_>,
-        tx: &mut Packet<'_>,
-    ) -> Result<(), Error> {
-        match rx.get_proto_opcode()? {
-            OpCode::PBKDFParamRequest => {
-                Pake::new(self.pase)
-                    .handle(exchange, rx, tx, self.mdns)
-                    .await
-            }
-            OpCode::CASESigma1 => {
-                Case::new(self.fabric, self.rand)
-                    .handle(exchange, rx, tx)
-                    .await
-            }
+    pub async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error> {
+        match exchange.get().await.meta().opcode()? {
+            OpCode::PBKDFParamRequest => Pake::new(self.pase).handle(exchange, self.mdns).await,
+            OpCode::CASESigma1 => Case::new(self.fabric, self.rand).handle(exchange).await,
             proto_opcode => {
                 error!("OpCode not handled: {:?}", proto_opcode);
                 Err(ErrorCode::InvalidOpcode.into())

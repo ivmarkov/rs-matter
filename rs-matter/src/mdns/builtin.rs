@@ -1,3 +1,4 @@
+use core::num::NonZeroUsize;
 use core::{cell::RefCell, pin::pin};
 
 use embassy_futures::select::select;
@@ -11,7 +12,8 @@ use crate::error::{Error, ErrorCode};
 use crate::transport::network::{
     Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpBuffers, UdpReceive, UdpSend,
 };
-use crate::utils::select::{EitherUnwrap, Notification};
+use crate::utils::notification::Notification;
+use crate::utils::select::EitherUnwrap;
 
 use super::{
     proto::{Host, Services},
@@ -77,7 +79,7 @@ impl<'a> MdnsService<'a> {
             .push((service.try_into().unwrap(), mode))
             .map_err(|_| ErrorCode::NoSpace)?;
 
-        self.notification.signal(());
+        self.notification.notify(NonZeroUsize::new(1).unwrap());
 
         Ok(())
     }
@@ -131,7 +133,7 @@ impl<'a> MdnsService<'a> {
     {
         loop {
             select(
-                self.notification.wait(),
+                self.notification.wait(NonZeroUsize::new(1).unwrap()),
                 Timer::after(Duration::from_secs(30)),
             )
             .await;

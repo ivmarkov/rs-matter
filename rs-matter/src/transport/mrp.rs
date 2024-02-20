@@ -18,8 +18,10 @@
 use crate::utils::epoch::Epoch;
 use core::time::Duration;
 
-use crate::{error::*, secure_channel, transport::packet::Packet};
+use crate::{error::*, transport::packet::PacketHeader};
 use log::error;
+
+use super::{plain_hdr::PlainHdr, proto_hdr::ProtoHdr};
 
 // 200 ms
 const MRP_STANDALONE_ACK_TIMEOUT: u64 = 200;
@@ -28,7 +30,7 @@ const MRP_STANDALONE_ACK_TIMEOUT: u64 = 200;
 pub struct RetransEntry {
     // The msg counter that we are waiting to be acknowledged
     msg_ctr: u32,
-    // This will additionally have retransmission count and periods once we implement it
+    // This will additionally have retransmission count and periods once we implement it TODO
 }
 
 impl RetransEntry {
@@ -85,6 +87,10 @@ impl ReliableMessage {
         }
     }
 
+    pub fn is_acknowledged(&self, ctr: u32) -> bool {
+        self.retrans.map(|re| re.msg_ctr > ctr).unwrap_or(true)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.retrans.is_none() && self.ack.is_none()
     }
@@ -99,31 +105,29 @@ impl ReliableMessage {
         }
     }
 
-    pub fn prepare_ack(_exch_id: u16, proto_tx: &mut Packet) {
-        secure_channel::common::create_mrp_standalone_ack(proto_tx);
-    }
-
-    pub fn pre_send(&mut self, proto_tx: &mut Packet) -> Result<(), Error> {
+    pub fn pre_send(&mut self, plain: &PlainHdr, proto: &mut ProtoHdr) -> Result<(), Error> {
         // Check if any acknowledgements are pending for this exchange,
 
         // if so, piggy back in the encoded header here
         if let Some(ack_entry) = &self.ack {
             // Ack Entry exists, set ACK bit and remove from table
-            proto_tx.proto.set_ack(ack_entry.get_msg_ctr());
+            proto.set_ack(ack_entry.get_msg_ctr());
             self.ack = None;
         }
 
-        if !proto_tx.is_reliable() {
+        if !proto.is_reliable() {
             return Ok(());
         }
 
-        if self.retrans.is_some() {
-            // This indicates there was some existing entry for same sess-id/exch-id, which shouldnt happen
-            error!("Previous retrans entry for this exchange already exists");
-            Err(ErrorCode::Invalid)?;
+        if let Some(retrans) = &self.retrans {
+            if retrans.get_msg_ctr() != plain.ctr {
+                // This indicates there was some existing entry for same sess-id/exch-id, which shouldnt happen
+                error!("Previous retrans entry for this exchange already exists");
+                Err(ErrorCode::Invalid)?;
+            }
         }
 
-        self.retrans = Some(RetransEntry::new(proto_tx.plain.ctr));
+        self.retrans = Some(RetransEntry::new(plain.ctr));
         Ok(())
     }
 
@@ -132,7 +136,7 @@ impl ReliableMessage {
      * -  there can be only one pending retransmission per exchange (so this is per-exchange)
      * -  duplicate detection should happen per session (obviously), so that part is per-session
      */
-    pub fn recv(&mut self, proto_rx: &Packet, epoch: Epoch) -> Result<(), Error> {
+    pub fn recv(&mut self, proto_rx: &PacketHeader, epoch: Epoch) -> Result<(), Error> {
         if proto_rx.proto.is_ack() {
             // Handle received Acks
             let ack_msg_ctr = proto_rx.proto.get_ack_msg_ctr().ok_or(ErrorCode::Invalid)?;

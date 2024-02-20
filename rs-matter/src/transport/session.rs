@@ -17,7 +17,9 @@
 
 use crate::data_model::sdm::noc::NocData;
 use crate::utils::epoch::Epoch;
+use crate::utils::parsebuf::ParseBuf;
 use crate::utils::rand::Rand;
+use crate::utils::writebuf::WriteBuf;
 use core::fmt;
 use core::time::Duration;
 
@@ -25,8 +27,9 @@ use crate::{error::*, transport::plain_hdr};
 use log::info;
 
 use super::dedup::RxCtrState;
-use super::exchange::SessionId;
-use super::{network::Address, packet::Packet};
+use super::network::Address;
+use super::packet::PacketHeader;
+use super::plain_hdr::PlainHdr;
 
 pub const MAX_CAT_IDS_PER_NOC: usize = 3;
 pub type NocCatIds = [u32; MAX_CAT_IDS_PER_NOC];
@@ -108,6 +111,32 @@ impl CloneData {
             local_sess_id,
             mode,
         }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SessionId {
+    pub id: u16,
+    pub peer_addr: Address,
+    pub peer_nodeid: Option<u64>,
+    pub is_encrypted: bool,
+}
+
+impl SessionId {
+    pub fn load(peer: Address, plain: &PlainHdr) -> Self {
+        Self {
+            id: plain.sess_id,
+            peer_addr: peer,
+            peer_nodeid: plain.get_src_u64(),
+            is_encrypted: plain.is_encrypted(),
+        }
+    }
+
+    pub fn matches(&self, peer: &Address, plain: &PlainHdr) -> bool {
+        self.id == plain.sess_id
+            && self.peer_addr == *peer
+            && self.peer_nodeid == plain.get_src_u64() // TODO
+            && self.is_encrypted == plain.is_encrypted()
     }
 }
 
@@ -246,30 +275,34 @@ impl Session {
         &self.att_challenge
     }
 
-    pub fn recv(&mut self, epoch: Epoch, rx: &mut Packet) -> Result<(), Error> {
-        self.last_use = epoch();
-        rx.proto_decode(self.peer_nodeid.unwrap_or_default(), self.get_dec_key())
+    pub fn decode_plain_hdr(&self, rx: &mut PacketHeader, pb: &mut ParseBuf) -> Result<(), Error> {
+        rx.decode_plain_hdr(pb)
     }
 
-    pub fn pre_send(&mut self, tx: &mut Packet) -> Result<(), Error> {
-        tx.plain.sess_id = self.get_peer_sess_id();
-        tx.plain.ctr = self.get_msg_ctr();
+    pub fn decode_remaining(&self, rx: &mut PacketHeader, pb: &mut ParseBuf) -> Result<(), Error> {
+        rx.decode_remaining(pb, self.peer_nodeid.unwrap_or_default(), self.get_dec_key())
+    }
+
+    pub fn pre_send(&mut self, ctr: Option<u32>, plain: &mut PlainHdr) {
+        plain.sess_id = self.get_peer_sess_id();
+        plain.ctr = ctr.unwrap_or(self.get_msg_ctr());
         if self.is_encrypted() {
-            tx.plain.sess_type = plain_hdr::SessionType::Encrypted;
+            plain.sess_type = plain_hdr::SessionType::Encrypted;
         }
-        Ok(())
     }
 
-    pub(crate) fn send(&mut self, epoch: Epoch, tx: &mut Packet) -> Result<(), Error> {
-        self.last_use = epoch();
-
-        tx.proto_encode(
-            self.peer_addr,
+    pub fn encode(&self, tx: &PacketHeader, wb: &mut WriteBuf) -> Result<(), Error> {
+        tx.encode(
+            wb,
             self.peer_nodeid,
             self.local_nodeid,
             self.mode == SessionMode::PlainText,
             self.get_enc_key(),
         )
+    }
+
+    pub fn update_last_used(&mut self, epoch: Epoch) {
+        self.last_use = epoch();
     }
 
     fn rand_msg_ctr(rand: Rand) -> u32 {
@@ -299,7 +332,7 @@ pub const MAX_SESSIONS: usize = 16;
 
 pub struct SessionMgr {
     next_sess_id: u16,
-    sessions: heapless::Vec<Option<Session>, MAX_SESSIONS>,
+    sessions: heapless::Vec<Session, MAX_SESSIONS>,
     pub(crate) epoch: Epoch,
     pub(crate) rand: Rand,
 }
@@ -320,10 +353,6 @@ impl SessionMgr {
         self.next_sess_id = 1;
     }
 
-    pub fn mut_by_index(&mut self, index: usize) -> Option<&mut Session> {
-        self.sessions.get_mut(index).and_then(Option::as_mut)
-    }
-
     pub fn get_next_sess_id(&mut self) -> u16 {
         let mut next_sess_id: u16;
         loop {
@@ -336,11 +365,11 @@ impl SessionMgr {
             }
 
             // Ensure the currently selected id doesn't match any existing session
-            if self.sessions.iter().all(|sess| {
-                sess.as_ref()
-                    .map(|sess| sess.get_local_sess_id() != next_sess_id)
-                    .unwrap_or(true)
-            }) {
+            if self
+                .sessions
+                .iter()
+                .all(|sess| sess.get_local_sess_id() != next_sess_id)
+            {
                 break;
             }
         }
@@ -348,88 +377,88 @@ impl SessionMgr {
     }
 
     pub fn get_session_for_eviction(&self) -> Option<usize> {
-        if self.sessions.len() == MAX_SESSIONS && self.get_empty_slot().is_none() {
+        if self.sessions.len() == MAX_SESSIONS {
             Some(self.get_lru())
         } else {
             None
         }
     }
 
-    fn get_empty_slot(&self) -> Option<usize> {
-        self.sessions.iter().position(|x| x.is_none())
-    }
-
     fn get_lru(&self) -> usize {
         let mut lru_index = 0;
         let mut lru_ts = (self.epoch)();
         for (i, s) in self.sessions.iter().enumerate() {
-            if let Some(s) = s {
-                if s.last_use < lru_ts {
-                    lru_ts = s.last_use;
-                    lru_index = i;
-                }
+            if s.last_use < lru_ts {
+                lru_ts = s.last_use;
+                lru_index = i;
             }
         }
+
         lru_index
     }
 
-    pub fn add(&mut self, peer_addr: Address, peer_nodeid: Option<u64>) -> Result<usize, Error> {
+    pub fn add(
+        &mut self,
+        peer_addr: Address,
+        peer_nodeid: Option<u64>,
+    ) -> Result<&mut Session, Error> {
         let session = Session::new(peer_addr, peer_nodeid, self.epoch, self.rand);
         self.add_session(session)
     }
 
     /// This assumes that the higher layer has taken care of doing anything required
     /// as per the spec before the session is erased
-    pub fn remove(&mut self, idx: usize) {
-        self.sessions[idx] = None;
+    pub fn remove(&mut self, idx: usize) -> Session {
+        self.sessions.swap_remove(idx)
     }
 
     /// We could have returned a SessionHandle here. But the borrow checker doesn't support
     /// non-lexical lifetimes. This makes it harder for the caller of this function to take
     /// action in the error return path
-    fn add_session(&mut self, session: Session) -> Result<usize, Error> {
-        if let Some(index) = self.get_empty_slot() {
-            self.sessions[index] = Some(session);
-            Ok(index)
-        } else if self.sessions.len() < MAX_SESSIONS {
+    fn add_session(&mut self, session: Session) -> Result<&mut Session, Error> {
+        if self.sessions.len() < MAX_SESSIONS {
             self.sessions
-                .push(Some(session))
+                .push(session)
                 .map_err(|_| ErrorCode::NoSpaceSessions)
                 .unwrap();
 
-            Ok(self.sessions.len() - 1)
+            Ok(self.sessions.last_mut().unwrap())
         } else {
             Err(ErrorCode::NoSpaceSessions.into())
         }
     }
 
-    pub fn clone_session(&mut self, clone_data: &CloneData) -> Result<usize, Error> {
+    pub fn clone_session(&mut self, clone_data: &CloneData) -> Result<&mut Session, Error> {
         let session = Session::clone(clone_data, self.epoch, self.rand);
         self.add_session(session)
     }
 
-    pub fn get(
-        &self,
+    pub fn get(&mut self, id: &SessionId) -> Option<&mut Session> {
+        self.get_for(id.id, id.peer_addr, id.peer_nodeid, id.is_encrypted)
+    }
+
+    pub fn get_for(
+        &mut self,
         sess_id: u16,
         peer_addr: Address,
         peer_nodeid: Option<u64>,
         is_encrypted: bool,
-    ) -> Option<usize> {
-        self.sessions.iter().position(|x| {
-            if let Some(x) = x {
-                let mut nodeid_matches = true;
-                if x.peer_nodeid.is_some() && peer_nodeid.is_some() && x.peer_nodeid != peer_nodeid
-                {
-                    nodeid_matches = false;
-                }
-                x.local_sess_id == sess_id
-                    && x.peer_addr == peer_addr
-                    && x.is_encrypted() == is_encrypted
-                    && nodeid_matches
-            } else {
-                false
-            }
-        })
+    ) -> Option<&mut Session> {
+        let mut session = self.sessions.iter_mut().find(|x| {
+            let nodeid_matches =
+                x.peer_nodeid.is_none() || peer_nodeid.is_none() || x.peer_nodeid == peer_nodeid;
+
+            nodeid_matches
+                && x.local_sess_id == sess_id
+                && x.peer_addr == peer_addr
+                && x.is_encrypted() == is_encrypted
+        });
+
+        session
+            .as_mut()
+            .map(|session| session.update_last_used(self.epoch));
+
+        session
     }
 
     pub fn get_or_add(
@@ -438,10 +467,12 @@ impl SessionMgr {
         peer_addr: Address,
         peer_nodeid: Option<u64>,
         is_encrypted: bool,
-    ) -> Result<usize, Error> {
-        if let Some(index) = self.get(sess_id, peer_addr, peer_nodeid, is_encrypted) {
-            Ok(index)
-        } else if sess_id == 0 && !is_encrypted {
+    ) -> Result<&mut Session, Error> {
+        if let Some(session) = self.get_for(sess_id, peer_addr, peer_nodeid, is_encrypted) {
+            return Ok(session);
+        }
+
+        if sess_id == 0 && !is_encrypted {
             // We must create a new session for this case
             info!("Creating new session");
             self.add(peer_addr, peer_nodeid)
@@ -449,40 +480,12 @@ impl SessionMgr {
             Err(ErrorCode::NotFound.into())
         }
     }
-
-    // We will try to get a session for this Packet. If no session exists, we will try to add one
-    // If the session list is full we will return a None
-    pub fn post_recv(&mut self, rx: &Packet) -> Result<usize, Error> {
-        let sess_index = self.get_or_add(
-            rx.plain.sess_id,
-            rx.peer,
-            rx.plain.get_src_u64(),
-            rx.plain.is_encrypted(),
-        )?;
-
-        let session = self.sessions[sess_index].as_mut().unwrap();
-        let is_encrypted = session.is_encrypted();
-        let duplicate = session.rx_ctr_state.recv(rx.plain.ctr, is_encrypted);
-        if duplicate {
-            info!("Dropping duplicate packet");
-            Err(ErrorCode::Duplicate.into())
-        } else {
-            Ok(sess_index)
-        }
-    }
-
-    pub fn send(&mut self, sess_idx: usize, tx: &mut Packet) -> Result<(), Error> {
-        self.sessions[sess_idx]
-            .as_mut()
-            .ok_or(ErrorCode::NoSession)?
-            .send(self.epoch, tx)
-    }
 }
 
 impl fmt::Display for SessionMgr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{{[")?;
-        for s in self.sessions.iter().flatten() {
+        for s in &self.sessions {
             writeln!(f, "{{ {}, }},", s)?;
         }
         write!(f, "], next_sess_id: {}", self.next_sess_id)?;

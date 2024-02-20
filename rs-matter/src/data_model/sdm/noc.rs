@@ -328,7 +328,7 @@ impl<'a> NocCluster<'a> {
         data: &TLVElement,
     ) -> Result<u8, NocError> {
         let noc_data = exchange
-            .with_session_mut(|sess| Ok(sess.take_noc_data()))?
+            .with_session(|sess| Ok(sess.take_noc_data()))?
             .ok_or(NocStatus::MissingCsr)?;
 
         if !self
@@ -597,7 +597,7 @@ impl<'a> NocCluster<'a> {
         let noc_data = NocData::new(noc_keypair);
         // Store this in the session data instead of cluster data, so it gets cleared
         // if the session goes away for some reason
-        exchange.with_session_mut(|sess| {
+        exchange.with_session(|sess| {
             sess.set_noc_data(noc_data);
             Ok(())
         })?;
@@ -606,7 +606,7 @@ impl<'a> NocCluster<'a> {
     }
 
     fn add_rca_to_session_noc_data(exchange: &Exchange, data: &TLVElement) -> Result<(), Error> {
-        exchange.with_session_mut(|sess| {
+        exchange.with_session(|sess| {
             let noc_data = sess.get_noc_data().ok_or(ErrorCode::NoSession)?;
 
             let req = CommonReq::from_tlv(data).map_err(Error::map_invalid_command)?;

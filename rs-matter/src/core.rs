@@ -15,9 +15,7 @@
  *    limitations under the License.
  */
 
-use core::{borrow::Borrow, cell::RefCell};
-
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use core::{borrow::Borrow, cell::RefCell, num::NonZeroUsize};
 
 use crate::{
     acl::AclMgr,
@@ -30,11 +28,8 @@ use crate::{
     mdns::Mdns,
     pairing::{print_pairing_code_and_qr, DiscoveryCapabilities},
     secure_channel::{pake::PaseMgr, spake2p::VerifierData},
-    transport::{
-        exchange::{ExchangeCtx, MAX_EXCHANGES},
-        session::SessionMgr,
-    },
-    utils::{epoch::Epoch, rand::Rand, select::Notification},
+    transport::{exchange::ExchangeMgr, session::SessionMgr},
+    utils::{epoch::Epoch, notification::Notification, rand::Rand},
 };
 
 /* The Matter Port */
@@ -55,17 +50,14 @@ pub struct Matter<'a> {
     pase_mgr: RefCell<PaseMgr>,
     failsafe: RefCell<FailSafe>,
     persist_notification: Notification,
-    pub(crate) send_notification: Notification,
     mdns: &'a dyn Mdns,
     pub(crate) epoch: Epoch,
     pub(crate) rand: Rand,
     dev_det: &'a BasicInfoConfig<'a>,
     dev_att: &'a dyn DevAttDataFetcher,
     pub(crate) port: u16,
-    pub(crate) exchanges: RefCell<heapless::Vec<ExchangeCtx, MAX_EXCHANGES>>,
-    pub(crate) ephemeral: RefCell<Option<ExchangeCtx>>,
-    pub(crate) ephemeral_mutex: Mutex<NoopRawMutex, ()>,
     pub session_mgr: RefCell<SessionMgr>, // Public for tests
+    pub(crate) exchange_mgr: RefCell<ExchangeMgr>,
 }
 
 impl<'a> Matter<'a> {
@@ -104,17 +96,14 @@ impl<'a> Matter<'a> {
             pase_mgr: RefCell::new(PaseMgr::new(epoch, rand)),
             failsafe: RefCell::new(FailSafe::new()),
             persist_notification: Notification::new(),
-            send_notification: Notification::new(),
             mdns,
             epoch,
             rand,
             dev_det,
             dev_att,
             port,
-            exchanges: RefCell::new(heapless::Vec::new()),
-            ephemeral: RefCell::new(None),
-            ephemeral_mutex: Mutex::new(()),
             session_mgr: RefCell::new(SessionMgr::new(epoch, rand)),
+            exchange_mgr: RefCell::new(ExchangeMgr::new(epoch)),
         }
     }
 
@@ -178,12 +167,15 @@ impl<'a> Matter<'a> {
 
     pub fn notify_changed(&self) {
         if self.is_changed() {
-            self.persist_notification.signal(());
+            self.persist_notification
+                .notify(NonZeroUsize::new(1).unwrap());
         }
     }
 
     pub async fn wait_changed(&self) {
-        self.persist_notification.wait().await
+        self.persist_notification
+            .wait(NonZeroUsize::new(1).unwrap())
+            .await;
     }
 }
 

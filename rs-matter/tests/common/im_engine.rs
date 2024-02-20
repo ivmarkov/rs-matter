@@ -54,7 +54,7 @@ use rs_matter::{
     transport::{
         core::PacketBuffers,
         network::{Address, Ipv4Addr, SocketAddr, SocketAddrV4, UdpBuffers, UdpReceive, UdpSend},
-        packet::{Packet, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
+        packet::{PacketHeader, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
         session::{CaseDetails, CloneData, NocCatIds, SessionMode},
     },
     utils::select::{EitherUnwrap, Notification},
@@ -337,7 +337,7 @@ impl<'a> ImEngine<'a> {
                     while out.len() < input.len() {
                         let vec = send_dest.receive().await;
 
-                        let mut rx = Packet::new_rx(vec);
+                        let mut rx = PacketHeader::new_rx(vec);
 
                         rx.plain_hdr_decode()?;
                         rx.proto_decode(IM_ENGINE_REMOTE_PEER_ID, Some(&[0u8; 16]))?;
@@ -380,7 +380,7 @@ impl<'a> ImEngine<'a> {
         vec.clear();
         vec.extend(core::iter::repeat(0).take(MAX_RX_BUF_SIZE));
 
-        let mut tx = Packet::new_tx(vec);
+        let mut tx = PacketHeader::new_tx(vec);
 
         tx.set_proto_id(PROTO_ID_INTERACTION_MODEL);
         tx.set_proto_opcode(input.action as u8);

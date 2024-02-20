@@ -16,6 +16,7 @@
  */
 
 pub mod epoch;
+pub mod notification;
 pub mod parsebuf;
 pub mod rand;
 pub mod select;

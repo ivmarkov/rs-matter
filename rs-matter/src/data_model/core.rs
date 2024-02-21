@@ -35,7 +35,7 @@ use crate::{
         },
     },
     tlv::{get_root_node_struct, FromTLV},
-    transport::exchange::Exchange,
+    transport::exchange::{Exchange, ExchangeBuffers},
     utils::writebuf::WriteBuf,
 };
 
@@ -60,23 +60,29 @@ where
 
     pub async fn handle(
         &self,
-        exchange: &mut Exchange<'_>,
-        rb: &mut WriteBuf<'_>,
-        tb: &mut WriteBuf<'_>,
+        mut exchange: Exchange<'_>,
+        mut buffers: ExchangeBuffers<'_>,
     ) -> Result<(), Error> {
         let mut timeout = None;
 
+        let mut rb = WriteBuf::new(buffers.rx.get().await?);
+        let mut tb = WriteBuf::new(buffers.tx.get().await?);
+
         loop {
-            let meta = exchange.recv_into(rb).await?;
+            let meta = exchange.recv_into(&mut rb).await?;
 
             let interaction = Interaction::new(meta.opcode()?, rb.as_slice())?;
 
+            tb.reset();
+
             match &interaction {
-                Interaction::Read(req) => self.read(exchange, req, tb).await?,
-                Interaction::Write(req) => self.write(exchange, req, tb).await?,
-                Interaction::Invoke(req) => self.invoke(exchange, req, tb).await?,
-                Interaction::Subscribe(req) => self.subscribe(exchange, req, tb).await?,
-                Interaction::Timed(req) => timeout = Some(self.timed(exchange, req, tb).await?),
+                Interaction::Read(req) => self.read(&mut exchange, req, &mut tb).await?,
+                Interaction::Write(req) => self.write(&mut exchange, req, &mut tb).await?,
+                Interaction::Invoke(req) => self.invoke(&mut exchange, req, &mut tb).await?,
+                Interaction::Subscribe(req) => self.subscribe(&mut exchange, req, &mut tb).await?,
+                Interaction::Timed(req) => {
+                    timeout = Some(self.timed(&mut exchange, req, &mut tb).await?)
+                }
             }
 
             if !matches!(interaction, Interaction::Timed(_)) {
@@ -115,7 +121,7 @@ where
         'outer: for item in metadata.node().read(req, None, &accessor) {
             while !AttrDataEncoder::handle_read(&item, &self.0, &mut resp.writer()).await? {
                 exchange
-                    .send(&ReportDataStreamingResp::META, resp.finish_chunk(&req)?)
+                    .send(OpCode::ReportData, resp.finish_chunk(&req)?)
                     .await?;
 
                 if Self::recv_status(exchange).await? != IMStatusCode::Success {
@@ -128,9 +134,7 @@ where
         }
 
         if complete {
-            exchange
-                .send(&ReportDataStreamingResp::META, resp.finish(req)?)
-                .await?;
+            exchange.send(OpCode::ReportData, resp.finish(req)?).await?;
         }
 
         Ok(())
@@ -168,9 +172,7 @@ where
             AttrDataEncoder::handle_write(&item, &self.0, &mut resp.writer()).await?;
         }
 
-        exchange
-            .send(&WriteStreamingResp::META, resp.finish()?)
-            .await
+        exchange.send(OpCode::WriteResponse, resp.finish()?).await
     }
 
     async fn invoke(
@@ -194,7 +196,7 @@ where
         }
 
         exchange
-            .send(&InvStreamingResp::META, resp.finish(req)?)
+            .send(OpCode::InvokeResponse, resp.finish(req)?)
             .await
     }
 
@@ -212,7 +214,7 @@ where
 
             exchange
                 .send(
-                    &SubscribeResp::META,
+                    OpCode::SubscribeResponse,
                     SubscribeResp::write(wb, subscription_id)?,
                 )
                 .await?;
@@ -238,16 +240,15 @@ where
 
         StatusResp::write(wb, IMStatusCode::Success)?;
 
-        exchange.send(&StatusResp::META, wb).await?;
+        exchange.send(OpCode::StatusResponse, wb.as_slice()).await?;
 
         Ok(timeout)
     }
 
     async fn recv_status(exchange: &mut Exchange<'_>) -> Result<IMStatusCode, Error> {
-        let rx = exchange.get().await;
+        let rx = exchange.recv().await;
 
         let opcode: OpCode = rx.meta().opcode()?;
-        rx.reset();
 
         if opcode == OpCode::StatusResponse {
             let resp = StatusResp::from_tlv(&get_root_node_struct(rx.payload())?)?;

@@ -23,23 +23,48 @@ use log::error;
 
 use super::{plain_hdr::PlainHdr, proto_hdr::ProtoHdr};
 
-// 200 ms
-const MRP_STANDALONE_ACK_TIMEOUT: u64 = 200;
+const MRP_STANDALONE_ACK_TIMEOUT_MS: u64 = 200;
+const MRP_BASE_RETRY_INTERVAL_MS: u64 = 200; // TODO: Un-hardcode for Sleepy vs Active devices
+const MRP_MAX_TRANSMISSIONS: usize = 10;
+const MRP_BACKOFF_THRESHOLD: usize = 3;
+const MRP_BACKOFF_BASE: (u64, u64) = (16, 10); // 1.6
+                                               //const MRP_BACKOFF_JITTER: (u64, u64) = (25, 100); // 0.25
+                                               //const MRP_BACKOFF_MARGIN: (u64, u64) = (11, 10);  // 1.1
 
 #[derive(Debug)]
 pub struct RetransEntry {
     // The msg counter that we are waiting to be acknowledged
     msg_ctr: u32,
-    // This will additionally have retransmission count and periods once we implement it TODO
+    counter: usize,
 }
 
 impl RetransEntry {
     pub fn new(msg_ctr: u32) -> Self {
-        Self { msg_ctr }
+        Self {
+            msg_ctr,
+            counter: 0,
+        }
     }
 
     pub fn get_msg_ctr(&self) -> u32 {
         self.msg_ctr
+    }
+
+    pub fn retrans_delay_ms(&mut self) -> Option<u64> {
+        if self.counter < MRP_MAX_TRANSMISSIONS {
+            let mut backoff = MRP_BASE_RETRY_INTERVAL_MS;
+
+            if self.counter >= MRP_BACKOFF_THRESHOLD {
+                for _ in 0..self.counter - MRP_BACKOFF_THRESHOLD {
+                    backoff = backoff * MRP_BACKOFF_BASE.0 / MRP_BACKOFF_BASE.1;
+                }
+            }
+
+            self.counter += 1;
+            Some(backoff)
+        } else {
+            None
+        }
     }
 }
 
@@ -54,7 +79,7 @@ pub struct AckEntry {
 impl AckEntry {
     pub fn new(msg_ctr: u32, epoch: Epoch) -> Result<Self, Error> {
         if let Some(ack_timeout) =
-            epoch().checked_add(Duration::from_millis(MRP_STANDALONE_ACK_TIMEOUT))
+            epoch().checked_add(Duration::from_millis(MRP_STANDALONE_ACK_TIMEOUT_MS))
         {
             Ok(Self {
                 msg_ctr,
@@ -87,8 +112,28 @@ impl ReliableMessage {
         }
     }
 
+    pub fn retrans(&mut self) -> Option<&mut RetransEntry> {
+        self.retrans.as_mut()
+    }
+
     pub fn is_acknowledged(&self, ctr: u32) -> bool {
-        self.retrans.map(|re| re.msg_ctr > ctr).unwrap_or(true)
+        self.retrans
+            .map(|retrans| retrans.get_msg_ctr() > ctr)
+            .unwrap_or(true)
+    }
+
+    pub fn retrans_delay_ms(&self, ctr: u32) -> Result<Option<u64>, ()> {
+        if let Some(retrans) = self.retrans.as_ref() {
+            if ctr >= retrans.get_msg_ctr() {
+                let delay = retrans.retrans_delay_ms().ok_or(())?;
+
+                Ok(Some(delay))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -103,6 +148,10 @@ impl ReliableMessage {
         } else {
             false
         }
+    }
+
+    pub fn retrans_ctr(&self) -> Option<u32> {
+        self.retrans.as_ref().map(|re| re.msg_ctr)
     }
 
     pub fn pre_send(&mut self, plain: &PlainHdr, proto: &mut ProtoHdr) -> Result<(), Error> {

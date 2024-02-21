@@ -283,6 +283,16 @@ impl Session {
         rx.decode_remaining(pb, self.peer_nodeid.unwrap_or_default(), self.get_dec_key())
     }
 
+    pub fn is_duplicate(&self, plain: &PlainHdr) -> bool {
+        self.rx_ctr_state
+            .update(plain.ctr, self.is_encrypted(), true)
+    }
+
+    pub fn update_rx_ctr_state(&mut self, plain: &PlainHdr) -> bool {
+        self.rx_ctr_state
+            .update(plain.ctr, self.is_encrypted(), false)
+    }
+
     pub fn pre_send(&mut self, ctr: Option<u32>, plain: &mut PlainHdr) {
         plain.sess_id = self.get_peer_sess_id();
         plain.ctr = ctr.unwrap_or(self.get_msg_ctr());

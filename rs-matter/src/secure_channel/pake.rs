@@ -18,7 +18,7 @@
 use core::{cell::RefCell, fmt::Write, time::Duration};
 
 use super::{
-    common::{SCStatusCodes, PROTO_ID_SECURE_CHANNEL},
+    common::SCStatusCodes,
     spake2p::{Spake2P, VerifierData},
 };
 use crate::{
@@ -28,10 +28,10 @@ use crate::{
     secure_channel::common::{complete_with_status, OpCode},
     tlv::{self, get_root_node_struct, FromTLV, OctetStr, TLVWriter, TagType, ToTLV},
     transport::{
-        exchange::{Exchange, ExchangeCtx, ExchangeId},
+        exchange::{Exchange, ExchangeBuffers, ExchangeId},
         session::{CloneData, SessionMode},
     },
-    utils::{epoch::Epoch, rand::Rand},
+    utils::{epoch::Epoch, rand::Rand, writebuf::WriteBuf},
 };
 use log::{error, info};
 
@@ -117,7 +117,7 @@ impl Timeout {
     fn new(exchange: &Exchange, epoch: Epoch) -> Self {
         Self {
             start_time: epoch(),
-            exch_id: exchange.id.id().clone(),
+            exch_id: exchange.id.clone(),
         }
     }
 
@@ -138,30 +138,34 @@ impl<'a> Pake<'a> {
 
     pub async fn handle(
         &mut self,
-        exchange: &mut Exchange<'_>,
+        mut exchange: Exchange<'_>,
+        mut buffers: ExchangeBuffers<'_>,
         mdns: &dyn Mdns,
     ) -> Result<(), Error> {
         let mut spake2p = alloc!(Spake2P::new());
 
-        self.handle_pbkdfparamrequest(exchange, &mut spake2p)
+        self.handle_pbkdfparamrequest(&mut exchange, &mut buffers, &mut spake2p)
             .await?;
-        self.handle_pasepake1(exchange, &mut spake2p).await?;
-        self.handle_pasepake3(exchange, mdns, &mut spake2p).await
+        self.handle_pasepake1(&mut exchange, &mut buffers, &mut spake2p)
+            .await?;
+        self.handle_pasepake3(&mut exchange, &mut buffers, mdns, &mut spake2p)
+            .await
     }
 
     #[allow(non_snake_case)]
     async fn handle_pasepake3(
         &mut self,
         exchange: &mut Exchange<'_>,
+        _buffers: &mut ExchangeBuffers<'_>,
         mdns: &dyn Mdns,
         spake2p: &mut Spake2P,
     ) -> Result<(), Error> {
-        let rx = exchange.get().await.consume();
-        rx.meta().check_opcode(OpCode::PASEPake3)?;
-
         if !self.update_timeout(exchange, true).await? {
             return Ok(());
         }
+
+        let rx = exchange.recv().await;
+        rx.meta().check_opcode(OpCode::PASEPake3)?;
 
         let cA = extract_pasepake_1_or_3_params(rx.payload())?;
         let (status, ke) = spake2p.handle_cA(cA);
@@ -182,7 +186,7 @@ impl<'a> Pake<'a> {
                 0,
                 peer_sessid,
                 local_sessid,
-                exchange.with_session(|sess| Ok(sess.get_peer_addr()))?,
+                rx.with_session(|sess| Ok(sess.get_peer_addr()))?,
                 SessionMode::Pase,
             );
             clone_data.dec_key.copy_from_slice(&session_keys[0..16]);
@@ -196,9 +200,11 @@ impl<'a> Pake<'a> {
             Err(status)
         };
 
+        drop(rx);
+
         let status = match result {
             Ok(clone_data) => {
-                exchange.clone_session(tx, &clone_data).await?;
+                exchange.matter.clone_session(&clone_data).await?;
                 self.pase.borrow_mut().disable_pase_session(mdns)?;
 
                 SCStatusCodes::SessionEstablishmentSuccess
@@ -213,105 +219,95 @@ impl<'a> Pake<'a> {
     async fn handle_pasepake1(
         &mut self,
         exchange: &mut Exchange<'_>,
+        buffers: &mut ExchangeBuffers<'_>,
         spake2p: &mut Spake2P,
     ) -> Result<(), Error> {
-        let rx = exchange.get().await.consume();
-        rx.meta().check_opcode(OpCode::PASEPake1)?;
-
         if !self.update_timeout(exchange, true).await? {
             return Ok(());
         }
 
-        let pase = self.pase.borrow();
-        let session = pase.session.as_ref().ok_or(ErrorCode::NoSession)?;
+        let mut tx = WriteBuf::new(buffers.tx.get().await?);
 
-        let pA = extract_pasepake_1_or_3_params(rx.payload())?;
-        let mut pB: [u8; 65] = [0; 65];
-        let mut cB: [u8; 32] = [0; 32];
-        spake2p.start_verifier(&session.verifier)?;
-        spake2p.handle_pA(pA, &mut pB, &mut cB, pase.rand)?;
+        {
+            let rx = exchange.recv().await;
+            rx.meta().check_opcode(OpCode::PASEPake1)?;
 
-        exchange
-            .send
-            .send_with(|wb| {
-                // Generate response
-                let mut tw = TLVWriter::new(wb);
-                let resp = Pake1Resp {
-                    pb: OctetStr(&pB),
-                    cb: OctetStr(&cB),
-                };
-                resp.to_tlv(&mut tw, TagType::Anonymous)?;
+            let pase = self.pase.borrow();
+            let session = pase.session.as_ref().ok_or(ErrorCode::NoSession)?;
 
-                Ok(meta(OpCode::PASEPake2))
-            })
-            .await
+            let pA = extract_pasepake_1_or_3_params(rx.payload())?;
+            let mut pB: [u8; 65] = [0; 65];
+            let mut cB: [u8; 32] = [0; 32];
+            spake2p.start_verifier(&session.verifier)?;
+            spake2p.handle_pA(pA, &mut pB, &mut cB, pase.rand)?;
+
+            // Generate response
+            let mut tw = TLVWriter::new(&mut tx);
+            let resp = Pake1Resp {
+                pb: OctetStr(&pB),
+                cb: OctetStr(&cB),
+            };
+            resp.to_tlv(&mut tw, TagType::Anonymous)?;
+        }
+
+        exchange.send(OpCode::PASEPake2, tx.as_slice()).await
     }
 
     async fn handle_pbkdfparamrequest(
         &mut self,
         exchange: &mut Exchange<'_>,
+        buffers: &mut ExchangeBuffers<'_>,
         spake2p: &mut Spake2P,
     ) -> Result<(), Error> {
-        let rx = exchange.get().await.consume();
-        rx.meta().check_opcode(OpCode::PBKDFParamRequest)?;
-
         if !self.update_timeout(exchange, true).await? {
             return Ok(());
         }
 
-        let pase = self.pase.borrow();
-        let session = pase.session.as_ref().ok_or(ErrorCode::NoSession)?;
+        let mut tx = WriteBuf::new(buffers.tx.get().await?);
 
-        let root = tlv::get_root_node(rx.payload())?;
-        let a = PBKDFParamReq::from_tlv(&root)?;
-        if a.passcode_id != 0 {
-            error!("Can't yet handle passcode_id != 0");
-            Err(ErrorCode::Invalid)?;
-        }
+        {
+            let rx = exchange.recv().await;
+            rx.meta().check_opcode(OpCode::PBKDFParamRequest)?;
 
-        let mut our_random: [u8; 32] = [0; 32];
-        (self.pase.borrow().rand)(&mut our_random);
+            let pase = self.pase.borrow();
+            let session = pase.session.as_ref().ok_or(ErrorCode::NoSession)?;
 
-        let local_sessid = exchange.get_next_sess_id(); // TODO
-        let spake2p_data: u32 = ((local_sessid as u32) << 16) | a.initiator_ssid as u32;
-        spake2p.set_app_data(spake2p_data);
+            let root = tlv::get_root_node(rx.payload())?;
+            let a = PBKDFParamReq::from_tlv(&root)?;
+            if a.passcode_id != 0 {
+                error!("Can't yet handle passcode_id != 0");
+                Err(ErrorCode::Invalid)?;
+            }
 
-        let mut initiator_random = heapless::Vec::<_, 32>::new();
-        initiator_random
-            .extend_from_slice(a.initiator_random.0)
-            .unwrap();
+            let mut our_random: [u8; 32] = [0; 32];
+            (self.pase.borrow().rand)(&mut our_random);
 
-        let mut resp = PBKDFParamResp {
-            init_random: OctetStr(&initiator_random),
-            our_random: OctetStr(&our_random),
-            local_sessid,
-            params: None,
-        };
+            let local_sessid = rx.matter.session_mgr.borrow_mut().get_next_sess_id();
+            let spake2p_data: u32 = ((local_sessid as u32) << 16) | a.initiator_ssid as u32;
+            spake2p.set_app_data(spake2p_data);
 
-        if !a.has_params {
-            let params_resp = PBKDFParamRespParams {
-                count: session.verifier.count,
-                salt: OctetStr(&session.verifier.salt),
+            // Generate response
+            let mut tw = TLVWriter::new(&mut tx);
+            let mut resp = PBKDFParamResp {
+                init_random: a.initiator_random,
+                our_random: OctetStr(&our_random),
+                local_sessid,
+                params: None,
             };
-            resp.params = Some(params_resp);
-        }
+            if !a.has_params {
+                let params_resp = PBKDFParamRespParams {
+                    count: session.verifier.count,
+                    salt: OctetStr(&session.verifier.salt),
+                };
+                resp.params = Some(params_resp);
+            }
+            resp.to_tlv(&mut tw, TagType::Anonymous)?;
 
-        let mut context_set = false;
+            spake2p.set_context(rx.payload(), tx.as_slice())?;
+        }
 
         exchange
-            .send
-            .send_with(|wb| {
-                // Generate response
-                let mut tw = TLVWriter::new(wb);
-                resp.to_tlv(&mut tw, TagType::Anonymous)?;
-
-                if !context_set {
-                    spake2p.set_context(rx.payload(), wb.as_slice())?;
-                    context_set = true;
-                }
-
-                Ok(meta(OpCode::PBKDFParamResponse))
-            })
+            .send(OpCode::PBKDFParamResponse, tx.as_slice())
             .await
     }
 
@@ -337,7 +333,7 @@ impl<'a> Pake<'a> {
             }
 
             if let Some(sd) = pase.timeout.as_mut() {
-                if &sd.exch_id != exchange.id() {
+                if &sd.exch_id != exchange.id {
                     info!("Other PAKE session in progress");
                     Some(SCStatusCodes::Busy)
                 } else {
@@ -353,18 +349,24 @@ impl<'a> Pake<'a> {
 
         if let Some(status) = status {
             complete_with_status(exchange, status, None).await?;
+
             Ok(false)
         } else {
             let mut pase = self.pase.borrow_mut();
+
             pase.timeout = Some(Timeout::new(exchange, pase.epoch));
+
             Ok(true)
         }
     }
 
     async fn check_session(&mut self, exchange: &mut Exchange<'_>) -> Result<bool, Error> {
+        exchange.get().await; // Wait for the next packet to arrive
+
         if self.pase.borrow().session.is_none() {
             error!("PASE not enabled");
             complete_with_status(exchange, SCStatusCodes::InvalidParameter, None).await?;
+
             Ok(false)
         } else {
             Ok(true)

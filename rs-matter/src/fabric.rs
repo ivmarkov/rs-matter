@@ -289,11 +289,11 @@ impl FabricMgr {
         Err(ErrorCode::NotFound.into())
     }
 
-    pub fn get_fabric(&self, idx: usize) -> Option<&Fabric> {
+    pub fn get_fabric(&self, idx: usize) -> Result<Option<&Fabric>, Error> {
         if idx == 0 {
-            None
+            Ok(None)
         } else {
-            self.fabrics[idx - 1].as_ref()
+            Ok(self.fabrics[idx - 1].as_ref())
         }
     }
 

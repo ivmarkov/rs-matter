@@ -121,6 +121,22 @@ pub enum OpCode {
     TimedRequest = 10,
 }
 
+impl OpCode {
+    pub fn meta(&self) -> ExchangeMeta {
+        ExchangeMeta {
+            proto_id: PROTO_ID_INTERACTION_MODEL,
+            proto_opcode: *self as u8,
+            reliable: true,
+        }
+    }
+}
+
+impl From<OpCode> for ExchangeMeta {
+    fn from(opcode: OpCode) -> Self {
+        opcode.meta()
+    }
+}
+
 /* Interaction Model ID as per the Matter Spec */
 pub const PROTO_ID_INTERACTION_MODEL: u16 = 0x01;
 
@@ -155,12 +171,6 @@ impl<'a> ReportDataReq<'a> {
 pub struct ReportDataStreamingResp<'a, 'b>(&'a mut WriteBuf<'b>);
 
 impl<'a, 'b> ReportDataStreamingResp<'a, 'b> {
-    pub const META: ExchangeMeta = ExchangeMeta {
-        proto_id: PROTO_ID_INTERACTION_MODEL,
-        proto_opcode: OpCode::ReportData as u8,
-        reliable: true,
-    };
-
     // This is the amount of space we reserve for other things to be attached towards
     // the end of long reads.
     const LONG_READS_TLV_RESERVE_SIZE: usize = 24;
@@ -237,12 +247,6 @@ impl<'a, 'b> ReportDataStreamingResp<'a, 'b> {
 pub struct WriteStreamingResp<'a, 'b>(&'a mut WriteBuf<'b>);
 
 impl<'a, 'b> WriteStreamingResp<'a, 'b> {
-    pub const META: ExchangeMeta = ExchangeMeta {
-        proto_id: PROTO_ID_INTERACTION_MODEL,
-        proto_opcode: OpCode::WriteResponse as u8,
-        reliable: true,
-    };
-
     pub fn new(wb: &'a mut WriteBuf<'b>) -> Self {
         Self(wb)
     }
@@ -275,12 +279,6 @@ impl<'a, 'b> WriteStreamingResp<'a, 'b> {
 pub struct InvStreamingResp<'a, 'b>(&'a mut WriteBuf<'b>);
 
 impl<'a, 'b> InvStreamingResp<'a, 'b> {
-    pub const META: ExchangeMeta = ExchangeMeta {
-        proto_id: PROTO_ID_INTERACTION_MODEL,
-        proto_opcode: OpCode::InvokeResponse as u8,
-        reliable: true,
-    };
-
     pub fn new(wb: &'a mut WriteBuf<'b>) -> Self {
         Self(wb)
     }
@@ -336,12 +334,6 @@ impl<'a, 'b> InvStreamingResp<'a, 'b> {
 }
 
 impl StatusResp {
-    pub const META: ExchangeMeta = ExchangeMeta {
-        proto_id: PROTO_ID_INTERACTION_MODEL,
-        proto_opcode: OpCode::StatusResponse as u8,
-        reliable: true,
-    };
-
     pub fn write(wb: &mut WriteBuf, status: IMStatusCode) -> Result<(), Error> {
         wb.reset();
 
@@ -361,12 +353,6 @@ impl TimedReq {
 }
 
 impl SubscribeResp {
-    pub const META: ExchangeMeta = ExchangeMeta {
-        proto_id: PROTO_ID_INTERACTION_MODEL,
-        proto_opcode: OpCode::SubscribeResponse as u8,
-        reliable: true,
-    };
-
     pub fn write<'a>(wb: &'a mut WriteBuf, subscription_id: u32) -> Result<&'a [u8], Error> {
         wb.reset();
 

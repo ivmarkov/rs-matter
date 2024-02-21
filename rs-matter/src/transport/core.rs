@@ -15,32 +15,25 @@
  *    limitations under the License.
  */
 
-use core::borrow::Borrow;
 use core::mem::MaybeUninit;
 use core::pin::pin;
 
-use embassy_futures::select::{self, select, select3, select_slice, Either};
-use embassy_sync::blocking_mutex;
-use embassy_sync::mutex::{Mutex, MutexGuard};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
-use embassy_time::{Duration, Timer};
+use embassy_futures::select::{select3, select_slice};
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::mutex::Mutex;
 
 use log::{error, info, warn};
 
-use crate::interaction_model::core::IMStatusCode;
-use crate::secure_channel::common::SCStatusCodes;
-use crate::secure_channel::status_report::GeneralCode;
 use crate::transport::exchange::{
-    Exchange, ExchangeCtx, ExchangePacket, Role, RxExchangePacket, TxExchangePacket,
+    Exchange, ExchangeBuffer, ExchangeBuffers, ExchangePacket, Role, RxExchangePacket,
+    TxExchangePacket,
 };
 use crate::transport::network::Address;
 use crate::transport::packet::PacketHeader;
-use crate::transport::plain_hdr::MsgFlags;
 use crate::utils::notification::Notification;
 use crate::utils::parsebuf::ParseBuf;
 use crate::utils::writebuf::WriteBuf;
 use crate::{
-    alloc,
     data_model::{core::DataModel, objects::DataModelHandler},
     error::{Error, ErrorCode},
     interaction_model::core::PROTO_ID_INTERACTION_MODEL,
@@ -52,9 +45,9 @@ use crate::{
     CommissioningData, Matter, MATTER_PORT,
 };
 
-use super::exchange::{self, ExchangeMeta};
-use super::network::UdpBuffers;
+use super::exchange::ExchangeMeta;
 use super::packet::{MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE};
+use super::session::CloneData;
 use super::{
     exchange::{ExchangeId, MAX_EXCHANGES},
     network::{Ipv6Addr, SocketAddr, SocketAddrV6, UdpReceive, UdpSend},
@@ -88,27 +81,26 @@ const MRP_STANDALONE_ACK: ExchangeMeta = ExchangeMeta {
 pub const MATTER_SOCKET_BIND_ADDR: SocketAddr =
     SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, MATTER_PORT, 0, 0));
 
-const MAX_LISTENERS: usize = MAX_EXCHANGES + 1;
-
 pub struct PacketBuffers {
-    tx: [MaybeUninit<[u8; MAX_TX_BUF_SIZE]>; MAX_LISTENERS],
-    rx: [MaybeUninit<[u8; MAX_RX_BUF_SIZE]>; MAX_LISTENERS],
+    tx_packet: Mutex<NoopRawMutex, TxExchangePacket>,
+    rx_packet: Mutex<NoopRawMutex, RxExchangePacket>,
+    ack_packet: ExchangePacket<50>,
+    tx_bufs: MaybeUninit<[[u8; MAX_TX_BUF_SIZE]; MAX_EXCHANGES]>,
+    rx_bufs: MaybeUninit<[[u8; MAX_RX_BUF_SIZE]; MAX_EXCHANGES]>,
 }
 
 impl PacketBuffers {
-    const TX_ELEM: MaybeUninit<[u8; MAX_TX_BUF_SIZE]> = MaybeUninit::uninit();
-    const RX_ELEM: MaybeUninit<[u8; MAX_RX_BUF_SIZE]> = MaybeUninit::uninit();
-
-    const TX_INIT: [MaybeUninit<[u8; MAX_TX_BUF_SIZE]>; MAX_EXCHANGES] =
-        [Self::TX_ELEM; MAX_EXCHANGES];
-    const RX_INIT: [MaybeUninit<[u8; MAX_RX_BUF_SIZE]>; MAX_EXCHANGES] =
-        [Self::RX_ELEM; MAX_EXCHANGES];
+    const TX_INIT: MaybeUninit<[[u8; MAX_TX_BUF_SIZE]; MAX_EXCHANGES]> = MaybeUninit::uninit();
+    const RX_INIT: MaybeUninit<[[u8; MAX_RX_BUF_SIZE]; MAX_EXCHANGES]> = MaybeUninit::uninit();
 
     #[inline(always)]
     pub const fn new() -> Self {
         Self {
-            tx: Self::TX_INIT,
-            rx: Self::RX_INIT,
+            tx_packet: Mutex::new(TxExchangePacket::new()),
+            rx_packet: Mutex::new(RxExchangePacket::new()),
+            ack_packet: ExchangePacket::new(),
+            tx_bufs: Self::TX_INIT,
+            rx_bufs: Self::RX_INIT,
         }
     }
 }
@@ -130,7 +122,10 @@ impl<'a> Matter<'a> {
     {
         info!("Running Matter transport");
 
-        if self.start_comissioning(dev_comm, recv_buf)? {
+        let tx_bufs = unsafe { buffers.tx_bufs.assume_init_mut() };
+        let rx_bufs = unsafe { buffers.rx_bufs.assume_init_mut() };
+
+        if self.start_comissioning(dev_comm, &mut rx_bufs[0])? {
             info!("Comissioning started");
         }
 
@@ -138,16 +133,23 @@ impl<'a> Matter<'a> {
 
         let notification = Notification::new();
 
-        let rx_packet = Mutex::new(RxExchangePacket::new());
-        let tx_packet = Mutex::new(TxExchangePacket::new());
-        let mut ack_packet = ExchangePacket::new();
+        let mut rx_handler = pin!(self.handle_rx(
+            recv,
+            &buffers.rx_packet,
+            &notification,
+            &send,
+            &mut buffers.ack_packet
+        ));
+        let mut tx_handler = pin!(self.handle_tx(&send, &buffers.tx_packet, &notification,));
 
-        let mut rx_handler =
-            pin!(self.handle_rx(recv, &rx_packet, &notification, &send, &mut ack_packet));
-        let mut tx_handler = pin!(self.handle_tx(&send, &tx_packet, &notification,));
-
-        let mut exchange_handlers =
-            pin!(self.handle_exchanges(buffers, &rx_packet, &tx_packet, &notification, handler,));
+        let mut exchange_handlers = pin!(self.handle_exchanges(
+            rx_bufs,
+            tx_bufs,
+            &buffers.rx_packet,
+            &buffers.tx_packet,
+            &notification,
+            handler
+        ));
 
         select3(&mut rx_handler, &mut tx_handler, &mut exchange_handlers)
             .await
@@ -156,7 +158,8 @@ impl<'a> Matter<'a> {
 
     async fn handle_exchanges<H>(
         &self,
-        buffers: &PacketBuffers,
+        rx_bufs: &mut [[u8; MAX_RX_BUF_SIZE]; MAX_EXCHANGES],
+        tx_bufs: &mut [[u8; MAX_TX_BUF_SIZE]; MAX_EXCHANGES],
         rx_packet_ref: &Mutex<NoopRawMutex, RxExchangePacket>,
         tx_packet_ref: &Mutex<NoopRawMutex, TxExchangePacket>,
         notification: &Notification,
@@ -173,9 +176,17 @@ impl<'a> Matter<'a> {
         for index in 0..MAX_EXCHANGES {
             let handler_id = index as u8;
 
+            let rb = unsafe {
+                core::slice::from_raw_parts_mut(rx_bufs[index].as_mut_ptr(), MAX_RX_BUF_SIZE)
+            };
+            let wb = unsafe {
+                core::slice::from_raw_parts_mut(tx_bufs[index].as_mut_ptr(), MAX_TX_BUF_SIZE)
+            };
+
             handlers
                 .push(self.handle_exchange(
-                    buffers,
+                    rb,
+                    wb,
                     rx_packet_ref,
                     tx_packet_ref,
                     notification,
@@ -302,7 +313,8 @@ impl<'a> Matter<'a> {
     #[inline(always)]
     pub async fn handle_exchange<H>(
         &self,
-        buffers: &PacketBuffers,
+        rx_buf: &mut [u8],
+        tx_buf: &mut [u8],
         rx_packet_ref: &Mutex<NoopRawMutex, RxExchangePacket>,
         tx_packet_ref: &Mutex<NoopRawMutex, TxExchangePacket>,
         notification: &Notification,
@@ -313,20 +325,26 @@ impl<'a> Matter<'a> {
         H: DataModelHandler,
     {
         loop {
-            let mut dc = notification
-                .get(rx_packet_ref, handler_index, |rd| {
-                    !rd.buf.is_empty() && rd.new_exchange
-                })
-                .await;
+            let id = {
+                let mut dc = notification
+                    .get(rx_packet_ref, handler_index, |rd| {
+                        !rd.buf.is_empty() && rd.new_exchange
+                    })
+                    .await;
 
-            let rd = dc.data();
-            let id = ExchangeId::load(rd.header.proto.exch_id, rd.peer, &rd.header.plain);
+                let packet = dc.data();
+                packet.new_exchange = false;
 
-            rd.new_exchange = false;
+                ExchangeId::load(
+                    packet.header.proto.exch_id,
+                    packet.peer,
+                    &packet.header.plain,
+                )
+            };
 
             info!("Handler {}: Got exchange {:?}", handler_index, id);
 
-            let mut exchange = Exchange {
+            let exchange = Exchange {
                 id: &id,
                 matter: self,
                 rx_packet: rx_packet_ref,
@@ -335,13 +353,22 @@ impl<'a> Matter<'a> {
                 index: handler_index,
             };
 
-            let result = self.dispatch_exchange(&mut exchange, handler).await;
+            let buffers = ExchangeBuffers {
+                rx: ExchangeBuffer(rx_buf),
+                tx: ExchangeBuffer(tx_buf),
+            };
 
-            let mut rd = rx_packet_ref.lock().await;
-            if !rd.buf.is_empty()
-                && ExchangeId::load(rd.header.proto.exch_id, rd.peer, &rd.header.plain) == id
+            let result = self.dispatch_exchange(exchange, buffers, handler).await;
+
+            let mut packet = rx_packet_ref.lock().await;
+            if !packet.buf.is_empty()
+                && ExchangeId::load(
+                    packet.header.proto.exch_id,
+                    packet.peer,
+                    &packet.header.plain,
+                ) == id
             {
-                rd.buf.clear();
+                packet.buf.clear();
             }
 
             self.exchange_mgr.borrow_mut().remove(&id);
@@ -359,7 +386,8 @@ impl<'a> Matter<'a> {
 
     async fn dispatch_exchange<H>(
         &self,
-        exchange: &mut Exchange<'_>,
+        mut exchange: Exchange<'_>,
+        buffers: ExchangeBuffers<'_>,
         handler: &H,
     ) -> Result<(), Error>
     where
@@ -371,14 +399,14 @@ impl<'a> Matter<'a> {
             PROTO_ID_SECURE_CHANNEL => {
                 let sc = SecureChannel::new(self);
 
-                sc.handle(exchange).await?;
+                sc.handle(exchange, buffers).await?;
 
                 self.notify_changed();
             }
             PROTO_ID_INTERACTION_MODEL => {
                 let dm = DataModel::new(handler);
 
-                dm.handle(exchange).await?;
+                dm.handle(exchange, buffers).await?;
 
                 self.notify_changed();
             }
@@ -404,7 +432,7 @@ impl<'a> Matter<'a> {
         ack_wb: &mut WriteBuf,
     ) -> Result<bool, Error> {
         header.reset();
-        header.decode_plain_hdr(&mut pb)?;
+        header.decode_plain_hdr(pb)?;
 
         let mut session_mgr = self.session_mgr.borrow_mut();
 
@@ -419,7 +447,7 @@ impl<'a> Matter<'a> {
 
         session.decode_remaining(header, pb)?;
 
-        if session.is_duplicate(&header.plain)? {
+        if session.is_duplicate(&header.plain) {
             ack_header.reset();
             ack_wb.reset();
 
@@ -436,7 +464,9 @@ impl<'a> Matter<'a> {
         let exchange = exchange_mgr.get(&id);
 
         let new = if let Some(exchange) = exchange {
-            session.update_ctr_state(&header.plain).unwrap();
+            let updated = session.update_rx_ctr_state(&header.plain);
+            assert_eq!(updated, true);
+
             exchange.recv(&header, self.epoch);
 
             false
@@ -449,7 +479,9 @@ impl<'a> Matter<'a> {
                 .add(id, Role::Responder)
                 .ok_or(ErrorCode::NoSpaceExchanges)?;
 
-            session.update_ctr_state(&header.plain).unwrap();
+            let updated = session.update_rx_ctr_state(&header.plain);
+            assert_eq!(updated, true);
+
             exchange.recv(&header, self.epoch);
 
             true
@@ -461,13 +493,11 @@ impl<'a> Matter<'a> {
     pub(crate) fn process_tx(
         &self,
         id: &ExchangeId,
-        meta: &ExchangeMeta,
-        ctr: Option<u32>,
+        meta: ExchangeMeta,
+        retrans_ctr: Option<u32>,
         header: &mut PacketHeader,
         wb: &mut WriteBuf,
-    ) -> Result<u32, Error> {
-        header.reset();
-
+    ) -> Result<bool, Error> {
         let mut session_mgr = self.session_mgr.borrow_mut();
         let session = session_mgr
             .get(&id.session_id)
@@ -476,14 +506,40 @@ impl<'a> Matter<'a> {
         let mut exchange_mgr = self.exchange_mgr.borrow_mut();
         let exchange = exchange_mgr.get(id).ok_or(ErrorCode::NoExchange)?;
 
-        session.pre_send(ctr, &mut header.plain);
+        if let Some(ctr) = retrans_ctr {
+            if exchange.is_acknowledged(ctr) {
+                return Ok(false);
+            }
+        }
+
+        header.reset();
+
+        session.pre_send(retrans_ctr, &mut header.plain);
         exchange.pre_send(&header.plain, &mut header.proto)?; // Retrans ctr mismatches should never happen
 
         meta.set_into(&mut header.proto);
 
         session.encode(&header, wb)?;
 
-        Ok(header.plain.ctr)
+        Ok(true)
+    }
+
+    pub(crate) async fn clone_session(&self, clone_data: &CloneData) -> Result<usize, Error> {
+        todo!()
+        // loop {
+        //     let result = self
+        //         .matter
+        //         .session_mgr
+        //         .borrow_mut()
+        //         .clone_session(clone_data);
+
+        //     match result {
+        //         Err(err) if err.code() == ErrorCode::NoSpaceSessions => {
+        //             self.matter.evict_session(tx).await?
+        //         }
+        //         other => break other,
+        //     }
+        // }
     }
 
     // TODO

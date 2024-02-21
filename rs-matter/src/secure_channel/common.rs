@@ -17,16 +17,11 @@
 
 use num_derive::FromPrimitive;
 
-use crate::{
-    error::Error,
-    transport::{
-        exchange::{Exchange, ExchangeMeta},
-        packet::PacketHeader,
-    },
-    utils::writebuf::WriteBuf,
-};
+use crate::error::Error;
+use crate::transport::exchange::{Exchange, ExchangeMeta};
+use crate::utils::writebuf::WriteBuf;
 
-use super::status_report::{create_status_report, write, GeneralCode, SC_META};
+use super::status_report::{write, GeneralCode, SC_META};
 
 /* Interaction Model ID as per the Matter Spec */
 pub const PROTO_ID_SECURE_CHANNEL: u16 = 0x00;
@@ -48,7 +43,23 @@ pub enum OpCode {
     StatusReport = 0x40,
 }
 
-#[derive(PartialEq)]
+impl OpCode {
+    pub fn meta(&self) -> ExchangeMeta {
+        ExchangeMeta {
+            proto_id: PROTO_ID_SECURE_CHANNEL,
+            proto_opcode: *self as u8,
+            reliable: true, // TODO
+        }
+    }
+}
+
+impl From<OpCode> for ExchangeMeta {
+    fn from(op: OpCode) -> Self {
+        op.meta()
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum SCStatusCodes {
     SessionEstablishmentSuccess = 0,
     NoSharedTrustRoots = 1,
@@ -64,7 +75,7 @@ pub async fn complete_with_status(
     proto_data: Option<&[u8]>,
 ) -> Result<(), Error> {
     exchange
-        .send_with(|tx, wb| create_sc_status_report(tx, status_code, proto_data))
+        .send_with(|wb| sc_write(wb, status_code, proto_data))
         .await
 }
 

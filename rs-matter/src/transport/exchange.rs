@@ -1,6 +1,6 @@
 use core::num::NonZeroUsize;
 
-use embassy_futures::select::select;
+use embassy_futures::select::{select, Either};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 
@@ -21,8 +21,8 @@ use super::{
     mrp::ReliableMessage,
     network::Address,
     packet::{PacketHeader, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
-    plain_hdr::PlainHdr,
-    proto_hdr::ProtoHdr,
+    plain_hdr::{self, PlainHdr},
+    proto_hdr::{self, ProtoHdr},
     session::{Session, SessionId},
 };
 
@@ -77,6 +77,23 @@ impl ExchangeEntry {
 
     pub fn pre_send(&mut self, plain: &PlainHdr, proto: &mut ProtoHdr) -> Result<(), Error> {
         self.mrp.pre_send(plain, proto)
+    }
+
+    pub fn retrans_ctr(&self) -> Option<u32> {
+        self.mrp.retrans_ctr()
+    }
+
+    pub fn retrans_delay_ms(&mut self, ctr: u32) -> Result<Option<u64>, Error> {
+        let delay = self
+            .mrp
+            .retrans_delay_ms(ctr)
+            .map_err(|_| ErrorCode::Invalid)?; // TODO
+
+        Ok(delay)
+    }
+
+    pub fn is_acknowledged(&self, ctr: u32) -> bool {
+        self.mrp.is_acknowledged(ctr)
     }
 }
 
@@ -220,8 +237,8 @@ impl<const N: usize> ExchangePacket<N> {
 }
 
 pub struct Rx<'a, 'b> {
-    id: &'a ExchangeId,
-    matter: &'a Matter<'a>,
+    pub(crate) id: &'a ExchangeId,
+    pub(crate) matter: &'a Matter<'a>,
     dc: DataCarrier<'b, RxExchangePacket>,
     consumed: bool,
 }
@@ -268,42 +285,61 @@ impl<'a, 'b> Drop for Rx<'a, 'b> {
 }
 
 pub struct Tx<'a, 'b> {
-    id: &'a ExchangeId,
-    matter: &'a Matter<'a>,
+    pub(crate) id: &'a ExchangeId,
+    pub(crate) matter: &'a Matter<'a>,
     dc: DataCarrier<'b, TxExchangePacket>,
-    finished: bool,
+    completed: bool,
+}
+
+pub struct TxPayload<'a, 'b> {
+    pub(crate) id: &'a ExchangeId,
+    pub(crate) matter: &'a Matter<'a>,
+    header: &'b mut PacketHeader,
+    writebuf: WriteBuf<'b>,
+    completed: &'b mut bool,
+}
+
+impl<'a, 'b> TxPayload<'a, 'b> {
+    pub fn writebuf(&mut self) -> &mut WriteBuf<'b> {
+        &mut self.writebuf
+    }
+
+    pub fn complete(
+        mut self,
+        meta: impl Into<ExchangeMeta>,
+        retrans_ctr: Option<u32>,
+    ) -> Result<Option<u32>, Error> {
+        let meta = meta.into();
+
+        if self
+            .matter
+            .process_tx(self.id, meta, retrans_ctr, self.header, &mut self.writebuf)?
+        {
+            *self.completed = true;
+            Ok(meta.reliable.then_some(self.header.plain.ctr))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 impl<'a, 'b> Tx<'a, 'b> {
-    pub fn reset(&mut self) {
-        self.dc.data().buf.clear();
-    }
+    pub fn payload(&mut self) -> Result<TxPayload<'_, 'b>, Error> {
+        self.completed = false;
 
-    pub fn set_peer(&mut self, peer: Address) {
-        self.dc.data().peer = peer;
-    }
+        let packet = self.dc.data();
+        packet.buf.resize_default(MAX_TX_BUF_SIZE);
 
-    pub fn append(&mut self, data: &[u8]) -> Result<(), Error> {
-        self.dc
-            .data()
-            .buf
-            .extend_from_slice(data)
-            .map_err(|_| ErrorCode::NoSpace)?;
+        let mut writebuf = WriteBuf::new(&mut packet.buf);
+        writebuf.reserve(plain_hdr::max_plain_hdr_len() + proto_hdr::max_proto_hdr_len())?;
 
-        Ok(())
-    }
-
-    pub fn truncate(&mut self, len: usize) {
-        self.dc.data().buf.truncate(len);
-    }
-
-    pub fn as_buf(&mut self) -> &mut [u8] {
-        self.dc.data().buf.resize_default(MAX_TX_BUF_SIZE);
-        &mut self.dc.data().buf
-    }
-
-    pub fn finish(&mut self) {
-        self.finished = true;
+        Ok(TxPayload {
+            id: self.id,
+            matter: self.matter,
+            header: &mut packet.header,
+            writebuf,
+            completed: &mut self.completed,
+        })
     }
 
     pub fn accessor(&self) -> Result<Accessor<'a>, Error> {
@@ -327,8 +363,8 @@ impl<'a, 'b> Tx<'a, 'b> {
 
 impl<'a, 'b> Drop for Tx<'a, 'b> {
     fn drop(&mut self) {
-        if !self.finished {
-            self.reset();
+        if !self.completed {
+            self.dc.data().buf.clear();
         }
     }
 }
@@ -384,7 +420,42 @@ impl<'a> Exchange<'a> {
             dc,
             id: self.id,
             matter: self.matter,
-            finished: false,
+            completed: false,
+        }
+    }
+
+    pub async fn wait_if_ack(&mut self, ctr: Option<u32>) -> Result<bool, Error> {
+        if let Some(ctr) = ctr {
+            self.wait_ack(ctr).await
+        } else {
+            Ok(true)
+        }
+    }
+
+    pub async fn wait_ack(&mut self, ctr: u32) -> Result<bool, Error> {
+        let delay = {
+            let mut exchange_mgr = self.matter.exchange_mgr.borrow_mut();
+            let exchange = exchange_mgr.get(self.id).ok_or(ErrorCode::NoExchange)?;
+
+            exchange.retrans_delay_ms(ctr)?
+        };
+
+        if let Some(delay) = delay {
+            let notification = self
+                .notification
+                .wait(NonZeroUsize::new(1 << self.index).unwrap());
+            let timer = Timer::after(Duration::from_millis(delay));
+
+            if matches!(select(notification, timer).await, Either::First(_)) {
+                let mut exchange_mgr = self.matter.exchange_mgr.borrow_mut();
+                let exchange = exchange_mgr.get(self.id).ok_or(ErrorCode::NoExchange)?;
+
+                Ok(exchange.is_acknowledged(ctr))
+            } else {
+                Ok(false)
+            }
+        } else {
+            Ok(true)
         }
     }
 
@@ -392,61 +463,38 @@ impl<'a> Exchange<'a> {
     where
         F: Fn(&mut WriteBuf) -> Result<ExchangeMeta, Error>,
     {
-        let mut ctr = None;
+        let mut retrans_ctr = None;
 
         loop {
-            let reliable = {
+            {
                 let mut tx = self.initiate_send().await;
 
-                let packet = tx.dc.data();
-                packet.buf.resize_default(MAX_TX_BUF_SIZE);
+                let mut payload = tx.payload()?;
 
-                let mut wb = WriteBuf::new(&mut packet.buf);
-                let meta = f(&mut wb)?;
+                let meta = f(payload.writebuf())?;
 
-                ctr = Some(self.matter.process_tx(
-                    self.id,
-                    &meta,
-                    ctr,
-                    &mut packet.header,
-                    &mut wb,
-                )?);
+                retrans_ctr = payload.complete(meta, retrans_ctr)?;
+            }
 
-                let (start, end) = (wb.get_start(), wb.get_tail());
-
-                packet.buf.truncate(end);
-                packet.payload_start = start;
-
-                tx.finish();
-
-                packet.header.proto.is_reliable()
-            };
-
-            if reliable {
-                let rx = self
-                    .notification
-                    .wait(NonZeroUsize::new(1 << self.index).unwrap());
-                let timeout = Timer::after(Duration::from_secs(30)); // TODO
-
-                select(rx, timeout).await;
-
-                let acknowledged =
-                    self.with_ctx(|ctx| Ok(ctx.exchange.mrp.is_acknowledged(ctr)))?;
-
-                if acknowledged {
-                    break;
-                }
+            if self.wait_if_ack(retrans_ctr).await? {
+                break;
             }
         }
 
         Ok(())
     }
 
-    pub async fn send(&mut self, meta: &ExchangeMeta, payload: &[u8]) -> Result<(), Error> {
-        self.send_with(|wb| {
-            wb.copy_from_slice(payload)?;
+    pub async fn send(
+        &mut self,
+        meta: impl Into<ExchangeMeta>,
+        payload: &[u8],
+    ) -> Result<(), Error> {
+        let meta = meta.into();
 
-            Ok(*meta)
+        self.send_with(|wb| {
+            wb.append(payload)?;
+
+            Ok(meta)
         })
         .await
     }
@@ -492,4 +540,17 @@ impl<'a> Exchange<'a> {
                 &packet.header.plain,
             )
     }
+}
+
+pub struct ExchangeBuffer<'a>(pub(crate) &'a mut [u8]);
+
+impl<'a> ExchangeBuffer<'a> {
+    pub async fn get(&mut self) -> Result<&mut [u8], Error> {
+        Ok(self.0)
+    }
+}
+
+pub struct ExchangeBuffers<'a> {
+    pub rx: ExchangeBuffer<'a>,
+    pub tx: ExchangeBuffer<'a>,
 }

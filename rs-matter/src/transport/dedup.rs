@@ -44,7 +44,7 @@ impl RxCtrState {
     /// or not (false).
     ///
     /// State would not be updated if the message is a duplicate.
-    pub fn update(&mut self, msg_ctr: u32, is_encrypted: bool) -> bool {
+    pub fn update(&mut self, msg_ctr: u32, is_encrypted: bool, dry_run: bool) -> bool {
         let idiff = (msg_ctr as i32) - (self.max_ctr as i32);
         let udiff = idiff.unsigned_abs();
 
@@ -58,7 +58,10 @@ impl RxCtrState {
                 // Duplicate
                 false
             } else {
-                self.insert(index);
+                if !dry_run {
+                    self.insert(index);
+                }
+
                 true
             }
         }
@@ -66,50 +69,26 @@ impl RxCtrState {
         // in either direction. Encrypted only allows in forward direction
         else if msg_ctr > self.max_ctr {
             self.max_ctr = msg_ctr;
-            if udiff < MSG_RX_STATE_BITMAP_LEN {
-                // The previous max_ctr is now the actual counter
-                self.ctr_bitmap <<= udiff;
-                self.insert(udiff - 1);
-            } else {
-                self.ctr_bitmap = 0xffff;
+            if !dry_run {
+                if udiff < MSG_RX_STATE_BITMAP_LEN {
+                    // The previous max_ctr is now the actual counter
+                    self.ctr_bitmap <<= udiff;
+                    self.insert(udiff - 1);
+                } else {
+                    self.ctr_bitmap = 0xffff;
+                }
             }
             true
         } else if !is_encrypted {
             // This is the case where the peer possibly rebooted and chose a different
             // random counter
-            self.max_ctr = msg_ctr;
-            self.ctr_bitmap = 0xffff;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Receive a message and update Rx State accordingly
-    /// Returns a bool indicating whether the message is a duplicate
-    pub fn is_duplicate(&self, msg_ctr: u32, is_encrypted: bool) -> bool {
-        let idiff = (msg_ctr as i32) - (self.max_ctr as i32);
-        let udiff = idiff.unsigned_abs();
-
-        if msg_ctr == self.max_ctr {
-            // Duplicate
-            true
-        } else if (-(MSG_RX_STATE_BITMAP_LEN as i32)..0).contains(&idiff) {
-            // In Rx Bitmap
-            let index = udiff - 1;
-            if self.contains(index) {
-                // Duplicate
-                true
-            } else {
-                false
+            if !dry_run {
+                self.max_ctr = msg_ctr;
+                self.ctr_bitmap = 0xffff;
             }
-        }
-        // Now the leftover cases are the new counter is outside of the bitmap as well as max_ctr
-        // in either direction. Encrypted only allows in forward direction
-        else if msg_ctr > self.max_ctr || !is_encrypted {
-            false
-        } else {
             true
+        } else {
+            false
         }
     }
 }

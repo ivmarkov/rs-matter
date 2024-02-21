@@ -77,7 +77,7 @@ pub const MATTER_SOCKET_BIND_ADDR: SocketAddr =
 pub struct PacketBuffers {
     tx_packet: Mutex<NoopRawMutex, TxExchangePacket>,
     rx_packet: Mutex<NoopRawMutex, RxExchangePacket>,
-    ack_packet: ExchangePacket<50>,
+    ack_packet: ExchangePacket<{ PacketHeader::HDR_RESERVE }>,
     tx_bufs: MaybeUninit<[[u8; MAX_TX_BUF_SIZE]; MAX_EXCHANGES]>,
     rx_bufs: MaybeUninit<[[u8; MAX_RX_BUF_SIZE]; MAX_EXCHANGES]>,
 }
@@ -227,7 +227,7 @@ impl<'a> Matter<'a> {
         packet_ref: &Mutex<NoopRawMutex, RxExchangePacket>,
         notification: &Notification,
         send: &Mutex<NoopRawMutex, S>,
-        ack_packet: &mut ExchangePacket<50>,
+        ack_packet: &mut ExchangePacket<{ PacketHeader::HDR_RESERVE }>,
     ) -> Result<(), Error>
     where
         R: UdpReceive,
@@ -443,6 +443,7 @@ impl<'a> Matter<'a> {
         if session.is_duplicate(&header.plain) {
             ack_header.reset();
             ack_wb.reset();
+            ack_wb.reserve(PacketHeader::HDR_RESERVE)?;
 
             MRP_STANDALONE_ACK.set_into(&mut ack_header.proto);
 

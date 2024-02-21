@@ -283,7 +283,8 @@ impl Session {
     }
 
     pub fn is_duplicate(&mut self, plain: &PlainHdr) -> bool {
-        self.rx_ctr_state
+        !self
+            .rx_ctr_state
             .update(plain.ctr, self.is_encrypted(), true)
     }
 

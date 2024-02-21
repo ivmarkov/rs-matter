@@ -99,12 +99,12 @@ impl Drop for Notification {
 }
 
 impl Notification {
-    pub async fn get<F, T>(
-        &self,
-        shared: &Mutex<NoopRawMutex, T>,
+    pub async fn get<'a, F, T>(
+        &'a self,
+        shared: &'a Mutex<NoopRawMutex, T>,
         index: u8,
         f: F,
-    ) -> DataCarrier<'_, T>
+    ) -> DataCarrier<'a, T>
     where
         F: Fn(&T) -> bool,
     {
@@ -113,7 +113,6 @@ impl Notification {
 
             if f(&*guard) {
                 break DataCarrier {
-                    shared,
                     notification: self,
                     guard,
                     index,
@@ -133,7 +132,6 @@ impl Notification {
 }
 
 pub struct DataCarrier<'a, T> {
-    shared: &'a Mutex<NoopRawMutex, T>,
     guard: MutexGuard<'a, NoopRawMutex, T>,
     notification: &'a Notification,
     index: u8,
@@ -141,7 +139,11 @@ pub struct DataCarrier<'a, T> {
 }
 
 impl<'a, T> DataCarrier<'a, T> {
-    pub fn data(&mut self) -> &mut T {
+    pub fn data(&self) -> &T {
+        &*self.guard
+    }
+
+    pub fn data_mut(&mut self) -> &mut T {
         &mut *self.guard
     }
 

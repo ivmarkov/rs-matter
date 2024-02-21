@@ -194,7 +194,7 @@ impl<'a, 'b> ReportDataStreamingResp<'a, 'b> {
         Ok(())
     }
 
-    pub fn writer(&mut self) -> TLVWriter<'_, '_> {
+    pub fn writer(&mut self) -> TLVWriter<'_, 'b> {
         TLVWriter::new(self.0)
     }
 
@@ -231,13 +231,13 @@ impl<'a, 'b> ReportDataStreamingResp<'a, 'b> {
         Ok(self.0.as_slice())
     }
 
-    fn reserve_long_read_space(&mut self) -> Result<TLVWriter<'_, '_>, Error> {
+    fn reserve_long_read_space(&mut self) -> Result<TLVWriter<'_, 'b>, Error> {
         self.0.shrink(Self::LONG_READS_TLV_RESERVE_SIZE)?;
 
         Ok(TLVWriter::new(self.0))
     }
 
-    fn restore_long_read_space(&mut self) -> Result<TLVWriter<'_, '_>, Error> {
+    fn restore_long_read_space(&mut self) -> Result<TLVWriter<'_, 'b>, Error> {
         self.0.expand(Self::LONG_READS_TLV_RESERVE_SIZE)?;
 
         Ok(TLVWriter::new(self.0))
@@ -262,7 +262,7 @@ impl<'a, 'b> WriteStreamingResp<'a, 'b> {
         Ok(())
     }
 
-    pub fn writer(&mut self) -> TLVWriter<'_, '_> {
+    pub fn writer(&mut self) -> TLVWriter<'_, 'b> {
         TLVWriter::new(self.0)
     }
 
@@ -316,7 +316,7 @@ impl<'a, 'b> InvStreamingResp<'a, 'b> {
         Ok(())
     }
 
-    pub fn writer(&mut self) -> TLVWriter<'_, '_> {
+    pub fn writer(&mut self) -> TLVWriter<'_, 'b> {
         TLVWriter::new(self.0)
     }
 
@@ -350,6 +350,10 @@ impl TimedReq {
             .checked_add(Duration::from_millis(self.timeout as _))
             .unwrap()
     }
+
+    pub fn has_timed_out(epoch: Epoch, timeout: Option<Duration>) -> bool {
+        timeout.map(|timeout| epoch() > timeout).unwrap_or(false)
+    }
 }
 
 impl SubscribeResp {
@@ -375,7 +379,7 @@ pub enum Interaction<'a> {
 
 impl<'a> Interaction<'a> {
     #[inline(always)]
-    pub fn new(opcode: OpCode, rx_data: &[u8]) -> Result<Self, Error> {
+    pub fn new(opcode: OpCode, rx_data: &'a [u8]) -> Result<Self, Error> {
         match opcode {
             OpCode::ReadRequest => {
                 let req = ReadReq::from_tlv(&get_root_node_struct(rx_data)?)?;

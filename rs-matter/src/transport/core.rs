@@ -214,7 +214,7 @@ impl<'a> Matter<'a> {
                 .get(packet_ref, 0, |td| !td.buf.is_empty())
                 .await;
 
-            let packet = dc.data();
+            let packet = dc.data_mut();
 
             let mut send = send.lock().await;
             send.send_to(
@@ -240,7 +240,7 @@ impl<'a> Matter<'a> {
         R: UdpReceive,
         S: UdpSend,
     {
-        ack_packet.buf.resize_default(50);
+        ack_packet.buf.resize_default(50).unwrap();
         let mut ack_packet_wb = WriteBuf::new(&mut ack_packet.buf);
 
         loop {
@@ -250,9 +250,9 @@ impl<'a> Matter<'a> {
 
             info!("Transport: waiting for incoming packet");
 
-            let packet = dc.data();
+            let packet = dc.data_mut();
 
-            packet.buf.resize_default(MAX_RX_BUF_SIZE);
+            packet.buf.resize_default(MAX_RX_BUF_SIZE).unwrap();
             let result = recv.recv_from(&mut packet.buf).await;
 
             match result {
@@ -332,7 +332,7 @@ impl<'a> Matter<'a> {
                     })
                     .await;
 
-                let packet = dc.data();
+                let packet = dc.data_mut();
                 packet.new_exchange = false;
 
                 ExchangeId::load(
@@ -467,7 +467,7 @@ impl<'a> Matter<'a> {
             let updated = session.update_rx_ctr_state(&header.plain);
             assert_eq!(updated, true);
 
-            exchange.recv(&header, self.epoch);
+            exchange.recv(&header, self.epoch)?;
 
             false
         } else {
@@ -482,7 +482,7 @@ impl<'a> Matter<'a> {
             let updated = session.update_rx_ctr_state(&header.plain);
             assert_eq!(updated, true);
 
-            exchange.recv(&header, self.epoch);
+            exchange.recv(&header, self.epoch)?;
 
             true
         };
@@ -524,51 +524,64 @@ impl<'a> Matter<'a> {
         Ok(true)
     }
 
-    pub(crate) async fn clone_session(&self, clone_data: &CloneData) -> Result<usize, Error> {
-        todo!()
-        // loop {
-        //     let result = self
-        //         .matter
-        //         .session_mgr
-        //         .borrow_mut()
-        //         .clone_session(clone_data);
+    pub(crate) async fn clone_session(&self, clone_data: &CloneData) -> Result<(), Error> {
+        loop {
+            let mut session_mgr = self.session_mgr.borrow_mut();
 
-        //     match result {
-        //         Err(err) if err.code() == ErrorCode::NoSpaceSessions => {
-        //             self.matter.evict_session(tx).await?
-        //         }
-        //         other => break other,
-        //     }
-        // }
+            let result = session_mgr.clone_session(clone_data);
+
+            match result {
+                Ok(_) => break,
+                Err(err) if err.code() == ErrorCode::NoSpaceSessions => {
+                    self.evict_session().await?
+                }
+                Err(other) => Err(other)?,
+            }
+        }
+
+        Ok(())
     }
 
-    // TODO
-    // pub(crate) async fn evict_session(&self, tx: &mut Packet<'_>) -> Result<(), Error> {
-    //     let sess_index = self.session_mgr.borrow().get_session_for_eviction();
-    //     if let Some(sess_index) = sess_index {
-    //         let ctx = {
-    //             create_status_report(
-    //                 tx,
-    //                 GeneralCode::Success,
-    //                 PROTO_ID_SECURE_CHANNEL as _,
-    //                 SCStatusCodes::CloseSession as _,
-    //                 None,
-    //             )?;
+    pub(crate) async fn evict_session(&self) -> Result<(), Error> {
+        let session = {
+            let mut session_mgr = self.session_mgr.borrow_mut();
 
-    //             let mut session_mgr = self.session_mgr.borrow_mut();
-    //             let session_id = session_mgr.mut_by_index(sess_index).unwrap().id();
-    //             warn!("Evicting session: {:?}", session_id);
+            let sess_index = session_mgr.get_session_for_eviction();
+            if let Some(sess_index) = sess_index {
+                Some(session_mgr.remove(sess_index))
+            } else {
+                None
+            }
+        };
 
-    //             let ctx = ExchangeCtx::prep_ephemeral(session_id, &mut session_mgr, None, tx)?;
+        if session.is_some() {
+            Ok(())
 
-    //             session_mgr.remove(sess_index);
+            // TODO
 
-    //             ctx
-    //         };
+            // let ctx = {
+            //     create_status_report(
+            //         tx,
+            //         GeneralCode::Success,
+            //         PROTO_ID_SECURE_CHANNEL as _,
+            //         SCStatusCodes::CloseSession as _,
+            //         None,
+            //     )?;
 
-    //         self.send_ephemeral(ctx, tx).await
-    //     } else {
-    //         Err(ErrorCode::NoSpaceSessions.into())
-    //     }
-    // }
+            //     let mut session_mgr = self.session_mgr.borrow_mut();
+            //     let session_id = session_mgr.mut_by_index(sess_index).unwrap().id();
+            //     warn!("Evicting session: {:?}", session_id);
+
+            //     let ctx = ExchangeCtx::prep_ephemeral(session_id, &mut session_mgr, None, tx)?;
+
+            //     session_mgr.remove(sess_index);
+
+            //     ctx
+            // };
+
+            // self.send_ephemeral(ctx, tx).await
+        } else {
+            Err(ErrorCode::NoSpaceSessions.into())
+        }
+    }
 }

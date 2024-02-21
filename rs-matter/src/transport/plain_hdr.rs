@@ -48,6 +48,17 @@ pub struct PlainHdr {
 }
 
 impl PlainHdr {
+    #[inline(always)]
+    pub const fn new() -> Self {
+        Self {
+            flags: MsgFlags::empty(),
+            sess_type: SessionType::None,
+            sess_id: 0,
+            ctr: 0,
+            peer_nodeid: None,
+        }
+    }
+
     pub fn set_dest_u64(&mut self, id: u64) {
         self.flags |= MsgFlags::DSIZ_UNICAST_NODEID;
         self.peer_nodeid = Some(id);
@@ -86,7 +97,7 @@ impl PlainHdr {
         Ok(())
     }
 
-    pub fn encode(&mut self, resp_buf: &mut WriteBuf) -> Result<(), Error> {
+    pub fn encode(&self, resp_buf: &mut WriteBuf) -> Result<(), Error> {
         resp_buf.le_u8(self.flags.bits())?;
         resp_buf.le_u16(self.sess_id)?;
         resp_buf.le_u8(0)?;

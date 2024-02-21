@@ -24,7 +24,6 @@ use core::fmt;
 use core::time::Duration;
 
 use crate::{error::*, transport::plain_hdr};
-use log::info;
 
 use super::dedup::RxCtrState;
 use super::network::Address;
@@ -283,7 +282,7 @@ impl Session {
         rx.decode_remaining(pb, self.peer_nodeid.unwrap_or_default(), self.get_dec_key())
     }
 
-    pub fn is_duplicate(&self, plain: &PlainHdr) -> bool {
+    pub fn is_duplicate(&mut self, plain: &PlainHdr) -> bool {
         self.rx_ctr_state
             .update(plain.ctr, self.is_encrypted(), true)
     }
@@ -471,25 +470,24 @@ impl SessionMgr {
         session
     }
 
-    pub fn get_or_add(
-        &mut self,
-        sess_id: u16,
-        peer_addr: Address,
-        peer_nodeid: Option<u64>,
-        is_encrypted: bool,
-    ) -> Result<&mut Session, Error> {
-        if let Some(session) = self.get_for(sess_id, peer_addr, peer_nodeid, is_encrypted) {
-            return Ok(session);
-        }
-
-        if sess_id == 0 && !is_encrypted {
-            // We must create a new session for this case
-            info!("Creating new session");
-            self.add(peer_addr, peer_nodeid)
-        } else {
-            Err(ErrorCode::NotFound.into())
-        }
-    }
+    // TODO
+    // pub fn get_or_add(
+    //     &mut self,
+    //     sess_id: u16,
+    //     peer_addr: Address,
+    //     peer_nodeid: Option<u64>,
+    //     is_encrypted: bool,
+    // ) -> Result<&mut Session, Error> {
+    //     if let Some(session) = self.get_for(sess_id, peer_addr, peer_nodeid, is_encrypted) {
+    //         Ok(session)
+    //     } else if sess_id == 0 && !is_encrypted {
+    //         // We must create a new session for this case
+    //         info!("Creating new session");
+    //         self.add(peer_addr, peer_nodeid)
+    //     } else {
+    //         Err(ErrorCode::NotFound.into())
+    //     }
+    // }
 }
 
 impl fmt::Display for SessionMgr {

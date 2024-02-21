@@ -118,12 +118,13 @@ impl ReliableMessage {
 
     pub fn is_acknowledged(&self, ctr: u32) -> bool {
         self.retrans
+            .as_ref()
             .map(|retrans| retrans.get_msg_ctr() > ctr)
             .unwrap_or(true)
     }
 
-    pub fn retrans_delay_ms(&self, ctr: u32) -> Result<Option<u64>, ()> {
-        if let Some(retrans) = self.retrans.as_ref() {
+    pub fn retrans_delay_ms(&mut self, ctr: u32) -> Result<Option<u64>, ()> {
+        if let Some(retrans) = self.retrans.as_mut() {
             if ctr >= retrans.get_msg_ctr() {
                 let delay = retrans.retrans_delay_ms().ok_or(())?;
 

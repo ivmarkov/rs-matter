@@ -22,8 +22,6 @@ use portable_atomic::{AtomicU32, Ordering};
 
 use super::objects::*;
 use crate::{
-    acl::Accessor,
-    alloc,
     error::*,
     interaction_model::{
         core::{
@@ -77,8 +75,10 @@ where
 
             match &interaction {
                 Interaction::Read(req) => self.read(&mut exchange, req, &mut tb).await?,
-                Interaction::Write(req) => self.write(&mut exchange, req, &mut tb).await?,
-                Interaction::Invoke(req) => self.invoke(&mut exchange, req, &mut tb).await?,
+                Interaction::Write(req) => self.write(&mut exchange, req, &mut tb, timeout).await?,
+                Interaction::Invoke(req) => {
+                    self.invoke(&mut exchange, req, &mut tb, timeout).await?
+                }
                 Interaction::Subscribe(req) => self.subscribe(&mut exchange, req, &mut tb).await?,
                 Interaction::Timed(req) => {
                     timeout = Some(self.timed(&mut exchange, req, &mut tb).await?)
@@ -145,7 +145,14 @@ where
         exchange: &mut Exchange<'_>,
         req: &WriteReq<'_>,
         wb: &mut WriteBuf<'_>,
+        timeout: Option<Duration>,
     ) -> Result<(), Error> {
+        if TimedReq::has_timed_out(exchange.matter.epoch, timeout) {
+            StatusResp::write(wb, IMStatusCode::Timeout)?;
+
+            return exchange.send(OpCode::StatusResponse, wb.as_slice()).await;
+        }
+
         let metadata = self.0.lock().await;
 
         let mut resp = WriteStreamingResp::new(wb);
@@ -180,24 +187,35 @@ where
         exchange: &mut Exchange<'_>,
         req: &InvReq<'_>,
         wb: &mut WriteBuf<'_>,
+        timeout: Option<Duration>,
     ) -> Result<(), Error> {
-        let resp = InvStreamingResp::new(wb);
+        if TimedReq::has_timed_out(exchange.matter.epoch, timeout) {
+            StatusResp::write(wb, IMStatusCode::Timeout)?;
 
-        resp.start(timeout)?;
+            exchange.send(OpCode::StatusResponse, wb.as_slice()).await
+        } else {
+            let mut resp = InvStreamingResp::new(wb);
 
-        let accessor = exchange.accessor()?;
+            if resp.timeout(req, timeout)? {
+                exchange.send(OpCode::StatusResponse, wb.as_slice()).await
+            } else {
+                resp.start(req)?;
 
-        let metadata = self.0.lock().await;
+                let accessor = exchange.accessor()?;
 
-        let node = metadata.node();
+                let metadata = self.0.lock().await;
 
-        for item in node.invoke(&req, &accessor) {
-            CmdDataEncoder::handle(&item, &self.0, &mut resp.writer(), exchange).await?;
+                let node = metadata.node();
+
+                for item in node.invoke(&req, &accessor) {
+                    CmdDataEncoder::handle(&item, &self.0, &mut resp.writer(), exchange).await?;
+                }
+
+                exchange
+                    .send(OpCode::InvokeResponse, resp.finish(req)?)
+                    .await
+            }
         }
-
-        exchange
-            .send(OpCode::InvokeResponse, resp.finish(req)?)
-            .await
     }
 
     async fn subscribe(

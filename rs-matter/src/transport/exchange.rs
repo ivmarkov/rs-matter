@@ -21,15 +21,15 @@ use super::{
     mrp::ReliableMessage,
     network::Address,
     packet::{PacketHeader, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
-    plain_hdr::{self, PlainHdr},
-    proto_hdr::{self, ProtoHdr},
+    plain_hdr::PlainHdr,
+    proto_hdr::ProtoHdr,
     session::{Session, SessionId},
 };
 
 pub const MAX_EXCHANGES: usize = 8;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
-pub(crate) enum Role {
+pub enum Role {
     #[default]
     Initiator = 0,
     Responder = 1,
@@ -71,8 +71,8 @@ pub struct ExchangeEntry {
 }
 
 impl ExchangeEntry {
-    pub fn recv(&mut self, header: &PacketHeader, epoch: Epoch) {
-        self.mrp.recv(header, epoch);
+    pub fn recv(&mut self, header: &PacketHeader, epoch: Epoch) -> Result<(), Error> {
+        self.mrp.recv(header, epoch)
     }
 
     pub fn pre_send(&mut self, plain: &PlainHdr, proto: &mut ProtoHdr) -> Result<(), Error> {
@@ -99,14 +99,14 @@ impl ExchangeEntry {
 
 pub struct ExchangeMgr {
     exchanges: heapless::Vec<ExchangeEntry, MAX_EXCHANGES>,
-    epoch: Epoch,
+    _epoch: Epoch,
 }
 
 impl ExchangeMgr {
     pub const fn new(epoch: Epoch) -> Self {
         Self {
             exchanges: heapless::Vec::new(),
-            epoch,
+            _epoch: epoch,
         }
     }
 
@@ -184,8 +184,8 @@ impl ExchangeMeta {
         num::FromPrimitive::from_u8(self.proto_opcode).ok_or(ErrorCode::Invalid.into())
     }
 
-    pub fn check_opcode<T: num::FromPrimitive>(&self, opcode: T) -> Result<(), Error> {
-        if matches!(self.opcode::<T>()?, opcode) {
+    pub fn check_opcode<T: num::FromPrimitive + PartialEq>(&self, opcode: T) -> Result<(), Error> {
+        if self.opcode::<T>()? == opcode {
             Ok(())
         } else {
             Err(ErrorCode::Invalid.into())
@@ -212,10 +212,10 @@ impl ExchangeMeta {
     }
 }
 
-pub(crate) type RxExchangePacket = ExchangePacket<MAX_RX_BUF_SIZE>;
-pub(crate) type TxExchangePacket = ExchangePacket<MAX_TX_BUF_SIZE>;
+pub type RxExchangePacket = ExchangePacket<MAX_RX_BUF_SIZE>;
+pub type TxExchangePacket = ExchangePacket<MAX_TX_BUF_SIZE>;
 
-pub(crate) struct ExchangePacket<const N: usize> {
+pub struct ExchangePacket<const N: usize> {
     pub(crate) new_exchange: bool,
     pub(crate) peer: Address,
     pub(crate) header: PacketHeader,
@@ -225,10 +225,10 @@ pub(crate) struct ExchangePacket<const N: usize> {
 
 impl<const N: usize> ExchangePacket<N> {
     #[inline(always)]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             new_exchange: false,
-            peer: Address::default(),
+            peer: Address::new(),
             header: PacketHeader::new(),
             buf: heapless::Vec::new(),
             payload_start: 0,
@@ -279,7 +279,7 @@ impl<'a, 'b> Rx<'a, 'b> {
 impl<'a, 'b> Drop for Rx<'a, 'b> {
     fn drop(&mut self) {
         if self.consumed {
-            self.dc.data().buf.clear();
+            self.dc.data_mut().buf.clear();
         }
     }
 }
@@ -324,14 +324,14 @@ impl<'a, 'b> TxPayload<'a, 'b> {
 }
 
 impl<'a, 'b> Tx<'a, 'b> {
-    pub fn payload(&mut self) -> Result<TxPayload<'_, 'b>, Error> {
+    pub fn payload(&mut self) -> Result<TxPayload<'a, '_>, Error> {
         self.completed = false;
 
-        let packet = self.dc.data();
-        packet.buf.resize_default(MAX_TX_BUF_SIZE);
+        let packet = self.dc.data_mut();
+        packet.buf.resize_default(MAX_TX_BUF_SIZE).unwrap();
 
         let mut writebuf = WriteBuf::new(&mut packet.buf);
-        writebuf.reserve(plain_hdr::max_plain_hdr_len() + proto_hdr::max_proto_hdr_len())?;
+        writebuf.reserve(PacketHeader::HDR_RESERVE)?;
 
         Ok(TxPayload {
             id: self.id,
@@ -364,7 +364,7 @@ impl<'a, 'b> Tx<'a, 'b> {
 impl<'a, 'b> Drop for Tx<'a, 'b> {
     fn drop(&mut self) {
         if !self.completed {
-            self.dc.data().buf.clear();
+            self.dc.data_mut().buf.clear();
         }
     }
 }

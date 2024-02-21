@@ -42,10 +42,14 @@ pub struct PacketHeader {
 }
 
 impl PacketHeader {
-    const HDR_RESERVE: usize = plain_hdr::max_plain_hdr_len() + proto_hdr::max_proto_hdr_len();
+    pub const HDR_RESERVE: usize = plain_hdr::max_plain_hdr_len() + proto_hdr::max_proto_hdr_len();
 
-    pub fn new() -> Self {
-        Default::default()
+    #[inline(always)]
+    pub const fn new() -> Self {
+        Self {
+            plain: PlainHdr::new(),
+            proto: ProtoHdr::new(),
+        }
     }
 
     pub fn reset(&mut self) {
@@ -90,7 +94,7 @@ impl PacketHeader {
         // Generate plain-text header
         if plain_text {
             if let Some(d) = peer_nodeid {
-                self.plain.set_dest_u64(d);
+                // TODO XXX FIXME self.plain.set_dest_u64(d);
             }
         }
 

@@ -33,6 +33,10 @@ pub enum Address {
 }
 
 impl Address {
+    pub const fn new() -> Self {
+        Self::Udp(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+    }
+
     pub fn unwrap_udp(self) -> SocketAddr {
         match self {
             Self::Udp(addr) => addr,
@@ -42,7 +46,7 @@ impl Address {
 
 impl Default for Address {
     fn default() -> Self {
-        Address::Udp(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+        Self::new()
     }
 }
 

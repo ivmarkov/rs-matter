@@ -21,7 +21,7 @@ use crate::error::Error;
 use crate::transport::exchange::{Exchange, ExchangeMeta};
 use crate::utils::writebuf::WriteBuf;
 
-use super::status_report::{write, GeneralCode, SC_META};
+use super::status_report::{write, GeneralCode};
 
 /* Interaction Model ID as per the Matter Spec */
 pub const PROTO_ID_SECURE_CHANNEL: u16 = 0x00;
@@ -105,5 +105,8 @@ pub fn sc_write(
         proto_data,
     )?;
 
-    Ok(SC_META)
+    let mut meta: ExchangeMeta = OpCode::StatusReport.into();
+    meta.reliable = reliable;
+
+    Ok(meta)
 }

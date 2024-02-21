@@ -47,12 +47,24 @@ pub struct ProtoHdr {
 }
 
 impl ProtoHdr {
+    #[inline(always)]
+    pub const fn new() -> Self {
+        Self {
+            exch_id: 0,
+            exch_flags: ExchFlags::empty(),
+            proto_id: 0,
+            proto_opcode: 0,
+            proto_vendor_id: None,
+            ack_msg_ctr: None,
+        }
+    }
+
     pub fn opcode<T: num::FromPrimitive>(&self) -> Result<T, Error> {
         num::FromPrimitive::from_u8(self.proto_opcode).ok_or(ErrorCode::Invalid.into())
     }
 
-    pub fn check_opcode<T: num::FromPrimitive>(&self, opcode: T) -> Result<(), Error> {
-        if matches!(self.opcode::<T>()?, opcode) {
+    pub fn check_opcode<T: num::FromPrimitive + PartialEq>(&self, opcode: T) -> Result<(), Error> {
+        if self.opcode::<T>()? == opcode {
             Ok(())
         } else {
             Err(ErrorCode::Invalid.into())
@@ -133,7 +145,7 @@ impl ProtoHdr {
         Ok(())
     }
 
-    pub fn encode(&mut self, resp_buf: &mut WriteBuf) -> Result<(), Error> {
+    pub fn encode(&self, resp_buf: &mut WriteBuf) -> Result<(), Error> {
         info!("[encode] {}", self);
         resp_buf.le_u8(self.exch_flags.bits())?;
         resp_buf.le_u8(self.proto_opcode)?;

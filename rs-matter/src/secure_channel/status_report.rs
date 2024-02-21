@@ -15,8 +15,7 @@
  *    limitations under the License.
  */
 
-use super::common::*;
-use crate::{error::Error, transport::exchange::ExchangeMeta, utils::writebuf::WriteBuf};
+use crate::{error::Error, utils::writebuf::WriteBuf};
 
 #[allow(dead_code)]
 #[derive(Debug, Copy, Clone)]
@@ -39,12 +38,6 @@ pub enum GeneralCode {
     PermissionDenied = 15,
     DataLoss = 16,
 }
-
-pub const SC_META: ExchangeMeta = ExchangeMeta {
-    proto_id: PROTO_ID_SECURE_CHANNEL,
-    proto_opcode: OpCode::StatusReport as u8,
-    reliable: true,
-};
 
 pub fn write(
     wb: &mut WriteBuf,

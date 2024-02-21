@@ -80,9 +80,7 @@ impl PacketHeader {
     pub fn encode(
         &self,
         wb: &mut WriteBuf,
-        peer_nodeid: Option<u64>,
         local_nodeid: u64,
-        plain_text: bool,
         enc_key: Option<&[u8]>,
     ) -> Result<(), Error> {
         // Generate encrypted header
@@ -90,13 +88,6 @@ impl PacketHeader {
         let mut write_buf = WriteBuf::new(&mut tmp_buf);
         self.proto.encode(&mut write_buf)?;
         wb.prepend(write_buf.as_slice())?;
-
-        // Generate plain-text header
-        if plain_text {
-            if let Some(d) = peer_nodeid {
-                // TODO XXX FIXME self.plain.set_dest_u64(d);
-            }
-        }
 
         let mut tmp_buf = [0_u8; plain_hdr::max_plain_hdr_len()];
         let mut write_buf = WriteBuf::new(&mut tmp_buf);

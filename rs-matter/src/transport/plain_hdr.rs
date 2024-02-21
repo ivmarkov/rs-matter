@@ -59,9 +59,14 @@ impl PlainHdr {
         }
     }
 
-    pub fn set_dest_u64(&mut self, id: u64) {
-        self.flags |= MsgFlags::DSIZ_UNICAST_NODEID;
-        self.peer_nodeid = Some(id);
+    pub fn set_dest_u64(&mut self, id: Option<u64>) {
+        if let Some(id) = id {
+            self.flags |= MsgFlags::DSIZ_UNICAST_NODEID;
+            self.peer_nodeid = Some(id);
+        } else {
+            self.flags &= MsgFlags::DSIZ_UNICAST_NODEID;
+            self.peer_nodeid = None;
+        }
     }
 
     pub fn get_src_u64(&self) -> Option<u64> {

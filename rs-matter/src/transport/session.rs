@@ -23,12 +23,12 @@ use crate::utils::writebuf::WriteBuf;
 use core::fmt;
 use core::time::Duration;
 
-use crate::{error::*, transport::plain_hdr};
+use crate::error::*;
 
 use super::dedup::RxCtrState;
 use super::network::Address;
 use super::packet::PacketHeader;
-use super::plain_hdr::PlainHdr;
+use super::plain_hdr::{PlainHdr, SessionType};
 
 pub const MAX_CAT_IDS_PER_NOC: usize = 3;
 pub type NocCatIds = [u32; MAX_CAT_IDS_PER_NOC];
@@ -295,19 +295,16 @@ impl Session {
     pub fn pre_send(&mut self, ctr: Option<u32>, plain: &mut PlainHdr) {
         plain.sess_id = self.get_peer_sess_id();
         plain.ctr = ctr.unwrap_or(self.get_msg_ctr());
-        if self.is_encrypted() {
-            plain.sess_type = plain_hdr::SessionType::Encrypted;
-        }
+        plain.sess_type = if self.is_encrypted() {
+            SessionType::Encrypted
+        } else {
+            SessionType::None
+        };
+        plain.set_dest_u64(self.is_encrypted().then_some(self.peer_nodeid).flatten());
     }
 
     pub fn encode(&self, tx: &PacketHeader, wb: &mut WriteBuf) -> Result<(), Error> {
-        tx.encode(
-            wb,
-            self.peer_nodeid,
-            self.local_nodeid,
-            self.mode == SessionMode::PlainText,
-            self.get_enc_key(),
-        )
+        tx.encode(wb, self.local_nodeid, self.get_enc_key())
     }
 
     pub fn update_last_used(&mut self, epoch: Epoch) {

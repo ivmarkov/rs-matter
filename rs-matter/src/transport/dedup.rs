@@ -39,6 +39,11 @@ impl RxCtrState {
         self.ctr_bitmap |= 1 << bit_number;
     }
 
+    // Only for unit tests
+    pub(crate) fn recv(&mut self, msg_ctr: u32, is_encrypted: bool) -> bool {
+        !self.update(msg_ctr, is_encrypted, false)
+    }
+
     /// Update the Rx State for a received message.
     /// Returns a bool indicating whether the state was updated (true)
     /// or not (false).

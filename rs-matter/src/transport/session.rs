@@ -511,13 +511,11 @@ mod tests {
     #[test]
     fn test_next_sess_id_doesnt_reuse() {
         let mut sm = SessionMgr::new(dummy_epoch, dummy_rand);
-        let sess_idx = sm.add(Address::default(), None).unwrap();
-        let sess = sm.mut_by_index(sess_idx).unwrap();
+        let sess = sm.add(Address::default(), None).unwrap();
         sess.set_local_sess_id(1);
         assert_eq!(sm.get_next_sess_id(), 2);
         assert_eq!(sm.get_next_sess_id(), 3);
-        let sess_idx = sm.add(Address::default(), None).unwrap();
-        let sess = sm.mut_by_index(sess_idx).unwrap();
+        let sess = sm.add(Address::default(), None).unwrap();
         sess.set_local_sess_id(4);
         assert_eq!(sm.get_next_sess_id(), 5);
     }
@@ -525,8 +523,7 @@ mod tests {
     #[test]
     fn test_next_sess_id_overflows() {
         let mut sm = SessionMgr::new(dummy_epoch, dummy_rand);
-        let sess_idx = sm.add(Address::default(), None).unwrap();
-        let sess = sm.mut_by_index(sess_idx).unwrap();
+        let sess = sm.add(Address::default(), None).unwrap();
         sess.set_local_sess_id(1);
         assert_eq!(sm.get_next_sess_id(), 2);
         sm.next_sess_id = 65534;

@@ -53,11 +53,15 @@ use rs_matter::{
     tlv::{TLVWriter, TagType, ToTLV},
     transport::{
         core::PacketBuffers,
-        network::{Address, Ipv4Addr, SocketAddr, SocketAddrV4, UdpBuffers, UdpReceive, UdpSend},
+        network::{Address, Ipv4Addr, SocketAddr, SocketAddrV4, UdpReceive, UdpSend},
         packet::{PacketHeader, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
         session::{CaseDetails, CloneData, NocCatIds, SessionMode},
     },
-    utils::select::{EitherUnwrap, Notification},
+    utils::{
+        parsebuf::ParseBuf,
+        select::{EitherUnwrap, Notification},
+        writebuf::WriteBuf,
+    },
     CommissioningData, Matter, MATTER_PORT,
 };
 
@@ -261,12 +265,13 @@ impl<'a> ImEngine<'a> {
             SessionMode::Case(CaseDetails::new(1, &self.cat_ids)),
         );
 
-        let sess_idx = self
+        let mut msg_ctr = self
             .matter
             .session_mgr
             .borrow_mut()
             .clone_session(&clone_data)
-            .unwrap();
+            .unwrap()
+            .get_msg_ctr();
 
         let mut send_channel_buf = [heapless::Vec::new(); 1];
         let mut recv_channel_buf = [heapless::Vec::new(); 1];
@@ -275,14 +280,6 @@ impl<'a> ImEngine<'a> {
         let mut recv_channel = Channel::<NoopRawMutex, _>::new(&mut recv_channel_buf);
 
         let handler = &handler;
-
-        let mut msg_ctr = self
-            .matter
-            .session_mgr
-            .borrow_mut()
-            .mut_by_index(sess_idx)
-            .unwrap()
-            .get_msg_ctr();
 
         let resp_notif = Notification::new();
         let resp_notif = &resp_notif;
@@ -293,15 +290,11 @@ impl<'a> ImEngine<'a> {
         let (send, mut send_dest) = send_channel.split();
         let (mut recv_dest, recv) = recv_channel.split();
 
-        let mut udp_buffers = UdpBuffers::new();
-        let udp_buffers = &mut udp_buffers;
-
         embassy_futures::block_on(async move {
             select3(
                 self.matter.run(
                     UdpSender(send),
                     UdpReceiver(recv),
-                    udp_buffers,
                     buffers,
                     CommissioningData {
                         // TODO: Hard-coded for now
@@ -336,19 +329,20 @@ impl<'a> ImEngine<'a> {
 
                     while out.len() < input.len() {
                         let vec = send_dest.receive().await;
+                        let mut pb = ParseBuf::new(vec);
 
-                        let mut rx = PacketHeader::new_rx(vec);
+                        let mut rx = PacketHeader::new();
 
-                        rx.plain_hdr_decode()?;
-                        rx.proto_decode(IM_ENGINE_REMOTE_PEER_ID, Some(&[0u8; 16]))?;
+                        rx.decode_plain_hdr(&mut pb)?;
+                        rx.decode_remaining(&mut pb, IM_ENGINE_REMOTE_PEER_ID, Some(&[0u8; 16]))?;
 
-                        if rx.get_proto_id() != PROTO_ID_SECURE_CHANNEL
-                            || rx.get_proto_opcode::<secure_channel::common::OpCode>()?
+                        if rx.proto.proto_id != PROTO_ID_SECURE_CHANNEL
+                            || rx.proto.opcode::<secure_channel::common::OpCode>()?
                                 != secure_channel::common::OpCode::MRPStandAloneAck
                         {
                             out.push(ImOutput {
-                                action: rx.get_proto_opcode()?,
-                                data: heapless::Vec::from_slice(rx.as_slice())
+                                action: rx.proto.opcode()?,
+                                data: heapless::Vec::from_slice(pb.as_slice())
                                     .map_err(|_| ErrorCode::NoSpace)?,
                             })
                             .map_err(|_| ErrorCode::NoSpace)?;
@@ -377,15 +371,15 @@ impl<'a> ImEngine<'a> {
     ) -> Result<(), Error> {
         let vec = sender.send().await;
 
-        vec.clear();
-        vec.extend(core::iter::repeat(0).take(MAX_RX_BUF_SIZE));
+        vec.resize_default(MAX_RX_BUF_SIZE).unwrap();
+        let mut wb = WriteBuf::new(vec);
+        wb.reserve(PacketHeader::HDR_RESERVE).unwrap();
 
-        let mut tx = PacketHeader::new_tx(vec);
+        let mut tx = PacketHeader::new();
+        tx.proto.proto_id = PROTO_ID_INTERACTION_MODEL;
+        tx.proto.proto_opcode = input.action as u8;
 
-        tx.set_proto_id(PROTO_ID_INTERACTION_MODEL);
-        tx.set_proto_opcode(input.action as u8);
-
-        let mut tw = TLVWriter::new(tx.get_writebuf()?);
+        let mut tw = TLVWriter::new(&mut wb);
 
         input.data.to_tlv(&mut tw, TagType::Anonymous)?;
 
@@ -397,16 +391,10 @@ impl<'a> ImEngine<'a> {
             tx.proto.set_ack(msg_ctr - 1);
         }
 
-        tx.proto_encode(
-            Address::default(),
-            Some(IM_ENGINE_REMOTE_PEER_ID),
-            IM_ENGINE_PEER_ID,
-            false,
-            Some(&[0u8; 16]),
-        )?;
+        tx.encode(&mut wb, IM_ENGINE_PEER_ID, Some(&[0u8; 16]))?;
 
-        let start = tx.get_writebuf()?.get_start();
-        let end = tx.get_writebuf()?.get_tail();
+        let start = wb.get_start();
+        let end = wb.get_tail();
 
         if start > 0 {
             for offset in 0..(end - start) {

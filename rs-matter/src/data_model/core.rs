@@ -37,14 +37,13 @@ use crate::{
     utils::writebuf::WriteBuf,
 };
 
+static SUBS_ID: AtomicU32 = AtomicU32::new(1);
+
 /// The Maximum number of expanded writer request per transaction
 ///
 /// The write requests are first wildcard-expanded, and these many number of
 /// write requests per-transaction will be supported.
 const MAX_WRITE_ATTRS_IN_ONE_TRANS: usize = 7;
-
-// TODO: For now...
-static SUBS_ID: AtomicU32 = AtomicU32::new(1);
 
 pub struct DataModel<T>(T);
 

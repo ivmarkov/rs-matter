@@ -17,10 +17,12 @@
 
 use core::time::Duration;
 
-use crate::error::*;
-use crate::tlv::{get_root_node_struct, FromTLV, TLVArray, TLVElement, TLVWriter, TagType, ToTLV};
-use crate::transport::exchange::ExchangeMeta;
-use crate::utils::{epoch::Epoch, writebuf::WriteBuf};
+use crate::{
+    error::*,
+    tlv::{get_root_node_struct, FromTLV, TLVArray, TLVElement, TLVWriter, TagType, ToTLV},
+    transport::exchange::ExchangeMeta,
+    utils::{epoch::Epoch, writebuf::WriteBuf},
+};
 
 use log::error;
 
@@ -140,6 +142,8 @@ impl From<OpCode> for ExchangeMeta {
 /* Interaction Model ID as per the Matter Spec */
 pub const PROTO_ID_INTERACTION_MODEL: u16 = 0x01;
 
+/// A wrapper enum for `ReadReq` and `SubscribeReq` that allows downstream code to
+/// treat the two in a unified manner with regards to `OpCode::ReportDataResp` type responses.
 pub enum ReportDataReq<'a> {
     Read(&'a ReadReq<'a>),
     Subscribe(&'a SubscribeReq<'a>),
@@ -168,6 +172,8 @@ impl<'a> ReportDataReq<'a> {
     }
 }
 
+/// A streaming equivalent of `ReportDataResp` that provides means for constructing large responses
+/// in an incremental fashion, with potential `await`s which the response is being constructed.
 pub struct ReportDataStreamingResp<'a, 'b>(&'a mut WriteBuf<'b>);
 
 impl<'a, 'b> ReportDataStreamingResp<'a, 'b> {
@@ -244,6 +250,8 @@ impl<'a, 'b> ReportDataStreamingResp<'a, 'b> {
     }
 }
 
+/// A streaming equivalent of `WriteResp` that provides means for constructing large responses
+/// in an incremental fashion, with potential `await`s which the response is being constructed.
 pub struct WriteStreamingResp<'a, 'b>(&'a mut WriteBuf<'b>);
 
 impl<'a, 'b> WriteStreamingResp<'a, 'b> {
@@ -276,6 +284,8 @@ impl<'a, 'b> WriteStreamingResp<'a, 'b> {
     }
 }
 
+/// A streaming equivalent of `InvResp` that provides means for constructing large responses
+/// in an incremental fashion, with potential `await`s which the response is being constructed.
 pub struct InvStreamingResp<'a, 'b>(&'a mut WriteBuf<'b>);
 
 impl<'a, 'b> InvStreamingResp<'a, 'b> {
@@ -369,6 +379,7 @@ impl SubscribeResp {
     }
 }
 
+/// A wrapper enum for all possible interaction model requests.
 pub enum Interaction<'a> {
     Read(ReadReq<'a>),
     Write(WriteReq<'a>),

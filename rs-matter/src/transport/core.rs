@@ -24,15 +24,6 @@ use embassy_sync::mutex::Mutex;
 
 use log::{error, info, warn};
 
-use crate::transport::exchange::{
-    Exchange, ExchangeBuffer, ExchangeBuffers, ExchangePacket, Role, RxExchangePacket,
-    TxExchangePacket,
-};
-use crate::transport::network::Address;
-use crate::transport::packet::PacketHeader;
-use crate::utils::notification::Notification;
-use crate::utils::parsebuf::ParseBuf;
-use crate::utils::writebuf::WriteBuf;
 use crate::{
     data_model::{core::DataModel, objects::DataModelHandler},
     error::{Error, ErrorCode},
@@ -41,17 +32,19 @@ use crate::{
         common::{OpCode, PROTO_ID_SECURE_CHANNEL},
         core::SecureChannel,
     },
-    utils::select::EitherUnwrap,
+    utils::{
+        notification::Notification, parsebuf::ParseBuf, select::EitherUnwrap, writebuf::WriteBuf,
+    },
     CommissioningData, Matter, MATTER_PORT,
 };
 
-use super::exchange::ExchangeMeta;
-use super::packet::{MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE};
-use super::session::CloneData;
-use super::{
-    exchange::{ExchangeId, MAX_EXCHANGES},
-    network::{Ipv6Addr, SocketAddr, SocketAddrV6, UdpReceive, UdpSend},
+use super::exchange::{
+    Exchange, ExchangeBuffer, ExchangeBuffers, ExchangeId, ExchangeMeta, ExchangePacket, Role,
+    RxExchangePacket, TxExchangePacket, MAX_EXCHANGES,
 };
+use super::network::{Address, Ipv6Addr, SocketAddr, SocketAddrV6, UdpReceive, UdpSend};
+use super::packet::{PacketHeader, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE};
+use super::session::CloneData;
 
 #[derive(Debug)]
 enum OpCodeDescriptor {

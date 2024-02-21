@@ -43,7 +43,7 @@ impl RxCtrState {
     /// Returns a bool indicating whether the state was updated (true)
     /// or not (false).
     ///
-    /// State would not be updated if the message is a duplicate.
+    /// State would not be updated if the message is a duplicate, or if `dry_run` is true.
     pub fn update(&mut self, msg_ctr: u32, is_encrypted: bool, dry_run: bool) -> bool {
         let idiff = (msg_ctr as i32) - (self.max_ctr as i32);
         let udiff = idiff.unsigned_abs();

@@ -355,14 +355,10 @@ impl StatusResp {
 }
 
 impl TimedReq {
-    pub fn timeout(&self, epoch: Epoch) -> Duration {
+    pub fn timeout_instant(&self, epoch: Epoch) -> Duration {
         epoch()
             .checked_add(Duration::from_millis(self.timeout as _))
             .unwrap()
-    }
-
-    pub fn has_timed_out(epoch: Epoch, timeout: Option<Duration>) -> bool {
-        timeout.map(|timeout| epoch() > timeout).unwrap_or(false)
     }
 }
 

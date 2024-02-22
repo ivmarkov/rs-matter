@@ -43,7 +43,7 @@ use super::exchange::{
     RxExchangePacket, TxExchangePacket, MAX_EXCHANGES,
 };
 use super::network::{Address, Ipv6Addr, SocketAddr, SocketAddrV6, UdpReceive, UdpSend};
-use super::packet::{PacketHeader, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE};
+use super::packet::{PacketHdr, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE};
 use super::session::CloneData;
 
 #[derive(Debug)]
@@ -77,7 +77,7 @@ pub const MATTER_SOCKET_BIND_ADDR: SocketAddr =
 pub struct PacketBuffers {
     tx_packet: Mutex<NoopRawMutex, TxExchangePacket>,
     rx_packet: Mutex<NoopRawMutex, RxExchangePacket>,
-    ack_packet: ExchangePacket<{ PacketHeader::HDR_RESERVE }>,
+    ack_packet: ExchangePacket<{ PacketHdr::HDR_RESERVE }>,
     tx_bufs: MaybeUninit<[[u8; MAX_TX_BUF_SIZE]; MAX_EXCHANGES]>,
     rx_bufs: MaybeUninit<[[u8; MAX_RX_BUF_SIZE]; MAX_EXCHANGES]>,
 }
@@ -167,7 +167,7 @@ impl<'a> Matter<'a> {
         info!("Handlers size: {}", core::mem::size_of_val(&handlers));
 
         for index in 0..MAX_EXCHANGES {
-            let handler_id = index as u8;
+            let handler_id = (index as u8) + 2;
 
             let rb = unsafe {
                 core::slice::from_raw_parts_mut(rx_bufs[index].as_mut_ptr(), MAX_RX_BUF_SIZE)
@@ -204,7 +204,7 @@ impl<'a> Matter<'a> {
     {
         loop {
             let mut dc = notification
-                .get(packet_ref, 0, |td| !td.buf.is_empty())
+                .get(packet_ref, 1, |td| !td.buf.is_empty())
                 .await;
 
             let packet = dc.data_mut();
@@ -227,18 +227,21 @@ impl<'a> Matter<'a> {
         packet_ref: &Mutex<NoopRawMutex, RxExchangePacket>,
         notification: &Notification,
         send: &Mutex<NoopRawMutex, S>,
-        ack_packet: &mut ExchangePacket<{ PacketHeader::HDR_RESERVE }>,
+        ack_packet: &mut ExchangePacket<{ PacketHdr::HDR_RESERVE }>,
     ) -> Result<(), Error>
     where
         R: UdpReceive,
         S: UdpSend,
     {
-        ack_packet.buf.resize_default(50).unwrap();
+        ack_packet
+            .buf
+            .resize_default(PacketHdr::HDR_RESERVE)
+            .unwrap();
         let mut ack_packet_wb = WriteBuf::new(&mut ack_packet.buf);
 
         loop {
             let mut dc = notification
-                .get(packet_ref, 1, |packet| packet.buf.is_empty())
+                .get(packet_ref, 0, |packet| packet.buf.is_empty())
                 .await;
 
             info!("Transport: waiting for incoming packet");
@@ -419,9 +422,9 @@ impl<'a> Matter<'a> {
     fn process_rx(
         &self,
         peer: Address,
-        header: &mut PacketHeader,
+        header: &mut PacketHdr,
         pb: &mut ParseBuf,
-        ack_header: &mut PacketHeader,
+        ack_header: &mut PacketHdr,
         ack_wb: &mut WriteBuf,
     ) -> Result<bool, Error> {
         header.reset();
@@ -433,7 +436,7 @@ impl<'a> Matter<'a> {
             .get_for(
                 header.plain.sess_id,
                 peer,
-                header.plain.get_src_u64(),
+                header.plain.get_src_nodeid(),
                 header.plain.is_encrypted(),
             )
             .ok_or(ErrorCode::NoSession)?;
@@ -443,7 +446,7 @@ impl<'a> Matter<'a> {
         if session.is_duplicate(&header.plain) {
             ack_header.reset();
             ack_wb.reset();
-            ack_wb.reserve(PacketHeader::HDR_RESERVE)?;
+            ack_wb.reserve(PacketHdr::HDR_RESERVE)?;
 
             MRP_STANDALONE_ACK.set_into(&mut ack_header.proto);
 
@@ -458,7 +461,11 @@ impl<'a> Matter<'a> {
         let exchange = exchange_mgr.get(&id);
 
         let new = if let Some(exchange) = exchange {
-            let updated = session.update_rx_ctr_state(&header.plain);
+            if exchange.role != Role::Responder {
+                Err(ErrorCode::NoExchange)?;
+            }
+
+            let updated = session.recv(&header.plain);
             assert_eq!(updated, true);
 
             exchange.recv(&header, self.epoch)?;
@@ -470,10 +477,10 @@ impl<'a> Matter<'a> {
             }
 
             let exchange = exchange_mgr
-                .add(id, Role::Responder)
+                .add(id, Role::complementary(header.proto.is_initiator()))
                 .ok_or(ErrorCode::NoSpaceExchanges)?;
 
-            let updated = session.update_rx_ctr_state(&header.plain);
+            let updated = session.recv(&header.plain);
             assert_eq!(updated, true);
 
             exchange.recv(&header, self.epoch)?;
@@ -488,10 +495,10 @@ impl<'a> Matter<'a> {
         &self,
         id: &ExchangeId,
         meta: ExchangeMeta,
-        retrans_ctr: Option<u32>,
-        header: &mut PacketHeader,
+        ctr: Option<u32>,
+        header: &mut PacketHdr,
         wb: &mut WriteBuf,
-    ) -> Result<bool, Error> {
+    ) -> Result<(), Error> {
         let mut session_mgr = self.session_mgr.borrow_mut();
         let session = session_mgr
             .get(&id.session_id)
@@ -500,22 +507,14 @@ impl<'a> Matter<'a> {
         let mut exchange_mgr = self.exchange_mgr.borrow_mut();
         let exchange = exchange_mgr.get(id).ok_or(ErrorCode::NoExchange)?;
 
-        if let Some(ctr) = retrans_ctr {
-            if exchange.is_acknowledged(ctr) {
-                return Ok(false);
-            }
-        }
-
         header.reset();
 
-        session.pre_send(retrans_ctr, &mut header.plain);
-        exchange.pre_send(&header.plain, &mut header.proto)?; // Retrans ctr mismatches should never happen
+        session.pre_send(ctr, &mut header.plain);
+        exchange.pre_send(&header.plain, &mut header.proto)?;
 
         meta.set_into(&mut header.proto);
 
-        session.encode(&header, wb)?;
-
-        Ok(true)
+        session.encode(&header, wb)
     }
 
     pub(crate) async fn clone_session(&self, clone_data: &CloneData) -> Result<(), Error> {

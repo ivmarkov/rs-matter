@@ -39,9 +39,16 @@ impl RxCtrState {
         self.ctr_bitmap |= 1 << bit_number;
     }
 
-    // Only for unit tests
-    pub(crate) fn recv(&mut self, msg_ctr: u32, is_encrypted: bool) -> bool {
-        !self.update(msg_ctr, is_encrypted, false)
+    /// Receive a message and update Rx State accordingly
+    /// Returns a bool indicating whether the message updated the internal counter (true)
+    /// or whether the counter was not updated because the message was a duplicate (false)
+    pub fn recv(&mut self, msg_ctr: u32, is_encrypted: bool) -> bool {
+        self.update(msg_ctr, is_encrypted, false)
+    }
+
+    /// Check whether the message is a duplicate
+    pub fn is_duplicate(&mut self, msg_ctr: u32, is_encrypted: bool) -> bool {
+        !self.update(msg_ctr, is_encrypted, true)
     }
 
     /// Update the Rx State for a received message.
@@ -49,7 +56,7 @@ impl RxCtrState {
     /// or not (false).
     ///
     /// State would not be updated if the message is a duplicate, or if `dry_run` is true.
-    pub fn update(&mut self, msg_ctr: u32, is_encrypted: bool, dry_run: bool) -> bool {
+    fn update(&mut self, msg_ctr: u32, is_encrypted: bool, dry_run: bool) -> bool {
         let idiff = (msg_ctr as i32) - (self.max_ctr as i32);
         let udiff = idiff.unsigned_abs();
 
@@ -73,8 +80,8 @@ impl RxCtrState {
         // Now the leftover cases are the new counter is outside of the bitmap as well as max_ctr
         // in either direction. Encrypted only allows in forward direction
         else if msg_ctr > self.max_ctr {
-            self.max_ctr = msg_ctr;
             if !dry_run {
+                self.max_ctr = msg_ctr;
                 if udiff < MSG_RX_STATE_BITMAP_LEN {
                     // The previous max_ctr is now the actual counter
                     self.ctr_bitmap <<= udiff;
@@ -109,11 +116,11 @@ mod tests {
     const NOT_ENCRYPTED: bool = false;
 
     fn assert_ndup(b: bool) {
-        assert!(!b);
+        assert!(b);
     }
 
     fn assert_dup(b: bool) {
-        assert!(b);
+        assert!(!b);
     }
 
     #[test]

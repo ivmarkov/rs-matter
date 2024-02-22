@@ -15,6 +15,8 @@
  *    limitations under the License.
  */
 
+use core::fmt;
+
 use log::{info, trace};
 use owo_colors::OwoColorize;
 
@@ -36,12 +38,12 @@ pub const MAX_RX_STATUS_BUF_SIZE: usize = 100;
 pub const MAX_TX_BUF_SIZE: usize = 1280 - 40/*IPV6 header size*/ - 8/*UDP header size*/;
 
 #[derive(Debug, Default, Clone)]
-pub struct PacketHeader {
+pub struct PacketHdr {
     pub plain: PlainHdr,
     pub proto: ProtoHdr,
 }
 
-impl PacketHeader {
+impl PacketHdr {
     pub const HDR_RESERVE: usize = plain_hdr::max_plain_hdr_len() + proto_hdr::max_proto_hdr_len();
 
     #[inline(always)]
@@ -58,7 +60,7 @@ impl PacketHeader {
         self.proto.set_reliable();
     }
 
-    pub fn load(&mut self, packet: &PacketHeader) {
+    pub fn load(&mut self, packet: &PacketHdr) {
         self.plain = packet.plain.clone();
         self.proto = packet.proto.clone();
     }
@@ -136,5 +138,11 @@ impl PacketHeader {
                 self.proto.proto_opcode
             ),
         }
+    }
+}
+
+impl fmt::Display for PacketHdr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}][{}]", self.plain, self.proto)
     }
 }

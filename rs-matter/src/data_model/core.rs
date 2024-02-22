@@ -60,7 +60,7 @@ where
         mut exchange: Exchange<'_>,
         mut buffers: ExchangeBuffers<'_>,
     ) -> Result<(), Error> {
-        let mut timeout = None;
+        let mut timeout_instant = None;
 
         let mut rb = WriteBuf::new(buffers.rx.get().await?);
         let mut tb = WriteBuf::new(buffers.tx.get().await?);
@@ -74,13 +74,17 @@ where
 
             match &interaction {
                 Interaction::Read(req) => self.read(&mut exchange, req, &mut tb).await?,
-                Interaction::Write(req) => self.write(&mut exchange, req, &mut tb, timeout).await?,
+                Interaction::Write(req) => {
+                    self.write(&mut exchange, req, &mut tb, timeout_instant)
+                        .await?
+                }
                 Interaction::Invoke(req) => {
-                    self.invoke(&mut exchange, req, &mut tb, timeout).await?
+                    self.invoke(&mut exchange, req, &mut tb, timeout_instant)
+                        .await?
                 }
                 Interaction::Subscribe(req) => self.subscribe(&mut exchange, req, &mut tb).await?,
                 Interaction::Timed(req) => {
-                    timeout = Some(self.timed(&mut exchange, req, &mut tb).await?)
+                    timeout_instant = Some(self.timed(&mut exchange, req, &mut tb).await?)
                 }
             }
 
@@ -144,9 +148,12 @@ where
         exchange: &mut Exchange<'_>,
         req: &WriteReq<'_>,
         wb: &mut WriteBuf<'_>,
-        timeout: Option<Duration>,
+        timeout_instant: Option<Duration>,
     ) -> Result<(), Error> {
-        if TimedReq::has_timed_out(exchange.matter.epoch, timeout) {
+        if timeout_instant
+            .map(|timeout_instant| (exchange.matter.epoch)() > timeout_instant)
+            .unwrap_or(false)
+        {
             StatusResp::write(wb, IMStatusCode::Timeout)?;
 
             return exchange.send(OpCode::StatusResponse, wb.as_slice()).await;
@@ -186,16 +193,19 @@ where
         exchange: &mut Exchange<'_>,
         req: &InvReq<'_>,
         wb: &mut WriteBuf<'_>,
-        timeout: Option<Duration>,
+        timeout_instant: Option<Duration>,
     ) -> Result<(), Error> {
-        if TimedReq::has_timed_out(exchange.matter.epoch, timeout) {
+        if timeout_instant
+            .map(|timeout_instant| (exchange.matter.epoch)() > timeout_instant)
+            .unwrap_or(false)
+        {
             StatusResp::write(wb, IMStatusCode::Timeout)?;
 
             exchange.send(OpCode::StatusResponse, wb.as_slice()).await
         } else {
             let mut resp = InvStreamingResp::new(wb);
 
-            if resp.timeout(req, timeout)? {
+            if resp.timeout(req, timeout_instant)? {
                 exchange.send(OpCode::StatusResponse, wb.as_slice()).await
             } else {
                 resp.start(req)?;
@@ -253,13 +263,13 @@ where
         req: &TimedReq,
         wb: &mut WriteBuf<'_>,
     ) -> Result<Duration, Error> {
-        let timeout = req.timeout(exchange.matter.epoch);
+        let timeout_instant = req.timeout_instant(exchange.matter.epoch);
 
         StatusResp::write(wb, IMStatusCode::Success)?;
 
         exchange.send(OpCode::StatusResponse, wb.as_slice()).await?;
 
-        Ok(timeout)
+        Ok(timeout_instant)
     }
 
     async fn recv_status(exchange: &mut Exchange<'_>) -> Result<IMStatusCode, Error> {

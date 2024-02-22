@@ -27,8 +27,8 @@ use crate::error::*;
 
 use super::dedup::RxCtrState;
 use super::network::Address;
-use super::packet::PacketHeader;
-use super::plain_hdr::{PlainHdr, SessionType};
+use super::packet::PacketHdr;
+use super::plain_hdr::PlainHdr;
 
 pub const MAX_CAT_IDS_PER_NOC: usize = 3;
 pub type NocCatIds = [u32; MAX_CAT_IDS_PER_NOC];
@@ -126,7 +126,7 @@ impl SessionId {
         Self {
             id: plain.sess_id,
             peer_addr: peer,
-            peer_nodeid: plain.get_src_u64(),
+            peer_nodeid: plain.get_src_nodeid(),
             is_encrypted: plain.is_encrypted(),
         }
     }
@@ -134,7 +134,7 @@ impl SessionId {
     pub fn matches(&self, peer: &Address, plain: &PlainHdr) -> bool {
         self.id == plain.sess_id
             && self.peer_addr == *peer
-            && self.peer_nodeid == plain.get_src_u64() // TODO
+            && self.peer_nodeid == plain.get_src_nodeid() // TODO
             && self.is_encrypted == plain.is_encrypted()
     }
 }
@@ -250,7 +250,7 @@ impl Session {
         &self.mode
     }
 
-    pub fn get_msg_ctr(&mut self) -> u32 {
+    fn get_msg_ctr(&mut self) -> u32 {
         let ctr = self.msg_ctr;
         self.msg_ctr += 1;
         ctr
@@ -274,37 +274,36 @@ impl Session {
         &self.att_challenge
     }
 
-    pub fn decode_plain_hdr(&self, rx: &mut PacketHeader, pb: &mut ParseBuf) -> Result<(), Error> {
+    pub fn decode_plain_hdr(&self, rx: &mut PacketHdr, pb: &mut ParseBuf) -> Result<(), Error> {
         rx.decode_plain_hdr(pb)
     }
 
-    pub fn decode_remaining(&self, rx: &mut PacketHeader, pb: &mut ParseBuf) -> Result<(), Error> {
+    pub fn decode_remaining(&self, rx: &mut PacketHdr, pb: &mut ParseBuf) -> Result<(), Error> {
         rx.decode_remaining(pb, self.peer_nodeid.unwrap_or_default(), self.get_dec_key())
     }
 
     pub fn is_duplicate(&mut self, plain: &PlainHdr) -> bool {
-        !self
-            .rx_ctr_state
-            .update(plain.ctr, self.is_encrypted(), true)
+        self.rx_ctr_state
+            .is_duplicate(plain.ctr, self.is_encrypted())
     }
 
-    pub fn update_rx_ctr_state(&mut self, plain: &PlainHdr) -> bool {
-        self.rx_ctr_state
-            .update(plain.ctr, self.is_encrypted(), false)
+    pub fn recv(&mut self, plain: &PlainHdr) -> bool {
+        self.rx_ctr_state.recv(plain.ctr, self.is_encrypted())
     }
 
     pub fn pre_send(&mut self, ctr: Option<u32>, plain: &mut PlainHdr) {
         plain.sess_id = self.get_peer_sess_id();
-        plain.ctr = ctr.unwrap_or(self.get_msg_ctr());
-        plain.sess_type = if self.is_encrypted() {
-            SessionType::Encrypted
-        } else {
-            SessionType::None
-        };
-        plain.set_dest_u64(self.is_encrypted().then_some(self.peer_nodeid).flatten());
+        plain.ctr = ctr.unwrap_or_else(|| self.get_msg_ctr());
+        plain.set_src_nodeid(None);
+        plain.set_dst_unicast_nodeid(None);
+        // plain.set_dst_unicast_nodeid(
+        //     (self.mode == SessionMode::PlainText)
+        //         .then_some(self.peer_nodeid)
+        //         .flatten(),
+        // );
     }
 
-    pub fn encode(&self, tx: &PacketHeader, wb: &mut WriteBuf) -> Result<(), Error> {
+    pub fn encode(&self, tx: &PacketHdr, wb: &mut WriteBuf) -> Result<(), Error> {
         tx.encode(wb, self.local_nodeid, self.get_enc_key())
     }
 

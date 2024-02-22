@@ -82,9 +82,9 @@ impl Notification {
     pub fn poll_wait(&self, cx: &Context<'_>, bits: NonZeroUsize) -> Poll<NonZeroUsize> {
         self.waker.register(cx.waker());
 
-        let raised_bits = self.notified.fetch_and(!bits.get(), Ordering::SeqCst);
+        let raised_bits = self.notified.fetch_and(!bits.get(), Ordering::SeqCst) & bits.get();
 
-        if (raised_bits & bits.get()) != 0 {
+        if raised_bits != 0 {
             Poll::Ready(NonZeroUsize::new(raised_bits).unwrap())
         } else {
             Poll::Pending

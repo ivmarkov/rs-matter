@@ -20,7 +20,7 @@ use crate::{
 use super::{
     mrp::ReliableMessage,
     network::Address,
-    packet::{PacketHeader, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
+    packet::{PacketHdr, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
     plain_hdr::PlainHdr,
     proto_hdr::ProtoHdr,
     session::{Session, SessionId},
@@ -66,21 +66,17 @@ impl ExchangeId {
 
 pub struct ExchangeEntry {
     id: ExchangeId,
-    role: Role,
+    pub(crate) role: Role,
     mrp: ReliableMessage,
 }
 
 impl ExchangeEntry {
-    pub fn recv(&mut self, header: &PacketHeader, epoch: Epoch) -> Result<(), Error> {
+    pub fn recv(&mut self, header: &PacketHdr, epoch: Epoch) -> Result<(), Error> {
         self.mrp.recv(header, epoch)
     }
 
     pub fn pre_send(&mut self, plain: &PlainHdr, proto: &mut ProtoHdr) -> Result<(), Error> {
         self.mrp.pre_send(plain, proto)
-    }
-
-    pub fn retrans_ctr(&self) -> Option<u32> {
-        self.mrp.retrans_ctr()
     }
 
     pub fn retrans_delay_ms(&mut self, ctr: u32) -> Result<Option<u64>, Error> {
@@ -90,10 +86,6 @@ impl ExchangeEntry {
             .map_err(|_| ErrorCode::Invalid)?; // TODO
 
         Ok(delay)
-    }
-
-    pub fn is_acknowledged(&self, ctr: u32) -> bool {
-        self.mrp.is_acknowledged(ctr)
     }
 }
 
@@ -192,7 +184,7 @@ impl ExchangeMeta {
         }
     }
 
-    fn from(proto: &ProtoHdr) -> Self {
+    pub fn from(proto: &ProtoHdr) -> Self {
         Self {
             proto_id: proto.proto_id,
             proto_opcode: proto.proto_opcode,
@@ -200,7 +192,7 @@ impl ExchangeMeta {
         }
     }
 
-    pub(crate) fn set_into(&self, proto: &mut ProtoHdr) {
+    pub fn set_into(&self, proto: &mut ProtoHdr) {
         proto.proto_id = self.proto_id;
         proto.proto_opcode = self.proto_opcode;
 
@@ -218,7 +210,7 @@ pub type TxExchangePacket = ExchangePacket<MAX_TX_BUF_SIZE>;
 pub struct ExchangePacket<const N: usize> {
     pub(crate) new_exchange: bool,
     pub(crate) peer: Address,
-    pub(crate) header: PacketHeader,
+    pub(crate) header: PacketHdr,
     pub(crate) buf: heapless::Vec<u8, MAX_RX_BUF_SIZE>,
     pub(crate) payload_start: usize,
 }
@@ -229,7 +221,7 @@ impl<const N: usize> ExchangePacket<N> {
         Self {
             new_exchange: false,
             peer: Address::new(),
-            header: PacketHeader::new(),
+            header: PacketHdr::new(),
             buf: heapless::Vec::new(),
             payload_start: 0,
         }
@@ -280,6 +272,7 @@ impl<'a, 'b> Drop for Rx<'a, 'b> {
     fn drop(&mut self) {
         if self.consumed {
             self.dc.data_mut().buf.clear();
+            self.dc.notify(true);
         }
     }
 }
@@ -288,15 +281,15 @@ pub struct Tx<'a, 'b> {
     pub(crate) id: &'a ExchangeId,
     pub(crate) matter: &'a Matter<'a>,
     dc: DataCarrier<'b, TxExchangePacket>,
-    completed: bool,
+    completed: Option<(usize, usize)>,
 }
 
 pub struct TxPayload<'a, 'b> {
     pub(crate) id: &'a ExchangeId,
     pub(crate) matter: &'a Matter<'a>,
-    header: &'b mut PacketHeader,
+    header: &'b mut PacketHdr,
     writebuf: WriteBuf<'b>,
-    completed: &'b mut bool,
+    completed: &'b mut Option<(usize, usize)>,
 }
 
 impl<'a, 'b> TxPayload<'a, 'b> {
@@ -307,31 +300,28 @@ impl<'a, 'b> TxPayload<'a, 'b> {
     pub fn complete(
         mut self,
         meta: impl Into<ExchangeMeta>,
-        retrans_ctr: Option<u32>,
+        ctr: Option<u32>,
     ) -> Result<Option<u32>, Error> {
         let meta = meta.into();
 
-        if self
-            .matter
-            .process_tx(self.id, meta, retrans_ctr, self.header, &mut self.writebuf)?
-        {
-            *self.completed = true;
-            Ok(meta.reliable.then_some(self.header.plain.ctr))
-        } else {
-            Ok(None)
-        }
+        self.matter
+            .process_tx(self.id, meta, ctr, self.header, &mut self.writebuf)?;
+
+        *self.completed = Some((self.writebuf.get_start(), self.writebuf.get_tail()));
+
+        Ok(meta.reliable.then_some(self.header.plain.ctr))
     }
 }
 
 impl<'a, 'b> Tx<'a, 'b> {
     pub fn payload(&mut self) -> Result<TxPayload<'a, '_>, Error> {
-        self.completed = false;
+        self.completed = None;
 
         let packet = self.dc.data_mut();
         packet.buf.resize_default(MAX_TX_BUF_SIZE).unwrap();
 
         let mut writebuf = WriteBuf::new(&mut packet.buf);
-        writebuf.reserve(PacketHeader::HDR_RESERVE)?;
+        writebuf.reserve(PacketHdr::HDR_RESERVE)?;
 
         Ok(TxPayload {
             id: self.id,
@@ -363,7 +353,13 @@ impl<'a, 'b> Tx<'a, 'b> {
 
 impl<'a, 'b> Drop for Tx<'a, 'b> {
     fn drop(&mut self) {
-        if !self.completed {
+        if let Some((start, end)) = self.completed {
+            let packet = self.dc.data_mut();
+            packet.payload_start = start;
+            packet.buf.truncate(end);
+
+            self.dc.notify(true);
+        } else {
             self.dc.data_mut().buf.clear();
         }
     }
@@ -400,14 +396,12 @@ impl<'a> Exchange<'a> {
     }
 
     pub async fn recv_into(&mut self, wb: &mut WriteBuf<'_>) -> Result<ExchangeMeta, Error> {
-        let mut rc = self.get().await;
+        let rx = self.recv().await;
 
         wb.reset();
-        wb.append(rc.payload())?;
+        wb.append(rx.payload())?;
 
-        rc.consume();
-
-        Ok(rc.meta())
+        Ok(rx.meta())
     }
 
     pub async fn initiate_send(&mut self) -> Tx<'_, 'a> {
@@ -420,7 +414,7 @@ impl<'a> Exchange<'a> {
             dc,
             id: self.id,
             matter: self.matter,
-            completed: false,
+            completed: None,
         }
     }
 
@@ -432,28 +426,32 @@ impl<'a> Exchange<'a> {
         }
     }
 
+    fn retrans_delay_ms(&self, ctr: u32) -> Result<Option<u64>, Error> {
+        let mut exchange_mgr = self.matter.exchange_mgr.borrow_mut();
+        exchange_mgr
+            .get(self.id)
+            .ok_or(ErrorCode::NoExchange)?
+            .retrans_delay_ms(ctr)
+    }
+
+    async fn internal_wait_ack(&self, ctr: u32) -> Result<(), Error> {
+        while self.retrans_delay_ms(ctr)?.is_some() {
+            self.notification
+                .wait(NonZeroUsize::new(1 << self.index).unwrap())
+                .await;
+        }
+
+        Ok(())
+    }
+
     pub async fn wait_ack(&mut self, ctr: u32) -> Result<bool, Error> {
-        let delay = {
-            let mut exchange_mgr = self.matter.exchange_mgr.borrow_mut();
-            let exchange = exchange_mgr.get(self.id).ok_or(ErrorCode::NoExchange)?;
-
-            exchange.retrans_delay_ms(ctr)?
-        };
-
-        if let Some(delay) = delay {
-            let notification = self
-                .notification
-                .wait(NonZeroUsize::new(1 << self.index).unwrap());
+        if let Some(delay) = self.retrans_delay_ms(ctr)? {
+            let notification = self.internal_wait_ack(ctr);
             let timer = Timer::after(Duration::from_millis(delay));
 
-            if matches!(select(notification, timer).await, Either::First(_)) {
-                let mut exchange_mgr = self.matter.exchange_mgr.borrow_mut();
-                let exchange = exchange_mgr.get(self.id).ok_or(ErrorCode::NoExchange)?;
+            let result = select(notification, timer).await;
 
-                Ok(exchange.is_acknowledged(ctr))
-            } else {
-                Ok(false)
-            }
+            Ok(matches!(result, Either::First(_)))
         } else {
             Ok(true)
         }

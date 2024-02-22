@@ -17,9 +17,8 @@
 
 use crate::common::echo_cluster;
 use core::borrow::Borrow;
-use core::future::pending;
 use core::time::Duration;
-use embassy_futures::select::select3;
+use embassy_futures::select::select;
 use embassy_sync::{
     blocking_mutex::raw::{NoopRawMutex, RawMutex},
     zerocopy_channel::{Channel, Receiver, Sender},
@@ -53,15 +52,12 @@ use rs_matter::{
     tlv::{TLVWriter, TagType, ToTLV},
     transport::{
         core::PacketBuffers,
+        exchange::ExchangeMeta,
         network::{Address, Ipv4Addr, SocketAddr, SocketAddrV4, UdpReceive, UdpSend},
-        packet::{PacketHeader, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
+        packet::{PacketHdr, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
         session::{CaseDetails, CloneData, NocCatIds, SessionMode},
     },
-    utils::{
-        parsebuf::ParseBuf,
-        select::{EitherUnwrap, Notification},
-        writebuf::WriteBuf,
-    },
+    utils::{parsebuf::ParseBuf, select::EitherUnwrap, writebuf::WriteBuf},
     CommissioningData, Matter, MATTER_PORT,
 };
 
@@ -254,6 +250,8 @@ impl<'a> ImEngine<'a> {
         input: &[&ImInput],
         out: &mut heapless::Vec<ImOutput, N>,
     ) -> Result<(), Error> {
+        out.clear();
+
         self.matter.reset_transport();
 
         let clone_data = CloneData::new(
@@ -265,13 +263,13 @@ impl<'a> ImEngine<'a> {
             SessionMode::Case(CaseDetails::new(1, &self.cat_ids)),
         );
 
-        let mut msg_ctr = self
-            .matter
+        self.matter
             .session_mgr
             .borrow_mut()
             .clone_session(&clone_data)
-            .unwrap()
-            .get_msg_ctr();
+            .unwrap();
+
+        let mut msg_ctr = 1;
 
         let mut send_channel_buf = [heapless::Vec::new(); 1];
         let mut recv_channel_buf = [heapless::Vec::new(); 1];
@@ -281,20 +279,17 @@ impl<'a> ImEngine<'a> {
 
         let handler = &handler;
 
-        let resp_notif = Notification::new();
-        let resp_notif = &resp_notif;
-
         let mut buffers = PacketBuffers::new();
         let buffers = &mut buffers;
 
-        let (send, mut send_dest) = send_channel.split();
-        let (mut recv_dest, recv) = recv_channel.split();
+        let (send_remote, mut recv) = send_channel.split();
+        let (mut send, recv_remote) = recv_channel.split();
 
         embassy_futures::block_on(async move {
-            select3(
+            select(
                 self.matter.run(
-                    UdpSender(send),
-                    UdpReceiver(recv),
+                    UdpSender(send_remote),
+                    UdpReceiver(recv_remote),
                     buffers,
                     CommissioningData {
                         // TODO: Hard-coded for now
@@ -304,10 +299,50 @@ impl<'a> ImEngine<'a> {
                     &HandlerCompat(handler),
                 ),
                 async move {
-                    let mut acknowledge = false;
+                    let mut ack_ctr = None;
+
                     for ip in input {
-                        Self::send(ip, &mut recv_dest, msg_ctr, acknowledge).await?;
-                        resp_notif.wait().await;
+                        Self::send(&mut send, msg_ctr, ack_ctr.take(), |wb| {
+                            ip.data
+                                .to_tlv(&mut TLVWriter::new(wb), TagType::Anonymous)?;
+
+                            Ok(ExchangeMeta {
+                                proto_id: PROTO_ID_INTERACTION_MODEL,
+                                proto_opcode: ip.action as _,
+                                reliable: true,
+                            })
+                        })
+                        .await?;
+
+                        loop {
+                            let got_reply = Self::recv(&mut recv, |meta, payload, new_ack_ctr| {
+                                ack_ctr = new_ack_ctr;
+
+                                if meta.proto_id != PROTO_ID_SECURE_CHANNEL
+                                    || meta
+                                        .check_opcode(
+                                            secure_channel::common::OpCode::MRPStandAloneAck,
+                                        )
+                                        .is_err()
+                                {
+                                    out.push(ImOutput {
+                                        action: meta.opcode()?,
+                                        data: heapless::Vec::from_slice(payload)
+                                            .map_err(|_| ErrorCode::NoSpace)?,
+                                    })
+                                    .map_err(|_| ErrorCode::NoSpace)?;
+
+                                    Ok(true)
+                                } else {
+                                    Ok(false)
+                                }
+                            })
+                            .await?;
+
+                            if got_reply {
+                                break;
+                            }
+                        }
 
                         if let Some(delay) = ip.delay {
                             if delay > 0 {
@@ -316,42 +351,19 @@ impl<'a> ImEngine<'a> {
                             }
                         }
 
-                        msg_ctr += 2;
-                        acknowledge = true;
+                        msg_ctr += 1;
                     }
 
-                    pending::<()>().await;
-
-                    Ok(())
-                },
-                async move {
-                    out.clear();
-
-                    while out.len() < input.len() {
-                        let vec = send_dest.receive().await;
-                        let mut pb = ParseBuf::new(vec);
-
-                        let mut rx = PacketHeader::new();
-
-                        rx.decode_plain_hdr(&mut pb)?;
-                        rx.decode_remaining(&mut pb, IM_ENGINE_REMOTE_PEER_ID, Some(&[0u8; 16]))?;
-
-                        if rx.proto.proto_id != PROTO_ID_SECURE_CHANNEL
-                            || rx.proto.opcode::<secure_channel::common::OpCode>()?
-                                != secure_channel::common::OpCode::MRPStandAloneAck
-                        {
-                            out.push(ImOutput {
-                                action: rx.proto.opcode()?,
-                                data: heapless::Vec::from_slice(pb.as_slice())
-                                    .map_err(|_| ErrorCode::NoSpace)?,
-                            })
-                            .map_err(|_| ErrorCode::NoSpace)?;
-
-                            resp_notif.signal(());
-                        }
-
-                        send_dest.receive_done();
-                    }
+                    // if ack_ctr.borrow().is_some() {
+                    //     log::error!("Sending ACK!!!!!");
+                    //     Self::send2(&mut recv_dest, msg_ctr, ack_ctr.borrow_mut().take(), |_| {
+                    //         Ok(ExchangeMeta {
+                    //             proto_id: PROTO_ID_SECURE_CHANNEL,
+                    //             proto_opcode: secure_channel::common::OpCode::MRPStandAloneAck as _,
+                    //             reliable: false,
+                    //         })
+                    //     }).await?;
+                    // }
 
                     Ok(())
                 },
@@ -363,33 +375,58 @@ impl<'a> ImEngine<'a> {
         Ok(())
     }
 
-    async fn send(
-        input: &ImInput<'_>,
+    async fn recv<F, R>(
+        receiver: &mut Receiver<'_, impl RawMutex, heapless::Vec<u8, MAX_TX_BUF_SIZE>>,
+        f: F,
+    ) -> Result<R, Error>
+    where
+        F: FnOnce(ExchangeMeta, &[u8], Option<u32>) -> Result<R, Error>,
+    {
+        let vec = receiver.receive().await;
+
+        let mut pb = ParseBuf::new(vec);
+
+        let mut rx = PacketHdr::new();
+
+        rx.decode_plain_hdr(&mut pb)?;
+        rx.decode_remaining(&mut pb, IM_ENGINE_REMOTE_PEER_ID, Some(&[0u8; 16]))?;
+
+        let meta = ExchangeMeta::from(&rx.proto);
+        let result = f(meta, pb.as_slice(), rx.proto.get_ack())?;
+
+        receiver.receive_done();
+
+        Ok(result)
+    }
+
+    async fn send<F>(
         sender: &mut Sender<'_, impl RawMutex, heapless::Vec<u8, MAX_RX_BUF_SIZE>>,
         msg_ctr: u32,
-        acknowledge: bool,
-    ) -> Result<(), Error> {
+        ack_ctr: Option<u32>,
+        f: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(&mut WriteBuf) -> Result<ExchangeMeta, Error>,
+    {
         let vec = sender.send().await;
 
         vec.resize_default(MAX_RX_BUF_SIZE).unwrap();
         let mut wb = WriteBuf::new(vec);
-        wb.reserve(PacketHeader::HDR_RESERVE).unwrap();
+        wb.reserve(PacketHdr::HDR_RESERVE).unwrap();
 
-        let mut tx = PacketHeader::new();
-        tx.proto.proto_id = PROTO_ID_INTERACTION_MODEL;
-        tx.proto.proto_opcode = input.action as u8;
+        let meta = f(&mut wb)?;
 
-        let mut tw = TLVWriter::new(&mut wb);
+        let mut tx = PacketHdr::new();
 
-        input.data.to_tlv(&mut tw, TagType::Anonymous)?;
-
-        tx.plain.ctr = msg_ctr + 1;
-        tx.plain.sess_id = 1;
+        meta.set_into(&mut tx.proto);
         tx.proto.set_initiator();
+        tx.proto.set_ack(ack_ctr);
 
-        if acknowledge {
-            tx.proto.set_ack(msg_ctr - 1);
-        }
+        tx.plain.ctr = msg_ctr;
+        tx.plain.sess_id = 1;
+        //tx.plain.set_src_nodeid(Some(IM_ENGINE_PEER_ID));
+        tx.plain.set_src_nodeid(None);
+        tx.plain.set_dst_unicast_nodeid(None); // Because session mode is Case, so this is not necessary
 
         tx.encode(&mut wb, IM_ENGINE_PEER_ID, Some(&[0u8; 16]))?;
 

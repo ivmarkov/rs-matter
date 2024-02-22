@@ -92,13 +92,13 @@ impl<'a> Case<'a> {
         case_session: &mut CaseSession,
     ) -> Result<(), Error> {
         let result = {
+            let rx = exchange.recv().await;
+            rx.meta().check_opcode(OpCode::CASESigma3)?;
+
             let fabric_mgr = self.fabric_mgr.borrow();
 
             let fabric = fabric_mgr.get_fabric(case_session.local_fabric_idx)?;
             if let Some(fabric) = fabric {
-                let rx = exchange.recv().await;
-                rx.meta().check_opcode(OpCode::CASESigma3)?;
-
                 let root = get_root_node_struct(rx.payload())?;
                 let encrypted = root.find_tag(1)?.slice()?;
 

@@ -149,6 +149,7 @@ impl<'a> Matter<'a> {
             .unwrap()
     }
 
+    #[warn(clippy::too_many_arguments)]
     async fn handle_exchanges<H>(
         &self,
         rx_bufs: &mut [[u8; MAX_RX_BUF_SIZE]; MAX_EXCHANGES],
@@ -283,7 +284,7 @@ impl<'a> Matter<'a> {
                         Err(e) => {
                             packet.buf.clear();
 
-                            error!("Packet error ({e}) for packet: {:?}", packet.header.plain);
+                            error!("Packet error ({e}) for packet: {}", packet.header.plain);
                         }
                         Ok(new_exchange) => {
                             let (start, end) = pb.slice_range();
@@ -293,7 +294,7 @@ impl<'a> Matter<'a> {
                             packet.buf.truncate(end);
 
                             info!(
-                                "Got packet: {:?} with layload len {}",
+                                "Got packet: {} with layload len {}",
                                 packet.header,
                                 packet.buf.len() - packet.payload_start
                             );
@@ -451,7 +452,7 @@ impl<'a> Matter<'a> {
             MRP_STANDALONE_ACK.set_into(&mut ack_header.proto);
 
             session.pre_send(None, &mut ack_header.plain);
-            session.encode(&ack_header, ack_wb)?;
+            session.encode(ack_header, ack_wb)?;
 
             Err(ErrorCode::Duplicate)?;
         }
@@ -466,9 +467,9 @@ impl<'a> Matter<'a> {
             }
 
             let updated = session.recv(&header.plain);
-            assert_eq!(updated, true);
+            assert!(updated);
 
-            exchange.recv(&header, self.epoch)?;
+            exchange.recv(header, self.epoch)?;
 
             false
         } else {
@@ -481,9 +482,9 @@ impl<'a> Matter<'a> {
                 .ok_or(ErrorCode::NoSpaceExchanges)?;
 
             let updated = session.recv(&header.plain);
-            assert_eq!(updated, true);
+            assert!(updated);
 
-            exchange.recv(&header, self.epoch)?;
+            exchange.recv(header, self.epoch)?;
 
             true
         };
@@ -514,14 +515,16 @@ impl<'a> Matter<'a> {
 
         meta.set_into(&mut header.proto);
 
-        session.encode(&header, wb)
+        session.encode(header, wb)
     }
 
     pub(crate) async fn clone_session(&self, clone_data: &CloneData) -> Result<(), Error> {
         loop {
-            let mut session_mgr = self.session_mgr.borrow_mut();
-
-            let result = session_mgr.clone_session(clone_data);
+            let result = self
+                .session_mgr
+                .borrow_mut()
+                .clone_session(clone_data)
+                .map(|_| ());
 
             match result {
                 Ok(_) => break,
@@ -540,11 +543,7 @@ impl<'a> Matter<'a> {
             let mut session_mgr = self.session_mgr.borrow_mut();
 
             let sess_index = session_mgr.get_session_for_eviction();
-            if let Some(sess_index) = sess_index {
-                Some(session_mgr.remove(sess_index))
-            } else {
-                None
-            }
+            sess_index.map(|sess_index| session_mgr.remove(sess_index))
         };
 
         if session.is_some() {

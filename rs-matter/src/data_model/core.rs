@@ -124,7 +124,7 @@ where
         'outer: for item in metadata.node().read(req, None, &accessor) {
             while !AttrDataEncoder::handle_read(&item, &self.0, &mut resp.writer()).await? {
                 exchange
-                    .send(OpCode::ReportData, resp.finish_chunk(&req)?)
+                    .send(OpCode::ReportData, resp.finish_chunk(req)?)
                     .await?;
 
                 if Self::recv_status(exchange).await? != IMStatusCode::Success {
@@ -132,7 +132,7 @@ where
                     break 'outer;
                 }
 
-                resp.start(&req)?;
+                resp.start(req)?;
             }
         }
 
@@ -179,7 +179,7 @@ where
         // additional list of expanded write requests as we start processing those.
         let node = metadata.node();
         let write_attrs: heapless::Vec<_, MAX_WRITE_ATTRS_IN_ONE_TRANS> =
-            node.write(&req, &accessor).collect();
+            node.write(req, &accessor).collect();
 
         for item in write_attrs {
             AttrDataEncoder::handle_write(&item, &self.0, &mut resp.writer()).await?;
@@ -216,7 +216,7 @@ where
 
                 let node = metadata.node();
 
-                for item in node.invoke(&req, &accessor) {
+                for item in node.invoke(req, &accessor) {
                     CmdDataEncoder::handle(&item, &self.0, &mut resp.writer(), exchange).await?;
                 }
 
@@ -233,7 +233,7 @@ where
         req: &SubscribeReq<'_>,
         wb: &mut WriteBuf<'_>,
     ) -> Result<(), Error> {
-        self.report_data(exchange, &ReportDataReq::Subscribe(&req), wb)
+        self.report_data(exchange, &ReportDataReq::Subscribe(req), wb)
             .await?;
 
         if Self::recv_status(exchange).await? == IMStatusCode::Success {
@@ -249,7 +249,7 @@ where
             loop {
                 Timer::after(embassy_time::Duration::from_secs(100)).await; // TODO
 
-                self.report_data(exchange, &ReportDataReq::Subscribe(&req), wb)
+                self.report_data(exchange, &ReportDataReq::Subscribe(req), wb)
                     .await?;
             }
         }

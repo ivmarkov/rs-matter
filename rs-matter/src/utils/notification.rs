@@ -140,11 +140,11 @@ pub struct DataCarrier<'a, T> {
 
 impl<'a, T> DataCarrier<'a, T> {
     pub fn data(&self) -> &T {
-        &*self.guard
+        &self.guard
     }
 
     pub fn data_mut(&mut self) -> &mut T {
-        &mut *self.guard
+        &mut self.guard
     }
 
     pub fn notify(&mut self, notify_others: bool) {

@@ -468,7 +468,7 @@ impl<'a> UdpReceive for UdpReceiver<'a> {
     async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), Error> {
         let vec = self.0.receive().await;
 
-        buffer[..vec.len()].copy_from_slice(&vec);
+        buffer[..vec.len()].copy_from_slice(vec);
         let len = vec.len();
 
         self.0.receive_done();

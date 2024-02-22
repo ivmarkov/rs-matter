@@ -460,9 +460,9 @@ impl SessionMgr {
                 && x.is_encrypted() == is_encrypted
         });
 
-        session
-            .as_mut()
-            .map(|session| session.update_last_used(self.epoch));
+        if let Some(session) = session.as_mut() {
+            session.update_last_used(self.epoch)
+        }
 
         session
     }

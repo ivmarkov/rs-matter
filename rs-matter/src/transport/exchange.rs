@@ -379,7 +379,7 @@ impl<'a> Exchange<'a> {
         Rx {
             dc: self
                 .notification
-                .get(&self.rx_packet, self.index, |sd| self.for_us(sd))
+                .get(self.rx_packet, self.index, |sd| self.for_us(sd))
                 .await,
             id: self.id,
             matter: self.matter,
@@ -407,7 +407,7 @@ impl<'a> Exchange<'a> {
     pub async fn initiate_send(&mut self) -> Tx<'_, 'a> {
         let dc = self
             .notification
-            .get(&self.tx_packet, self.index, |td| td.buf.is_empty())
+            .get(self.tx_packet, self.index, |td| td.buf.is_empty())
             .await;
 
         Tx {
@@ -424,24 +424,6 @@ impl<'a> Exchange<'a> {
         } else {
             Ok(true)
         }
-    }
-
-    fn retrans_delay_ms(&self, ctr: u32) -> Result<Option<u64>, Error> {
-        let mut exchange_mgr = self.matter.exchange_mgr.borrow_mut();
-        exchange_mgr
-            .get(self.id)
-            .ok_or(ErrorCode::NoExchange)?
-            .retrans_delay_ms(ctr)
-    }
-
-    async fn internal_wait_ack(&self, ctr: u32) -> Result<(), Error> {
-        while self.retrans_delay_ms(ctr)?.is_some() {
-            self.notification
-                .wait(NonZeroUsize::new(1 << self.index).unwrap())
-                .await;
-        }
-
-        Ok(())
     }
 
     pub async fn wait_ack(&mut self, ctr: u32) -> Result<bool, Error> {
@@ -513,6 +495,24 @@ impl<'a> Exchange<'a> {
         F: FnOnce(ExchangeCtx) -> Result<T, Error>,
     {
         Self::ctx(self.id, self.matter, f)
+    }
+
+    async fn internal_wait_ack(&self, ctr: u32) -> Result<(), Error> {
+        while self.retrans_delay_ms(ctr)?.is_some() {
+            self.notification
+                .wait(NonZeroUsize::new(1 << self.index).unwrap())
+                .await;
+        }
+
+        Ok(())
+    }
+
+    fn retrans_delay_ms(&self, ctr: u32) -> Result<Option<u64>, Error> {
+        let mut exchange_mgr = self.matter.exchange_mgr.borrow_mut();
+        exchange_mgr
+            .get(self.id)
+            .ok_or(ErrorCode::NoExchange)?
+            .retrans_delay_ms(ctr)
     }
 
     fn ctx<F, T>(id: &ExchangeId, matter: &Matter, f: F) -> Result<T, Error>

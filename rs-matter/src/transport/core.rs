@@ -307,6 +307,7 @@ impl<'a> Matter<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     pub async fn handle_exchange<H>(
         &self,

@@ -211,7 +211,7 @@ pub struct ExchangePacket<const N: usize> {
     pub(crate) new_exchange: bool,
     pub(crate) peer: Address,
     pub(crate) header: PacketHdr,
-    pub(crate) buf: heapless::Vec<u8, MAX_RX_BUF_SIZE>,
+    pub(crate) buf: heapless::Vec<u8, N>,
     pub(crate) payload_start: usize,
 }
 

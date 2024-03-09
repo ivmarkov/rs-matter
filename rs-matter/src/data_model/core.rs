@@ -259,15 +259,17 @@ where
             .await?;
 
         if subscribed {
+            let max_int = core::cmp::max(req.max_int_ceil, 20); // TODO
+
             exchange
                 .send_with(|wb| {
-                    SubscribeResp::write(wb, subscription_id)?;
+                    SubscribeResp::write(wb, subscription_id, max_int)?;
                     Ok(OpCode::SubscribeResponse.into())
                 })
                 .await?;
 
             while subscribed {
-                Timer::after(embassy_time::Duration::from_secs(100)).await; // TODO
+                Timer::after(embassy_time::Duration::from_secs(max_int as u64 - 10)).await; // TODO
 
                 subscribed = self
                     .report_data(
@@ -275,7 +277,7 @@ where
                         &ReportDataReq::Subscribe(req),
                         Some(subscription_id),
                         wb,
-                        true,
+                        false,
                     )
                     .await?;
             }

@@ -382,10 +382,14 @@ impl TimedReq {
 }
 
 impl SubscribeResp {
-    pub fn write<'a>(wb: &'a mut WriteBuf, subscription_id: u32) -> Result<&'a [u8], Error> {
+    pub fn write<'a>(
+        wb: &'a mut WriteBuf,
+        subscription_id: u32,
+        max_int: u16,
+    ) -> Result<&'a [u8], Error> {
         let mut tw = TLVWriter::new(wb);
 
-        let resp = Self::new(subscription_id, 40);
+        let resp = Self::new(subscription_id, max_int);
         resp.to_tlv(&mut tw, TagType::Anonymous)?;
 
         Ok(wb.as_slice())

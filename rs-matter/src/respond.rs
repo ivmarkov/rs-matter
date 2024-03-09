@@ -22,7 +22,10 @@ use log::{error, info};
 
 use crate::{
     alloc,
-    data_model::{core::DataModel, objects::DataModelHandler},
+    data_model::{
+        core::{DataModel, Subscriptions},
+        objects::DataModelHandler,
+    },
     error::Error,
     interaction_model::core::PROTO_ID_INTERACTION_MODEL,
     secure_channel::{common::PROTO_ID_SECURE_CHANNEL, core::SecureChannel},
@@ -34,20 +37,24 @@ use crate::{
     Matter,
 };
 
-pub struct Responder<H>(H);
+pub struct Responder<H>(H, Subscriptions);
 
-impl<'a, H> Responder<H>
+impl<H> Responder<H>
 where
     H: DataModelHandler,
 {
     pub const fn new(handler: H) -> Self {
-        Self(handler)
+        Self(handler, Subscriptions::new())
+    }
+
+    pub fn subscriptions(&self) -> &Subscriptions {
+        &self.1
     }
 
     pub async fn run<const N: usize>(&self, matter: &Matter<'_>) -> Result<(), Error> {
         info!("Creating {N} handlers");
-        let mut handlers = heapless::Vec::<_, N>::new();
 
+        let mut handlers = heapless::Vec::<_, N>::new();
         info!("Handlers size: {}", core::mem::size_of_val(&handlers));
 
         for index in 0..N {
@@ -62,7 +69,6 @@ where
         select_slice(&mut handlers).await.0
     }
 
-    #[inline(always)]
     async fn respond(&self, matter: &Matter<'_>, handler_id: impl Display) -> Result<(), Error> {
         loop {
             let exchange = Exchange::accept(matter).await?;
@@ -95,7 +101,7 @@ where
                 let mut rb = WriteBuf::new(&mut *rx);
                 let mut tb = WriteBuf::new(&mut *tx);
 
-                DataModel::new(&self.0)
+                DataModel::new(&self.0, &self.1)
                     .handle(exchange, &mut rb, &mut tb)
                     .await
             }

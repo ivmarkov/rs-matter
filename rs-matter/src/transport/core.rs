@@ -106,7 +106,7 @@ impl<const N: usize> Packet<N> {
     }
 
     fn fmt_payload(f: &mut fmt::Formatter<'_>, proto: &ProtoHdr, buf: &[u8]) -> fmt::Result {
-        let meta = ExchangeMeta::from(&proto);
+        let meta = ExchangeMeta::from(proto);
 
         write!(f, "{meta}")?;
 

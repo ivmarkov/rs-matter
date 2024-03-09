@@ -17,8 +17,9 @@
 
 use core::time::Duration;
 
-use embassy_time::Timer;
-use log::warn;
+use embassy_futures::select::{select, Either};
+use embassy_time::{Instant, Timer};
+use log::{info, warn};
 use portable_atomic::{AtomicU32, Ordering};
 
 use super::objects::*;
@@ -35,10 +36,91 @@ use crate::{
     },
     tlv::{get_root_node_struct, FromTLV},
     transport::exchange::Exchange,
-    utils::writebuf::WriteBuf,
+    utils::{notification2::Notification2, writebuf::WriteBuf},
 };
 
-static SUBS_ID: AtomicU32 = AtomicU32::new(1);
+struct Subscription {
+    node_id: u64,
+    id: u32,
+    data_changed: bool,
+}
+
+pub struct Subscriptions {
+    next_subscription_id: AtomicU32,
+    notification: Notification2<heapless::Vec<Subscription, MAX_SUBSCRIPTIONS>>,
+}
+
+impl Subscriptions {
+    pub const fn new() -> Self {
+        Self {
+            next_subscription_id: AtomicU32::new(0),
+            notification: Notification2::new(heapless::Vec::new()),
+        }
+    }
+
+    pub fn notify_changed(&self) {
+        self.notification.modify(|subs| {
+            for sub in subs {
+                sub.data_changed = true;
+            }
+        });
+    }
+
+    pub(crate) fn next_subscription_id(&self) -> u32 {
+        self.next_subscription_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub(crate) fn add(&self, node_id: u64, subscription_id: u32) -> bool {
+        self.notification.modify(|subs| {
+            subs.push(Subscription {
+                node_id,
+                id: subscription_id,
+                data_changed: false,
+            })
+            .map(|_| true)
+            .unwrap_or(false)
+        })
+    }
+
+    pub(crate) fn remove_all(&self, node_id: u64) {
+        self.notification.modify(|subs| {
+            while let Some(index) = subs.iter().position(|sub| sub.node_id == node_id) {
+                subs.swap_remove(index);
+            }
+        });
+    }
+
+    pub(crate) fn remove(&self, node_id: u64, subscription_id: u32) {
+        self.notification.modify(|subs| {
+            if let Some(index) = subs
+                .iter()
+                .position(|sub| sub.node_id == node_id && sub.id == subscription_id)
+            {
+                subs.swap_remove(index);
+            }
+        });
+    }
+
+    pub(crate) async fn wait_removed(&self, node_id: u64, subscription_id: u32) -> bool {
+        self.notification
+            .wait(|subs| {
+                if let Some(sub) = subs
+                    .iter_mut()
+                    .find(|sub| sub.node_id == node_id && sub.id == subscription_id)
+                {
+                    if sub.data_changed {
+                        sub.data_changed = false;
+                        Some(false)
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(true)
+                }
+            })
+            .await
+    }
+}
 
 /// The Maximum number of expanded writer request per transaction
 ///
@@ -46,14 +128,22 @@ static SUBS_ID: AtomicU32 = AtomicU32::new(1);
 /// write requests per-transaction will be supported.
 const MAX_WRITE_ATTRS_IN_ONE_TRANS: usize = 7;
 
-pub struct DataModel<T>(T);
+const MAX_SUBSCRIPTIONS: usize = 8;
 
-impl<T> DataModel<T>
+pub struct DataModel<'a, T> {
+    handler: T,
+    subscriptions: &'a Subscriptions,
+}
+
+impl<'a, T> DataModel<'a, T>
 where
     T: DataModelHandler,
 {
-    pub fn new(handler: T) -> Self {
-        Self(handler)
+    pub const fn new(handler: T, subscriptions: &'a Subscriptions) -> Self {
+        Self {
+            handler,
+            subscriptions,
+        }
     }
 
     pub async fn handle(
@@ -123,7 +213,7 @@ where
         wb: &mut WriteBuf<'_>,
         suppress_resp: bool,
     ) -> Result<bool, Error> {
-        let metadata = self.0.lock().await;
+        let metadata = self.handler.lock().await;
 
         let mut resp = ReportDataStreamingResp::new(wb);
 
@@ -132,7 +222,7 @@ where
         let accessor = exchange.accessor()?;
 
         for item in metadata.node().read(req, None, &accessor) {
-            while !AttrDataEncoder::handle_read(&item, &self.0, &mut resp.writer()).await? {
+            while !AttrDataEncoder::handle_read(&item, &self.handler, &mut resp.writer()).await? {
                 exchange
                     .send(OpCode::ReportData, resp.finish_chunk(req)?)
                     .await?;
@@ -172,7 +262,7 @@ where
             return exchange.send(OpCode::StatusResponse, wb.as_slice()).await;
         }
 
-        let metadata = self.0.lock().await;
+        let metadata = self.handler.lock().await;
 
         let mut resp = WriteStreamingResp::new(wb);
 
@@ -195,7 +285,7 @@ where
             node.write(req, &accessor).collect();
 
         for item in write_attrs {
-            AttrDataEncoder::handle_write(&item, &self.0, &mut resp.writer()).await?;
+            AttrDataEncoder::handle_write(&item, &self.handler, &mut resp.writer()).await?;
         }
 
         exchange.send(OpCode::WriteResponse, resp.finish()?).await
@@ -225,12 +315,13 @@ where
 
                 let accessor = exchange.accessor()?;
 
-                let metadata = self.0.lock().await;
+                let metadata = self.handler.lock().await;
 
                 let node = metadata.node();
 
                 for item in node.invoke(req, &accessor) {
-                    CmdDataEncoder::handle(&item, &self.0, &mut resp.writer(), exchange).await?;
+                    CmdDataEncoder::handle(&item, &self.handler, &mut resp.writer(), exchange)
+                        .await?;
                 }
 
                 exchange
@@ -246,41 +337,106 @@ where
         req: &SubscribeReq<'_>,
         wb: &mut WriteBuf<'_>,
     ) -> Result<(), Error> {
-        let subscription_id = SUBS_ID.fetch_add(1, Ordering::SeqCst);
+        let mut reported_at = Instant::now();
 
-        let mut subscribed = self
-            .report_data(
-                exchange,
-                &ReportDataReq::Subscribe(req),
-                Some(subscription_id),
-                wb,
-                false,
-            )
-            .await?;
+        let subscription_id = self.subscriptions.next_subscription_id();
+        let node_id = exchange
+            .with_session(|sess| sess.get_peer_node_id().ok_or(ErrorCode::Invalid.into()))?;
 
-        if subscribed {
-            let max_int = core::cmp::max(req.max_int_ceil, 20); // TODO
+        if !req.keep_subs {
+            self.subscriptions.remove_all(node_id);
+            info!("All subscriptions for node {node_id:x} removed");
+        }
 
-            exchange
-                .send_with(|wb| {
-                    SubscribeResp::write(wb, subscription_id, max_int)?;
-                    Ok(OpCode::SubscribeResponse.into())
-                })
+        if self.subscriptions.add(node_id, subscription_id) {
+            info!("Subscription {node_id:x}::{subscription_id} added");
+
+            let _sub_remove_guard = scopeguard::guard((), |_| {
+                self.subscriptions.remove(node_id, subscription_id);
+                info!("Subscription {node_id:x}::{subscription_id} removed");
+            });
+
+            let mut subscribed = self
+                .report_data(
+                    exchange,
+                    &ReportDataReq::Subscribe(req),
+                    Some(subscription_id),
+                    wb,
+                    false,
+                )
                 .await?;
 
-            while subscribed {
-                Timer::after(embassy_time::Duration::from_secs(max_int as u64 - 10)).await; // TODO
+            if subscribed {
+                let min_int_secs = req.min_int_floor;
+                let max_int_secs = core::cmp::max(req.max_int_ceil, 20); // TODO
 
-                subscribed = self
-                    .report_data(
-                        exchange,
-                        &ReportDataReq::Subscribe(req),
-                        Some(subscription_id),
-                        wb,
-                        false,
-                    )
+                info!("New subscription {node_id:x}::{subscription_id}; reporting interval: {min_int_secs}s - {max_int_secs}s");
+
+                exchange
+                    .send_with(|wb| {
+                        SubscribeResp::write(wb, subscription_id, max_int_secs)?;
+                        Ok(OpCode::SubscribeResponse.into())
+                    })
                     .await?;
+
+                let mut changed = false;
+
+                while subscribed {
+                    let removed = self.subscriptions.wait_removed(node_id, subscription_id);
+                    let timeout = Timer::after(embassy_time::Duration::from_secs(10));
+
+                    let result = select(removed, timeout).await;
+
+                    if let Either::First(removed) = result {
+                        if removed {
+                            break;
+                        } else {
+                            // TODO: Examine all clusters to figure out if data reporting is due
+                            changed = true;
+                            info!("Subscription {node_id:x}::{subscription_id}: Change detected");
+                        }
+                    }
+
+                    let now = Instant::now();
+
+                    let changed_due = changed
+                        && reported_at + embassy_time::Duration::from_secs(min_int_secs as _)
+                            <= now;
+                    let timeout_due =
+                        reported_at + embassy_time::Duration::from_secs(max_int_secs as _) <= now; // TODO
+
+                    if changed_due || timeout_due {
+                        if changed_due {
+                            info!("Subscription {node_id:x}::{subscription_id}: Reporting due to detected change");
+                        } else {
+                            info!("Subscription {node_id:x}::{subscription_id}: Reporting due to {max_int_secs}s interval expiry");
+                        }
+
+                        reported_at = now;
+                        changed = false;
+
+                        subscribed = self
+                            .report_data(
+                                exchange,
+                                &ReportDataReq::Subscribe(req),
+                                Some(subscription_id),
+                                wb,
+                                false,
+                            )
+                            .await?;
+                    } else if changed {
+                        info!("Subscription {node_id:x}::{subscription_id}: Waiting for {min_int_secs}s interval to report the change");
+                    }
+                }
             }
+        } else {
+            exchange
+                .send_with(|wb| {
+                    StatusResp::write(wb, IMStatusCode::ResourceExhausted)?;
+
+                    Ok(OpCode::StatusResponse.into())
+                })
+                .await?;
         }
 
         Ok(())

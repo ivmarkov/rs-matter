@@ -46,6 +46,7 @@ domain = { version = "0.9", default-features = false, features = ["heapless"] }
 octseq = { version = "0.3", default-features = false }
 portable-atomic = "1"
 qrcodegen-no-heap = "1.8"
+scopeguard = "1"
 
 # crypto
 openssl = { version = "0.10", optional = true }

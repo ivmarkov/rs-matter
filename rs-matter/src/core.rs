@@ -25,12 +25,12 @@ use crate::{
     },
     error::*,
     fabric::FabricMgr,
-    mdns::Mdns,
+    mdns::MdnsService,
     pairing::{print_pairing_code_and_qr, DiscoveryCapabilities},
     secure_channel::{pake::PaseMgr, spake2p::VerifierData},
     transport::{
         core::TransportMgr,
-        network::{UdpReceive, UdpSend},
+        network::{NetworkReceive, NetworkSend},
     },
     utils::{epoch::Epoch, rand::Rand, select::Notification},
 };
@@ -54,7 +54,7 @@ pub struct Matter<'a> {
     pub(crate) failsafe: RefCell<FailSafe>,
     pub transport_mgr: TransportMgr, // Public for tests
     persist_notification: Notification,
-    pub(crate) mdns: &'a dyn Mdns,
+    pub(crate) mdns: MdnsService<'a>,
     pub(crate) epoch: Epoch,
     pub(crate) rand: Rand,
     dev_det: &'a BasicInfoConfig<'a>,
@@ -68,13 +68,12 @@ impl<'a> Matter<'a> {
     pub const fn new_default(
         dev_det: &'a BasicInfoConfig<'a>,
         dev_att: &'a dyn DevAttDataFetcher,
-        mdns: &'a dyn Mdns,
         port: u16,
     ) -> Self {
         use crate::utils::epoch::sys_epoch;
         use crate::utils::rand::sys_rand;
 
-        Self::new(dev_det, dev_att, mdns, sys_epoch, sys_rand, port)
+        Self::new(dev_det, dev_att, sys_epoch, sys_rand, port)
     }
 
     /// Creates a new Matter object
@@ -87,7 +86,6 @@ impl<'a> Matter<'a> {
     pub const fn new(
         dev_det: &'a BasicInfoConfig<'a>,
         dev_att: &'a dyn DevAttDataFetcher,
-        mdns: &'a dyn Mdns,
         epoch: Epoch,
         rand: Rand,
         port: u16,
@@ -99,7 +97,7 @@ impl<'a> Matter<'a> {
             failsafe: RefCell::new(FailSafe::new()),
             transport_mgr: TransportMgr::new(epoch, rand),
             persist_notification: Notification::new(),
-            mdns,
+            mdns: MdnsService::new(dev_det, port),
             epoch,
             rand,
             dev_det,
@@ -116,12 +114,16 @@ impl<'a> Matter<'a> {
         self.dev_att
     }
 
+    pub fn rand(&self) -> Rand {
+        self.rand
+    }
+
     pub fn port(&self) -> u16 {
         self.port
     }
 
     pub fn load_fabrics(&self, data: &[u8]) -> Result<(), Error> {
-        self.fabric_mgr.borrow_mut().load(data, self.mdns)
+        self.fabric_mgr.borrow_mut().load(data, &self.mdns)
     }
 
     pub fn load_acls(&self, data: &[u8]) -> Result<(), Error> {
@@ -140,7 +142,7 @@ impl<'a> Matter<'a> {
         self.acl_mgr.borrow().is_changed() || self.fabric_mgr.borrow().is_changed()
     }
 
-    pub fn start_comissioning(
+    fn start_comissioning(
         &self,
         dev_comm: CommissioningData,
         buf: &mut [u8],
@@ -157,7 +159,7 @@ impl<'a> Matter<'a> {
             self.pase_mgr.borrow_mut().enable_pase_session(
                 dev_comm.verifier,
                 dev_comm.discriminator,
-                self.mdns,
+                &self.mdns,
             )?;
 
             Ok(true)
@@ -166,12 +168,110 @@ impl<'a> Matter<'a> {
         }
     }
 
-    pub async fn run<S, R>(&self, send: S, recv: R) -> Result<(), Error>
+    pub fn reset(&self) {
+        self.mdns.reset();
+        self.transport_mgr.reset();
+    }
+
+    #[cfg(all(
+        feature = "std",
+        any(target_os = "macos", all(feature = "zeroconf", target_os = "linux"))
+    ))]
+    pub async fn run<S, R>(
+        &self,
+        send: S,
+        recv: R,
+        dev_comm: Option<CommissioningData>,
+    ) -> Result<(), Error>
     where
-        S: UdpSend,
-        R: UdpReceive,
+        S: NetworkSend,
+        R: NetworkReceive,
     {
+        use crate::transport::core::PacketBufferAccess;
+
+        self.mdns.enable(true);
+
+        if let Some(dev_comm) = dev_comm {
+            let buf_access = PacketBufferAccess(&self.transport_mgr.rx);
+            let mut buf = buf_access.get().await;
+
+            self.start_comissioning(dev_comm, &mut buf)?;
+        }
+
         self.transport_mgr.run(send, recv).await
+    }
+
+    #[cfg(not(all(
+        feature = "std",
+        any(target_os = "macos", all(feature = "zeroconf", target_os = "linux"))
+    )))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run<S, R, MS, MR>(
+        &self,
+        send: S,
+        recv: R,
+        dev_comm: Option<CommissioningData>,
+        mdns_send: MS,
+        mdns_recv: MR,
+        mdns_host: crate::mdns::Host<'_>,
+        interface: Option<u32>,
+    ) -> Result<(), Error>
+    where
+        S: NetworkSend,
+        R: NetworkReceive,
+        MS: NetworkSend,
+        MR: NetworkReceive,
+    {
+        use crate::transport::core::PacketBufferAccess;
+        use crate::{transport::network::BufferAccess, utils::select::EitherUnwrap};
+        use embassy_futures::select::select;
+
+        if let Some(dev_comm) = dev_comm {
+            let buf_access = PacketBufferAccess(&self.transport_mgr.rx);
+            let mut buf = buf_access.get().await;
+
+            self.start_comissioning(dev_comm, &mut buf)?;
+        }
+
+        select(
+            self.transport_mgr.run(send, recv),
+            self.run_mdns(mdns_send, mdns_recv, mdns_host, interface),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[cfg(not(all(
+        feature = "std",
+        any(target_os = "macos", all(feature = "zeroconf", target_os = "linux"))
+    )))]
+    async fn run_mdns<S, R>(
+        &self,
+        send: S,
+        recv: R,
+        host: crate::mdns::Host<'_>,
+        interface: Option<u32>,
+    ) -> Result<(), Error>
+    where
+        S: NetworkSend,
+        R: NetworkReceive,
+    {
+        use log::info;
+
+        use crate::transport::core::PacketBufferAccess;
+
+        info!("Running Matter built-in mDNS service");
+
+        self.mdns
+            .run(
+                send,
+                recv,
+                PacketBufferAccess(&self.transport_mgr.tx),
+                PacketBufferAccess(&self.transport_mgr.rx),
+                host,
+                interface,
+            )
+            .await
     }
 
     pub fn notify_changed(&self) {
@@ -221,9 +321,9 @@ impl<'a> Borrow<dyn DevAttDataFetcher + 'a> for Matter<'a> {
     }
 }
 
-impl<'a> Borrow<dyn Mdns + 'a> for Matter<'a> {
-    fn borrow(&self) -> &(dyn Mdns + 'a) {
-        self.mdns
+impl<'a> Borrow<MdnsService<'a>> for Matter<'a> {
+    fn borrow(&self) -> &MdnsService<'a> {
+        &self.mdns
     }
 }
 

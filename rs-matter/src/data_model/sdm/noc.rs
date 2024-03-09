@@ -24,7 +24,7 @@ use crate::crypto::{self, KeyPair};
 use crate::data_model::objects::*;
 use crate::data_model::sdm::dev_att;
 use crate::fabric::{Fabric, FabricMgr, MAX_SUPPORTED_FABRICS};
-use crate::mdns::Mdns;
+use crate::mdns::MdnsService;
 use crate::tlv::{FromTLV, OctetStr, TLVElement, TLVWriter, TagType, ToTLV, UtfStr};
 use crate::transport::exchange::Exchange;
 use crate::transport::session::SessionMode;
@@ -222,7 +222,7 @@ pub struct NocCluster<'a> {
     fabric_mgr: &'a RefCell<FabricMgr>,
     acl_mgr: &'a RefCell<AclMgr>,
     failsafe: &'a RefCell<FailSafe>,
-    mdns: &'a dyn Mdns,
+    mdns: &'a MdnsService<'a>,
 }
 
 impl<'a> NocCluster<'a> {
@@ -231,7 +231,7 @@ impl<'a> NocCluster<'a> {
         fabric_mgr: &'a RefCell<FabricMgr>,
         acl_mgr: &'a RefCell<AclMgr>,
         failsafe: &'a RefCell<FailSafe>,
-        mdns: &'a dyn Mdns,
+        mdns: &'a MdnsService<'a>,
         epoch: Epoch,
         rand: Rand,
     ) -> Self {

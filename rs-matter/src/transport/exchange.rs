@@ -20,7 +20,7 @@ use core::fmt::{self, Display};
 use embassy_futures::select::select;
 use embassy_time::Timer;
 
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::acl::Accessor;
 use crate::error::{Error, ErrorCode};
@@ -29,10 +29,10 @@ use crate::secure_channel::{self, common::PROTO_ID_SECURE_CHANNEL};
 use crate::utils::{epoch::Epoch, writebuf::WriteBuf};
 use crate::Matter;
 
-use super::core::{Packet, PacketAccess, RxPacket, TxPacket};
+use super::core::{Packet, PacketAccess};
 use super::mrp::{ReliableMessage, RetransEntry};
 use super::network::Address;
-use super::packet::{PacketHdr, MAX_TX_BUF_SIZE};
+use super::packet::{PacketHdr, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE};
 use super::plain_hdr::PlainHdr;
 use super::proto_hdr::ProtoHdr;
 use super::session::Session;
@@ -252,7 +252,7 @@ impl Display for ExchangeMeta {
 
 pub struct Rx<'a, 'b> {
     exchange: &'a Exchange<'a>,
-    packet: PacketAccess<'b, RxPacket>,
+    packet: PacketAccess<'b, MAX_RX_BUF_SIZE>,
     consumed: bool,
 }
 
@@ -285,7 +285,7 @@ impl<'a, 'b> Drop for Rx<'a, 'b> {
 
 pub struct Tx<'a, 'b> {
     exchange: &'a Exchange<'a>,
-    packet: PacketAccess<'b, TxPacket>,
+    packet: PacketAccess<'b, MAX_TX_BUF_SIZE>,
     completed: Option<(usize, usize)>,
 }
 
@@ -360,7 +360,12 @@ impl<'a, 'b> TxPayload<'a, 'b> {
         {
             info!(
                 "<<< {} => Sending",
-                Packet::<0>::display(self.peer, self.header, self.writebuf.as_slice())
+                Packet::<0>::display(self.peer, self.header)
+            );
+
+            debug!(
+                "{}",
+                Packet::<0>::display_payload(&self.header.proto, self.writebuf.as_slice())
             );
 
             session.encode(self.header, &mut self.writebuf)?;

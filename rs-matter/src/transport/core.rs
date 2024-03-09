@@ -24,7 +24,7 @@ use embassy_futures::select::{select, select3};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::Timer;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 use crate::error::{Error, ErrorCode};
 use crate::interaction_model::{
@@ -45,17 +45,17 @@ use crate::utils::{
 use crate::{Matter, MATTER_PORT};
 
 use super::exchange::{Exchange, ExchangeId, ExchangeMeta, OwnedState, Role};
-use super::network::{Address, Ipv6Addr, SocketAddr, SocketAddrV6, UdpReceive, UdpSend};
+use super::network::{
+    Address, BufferAccess, Ipv6Addr, NetworkReceive, NetworkSend, SocketAddr, SocketAddrV6,
+};
 use super::packet::{PacketHdr, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE};
+use super::proto_hdr::ProtoHdr;
 use super::session::{Session, SessionMgr};
 
 pub const MATTER_SOCKET_BIND_ADDR: SocketAddr =
     SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, MATTER_PORT, 0, 0));
 
 const ACCEPT_TIMEOUT_MS: u64 = 500;
-
-pub type RxPacket = Packet<MAX_RX_BUF_SIZE>;
-pub type TxPacket = Packet<MAX_TX_BUF_SIZE>;
 
 pub struct Packet<const N: usize> {
     pub(crate) peer: Address,
@@ -75,42 +75,49 @@ impl<const N: usize> Packet<N> {
         }
     }
 
-    pub fn display<'a>(
-        peer: &'a Address,
-        header: &'a PacketHdr,
-        buf: &'a [u8],
-    ) -> impl Display + 'a {
-        struct PacketInfo<'a>(&'a Address, &'a PacketHdr, &'a [u8]);
+    pub fn display<'a>(peer: &'a Address, header: &'a PacketHdr) -> impl Display + 'a {
+        struct PacketInfo<'a>(&'a Address, &'a PacketHdr);
 
         impl<'a> Display for PacketInfo<'a> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                Packet::<0>::fmt(f, self.0, self.1, self.2)
+                Packet::<0>::fmt(f, self.0, self.1)
             }
         }
 
-        PacketInfo(peer, header, buf)
+        PacketInfo(peer, header)
     }
 
-    fn fmt(
-        f: &mut fmt::Formatter<'_>,
-        peer: &Address,
-        header: &PacketHdr,
-        buf: &[u8],
-    ) -> fmt::Result {
+    pub fn display_payload<'a>(proto: &'a ProtoHdr, buf: &'a [u8]) -> impl Display + 'a {
+        struct PacketInfo<'a>(&'a ProtoHdr, &'a [u8]);
+
+        impl<'a> Display for PacketInfo<'a> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                Packet::<0>::fmt_payload(f, self.0, self.1)
+            }
+        }
+
+        PacketInfo(proto, buf)
+    }
+
+    fn fmt(f: &mut fmt::Formatter<'_>, peer: &Address, header: &PacketHdr) -> fmt::Result {
         let meta = ExchangeMeta::from(&header.proto);
 
-        write!(f, "{} {} {}", peer, header, meta)?;
+        write!(f, "{peer} {header} {meta}")
+    }
 
-        if !buf.is_empty() {
-            if meta.is_tlv() {
-                write!(
-                    f,
-                    "; TLV:\n----------------\n{}\n----------------\n",
-                    TLVList::new(buf)
-                )?;
-            } else {
-                write!(f, "; Payload: {:02x?}", buf)?;
-            }
+    fn fmt_payload(f: &mut fmt::Formatter<'_>, proto: &ProtoHdr, buf: &[u8]) -> fmt::Result {
+        let meta = ExchangeMeta::from(&proto);
+
+        write!(f, "{meta}")?;
+
+        if meta.is_tlv() {
+            write!(
+                f,
+                "; TLV:\n----------------\n{}\n----------------\n",
+                TLVList::new(buf)
+            )?;
+        } else {
+            write!(f, "; Payload: {:02x?}", buf)?;
         }
 
         Ok(())
@@ -119,48 +126,83 @@ impl<const N: usize> Packet<N> {
 
 impl<const N: usize> Display for Packet<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Self::fmt(f, &self.peer, &self.header, &self.buf[self.payload_start..])
+        Self::fmt(f, &self.peer, &self.header)
     }
 }
 
-pub struct PacketAccess<'a, T>(IfMutexGuard<'a, NoopRawMutex, T>);
+pub(crate) struct PacketAccess<'a, const N: usize>(IfMutexGuard<'a, NoopRawMutex, Packet<N>>);
 
-impl<'a, T> PacketAccess<'a, T> {
-    pub fn packet_ref(&self) -> &T {
+impl<'a, const N: usize> PacketAccess<'a, N> {
+    pub fn packet_ref(&self) -> &Packet<N> {
         &self.0
     }
 
-    pub fn packet_mut(&mut self) -> &mut T {
+    pub fn packet_mut(&mut self) -> &mut Packet<N> {
         &mut self.0
     }
 }
 
-impl<'a, T> Deref for PacketAccess<'a, T> {
-    type Target = T;
+impl<'a, const N: usize> Deref for PacketAccess<'a, N> {
+    type Target = Packet<N>;
 
     fn deref(&self) -> &Self::Target {
         self.packet_ref()
     }
 }
 
-impl<'a, T> DerefMut for PacketAccess<'a, T> {
+impl<'a, const N: usize> DerefMut for PacketAccess<'a, N> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.packet_mut()
     }
 }
 
-impl<'a, T> Display for PacketAccess<'a, T>
-where
-    T: Display,
-{
+impl<'a, const N: usize> Display for PacketAccess<'a, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.packet_ref().fmt(f)
     }
 }
 
+pub(crate) struct PacketBufferAccess<'a, const N: usize>(
+    pub(crate) &'a IfMutex<NoopRawMutex, Packet<N>>,
+);
+
+impl<'a, const N: usize> BufferAccess for PacketBufferAccess<'a, N> {
+    type Buffer<'b> = PacketBuffer<'b, N> where Self: 'b;
+
+    async fn get(&self) -> PacketBuffer<'_, N> {
+        let mut packet = self.0.lock_if(|packet| packet.buf.is_empty()).await;
+
+        packet.buf.resize_default(N).unwrap();
+
+        PacketBuffer(packet)
+    }
+}
+
+pub struct PacketBuffer<'a, const N: usize>(IfMutexGuard<'a, NoopRawMutex, Packet<N>>);
+
+impl<'a, const N: usize> Deref for PacketBuffer<'a, N> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.buf
+    }
+}
+
+impl<'a, const N: usize> DerefMut for PacketBuffer<'a, N> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0.buf
+    }
+}
+
+impl<'a, const N: usize> Drop for PacketBuffer<'a, N> {
+    fn drop(&mut self) {
+        self.0.buf.clear();
+    }
+}
+
 pub struct TransportMgr {
-    pub(crate) rx: IfMutex<NoopRawMutex, RxPacket>,
-    pub(crate) tx: IfMutex<NoopRawMutex, TxPacket>,
+    pub(crate) rx: IfMutex<NoopRawMutex, Packet<MAX_RX_BUF_SIZE>>,
+    pub(crate) tx: IfMutex<NoopRawMutex, Packet<MAX_TX_BUF_SIZE>>,
     pub(crate) orphaned: Notification,
     pub session_mgr: RefCell<SessionMgr>, // For testing
 }
@@ -169,8 +211,8 @@ impl TransportMgr {
     #[inline(always)]
     pub const fn new(epoch: Epoch, rand: Rand) -> Self {
         Self {
-            rx: IfMutex::new(RxPacket::new()),
-            tx: IfMutex::new(TxPacket::new()),
+            rx: IfMutex::new(Packet::new()),
+            tx: IfMutex::new(Packet::new()),
             orphaned: Notification::new(),
             session_mgr: RefCell::new(SessionMgr::new(epoch, rand)),
         }
@@ -238,8 +280,8 @@ impl TransportMgr {
 
     pub async fn run<S, R>(&self, send: S, recv: R) -> Result<(), Error>
     where
-        S: UdpSend,
-        R: UdpReceive,
+        S: NetworkSend,
+        R: NetworkReceive,
     {
         info!("Running Matter transport");
 
@@ -252,13 +294,13 @@ impl TransportMgr {
         select3(&mut rx, &mut tx, &mut orphaned).await.unwrap()
     }
 
-    pub(crate) async fn get_if<'a, F, T>(
+    pub(crate) async fn get_if<'a, F, const N: usize>(
         &'a self,
-        packet_mutex: &'a IfMutex<NoopRawMutex, T>,
+        packet_mutex: &'a IfMutex<NoopRawMutex, Packet<N>>,
         f: F,
-    ) -> PacketAccess<'a, T>
+    ) -> PacketAccess<'a, N>
     where
-        F: Fn(&T) -> bool,
+        F: Fn(&Packet<N>) -> bool,
     {
         PacketAccess(packet_mutex.lock_if(f).await)
     }
@@ -276,7 +318,7 @@ impl TransportMgr {
 
     async fn handle_tx<S>(&self, send: &IfMutex<NoopRawMutex, S>) -> Result<(), Error>
     where
-        S: UdpSend,
+        S: NetworkSend,
     {
         loop {
             let mut tx = self.get_if(&self.tx, |packet| !packet.buf.is_empty()).await;
@@ -293,121 +335,135 @@ impl TransportMgr {
         send: &IfMutex<NoopRawMutex, S>,
     ) -> Result<(), Error>
     where
-        R: UdpReceive,
-        S: UdpSend,
+        R: NetworkReceive,
+        S: NetworkSend,
     {
         loop {
             info!("Waiting for incoming packet");
 
-            let mut rx = self.get_if(&self.rx, |packet| packet.buf.is_empty()).await;
+            recv.wait_available().await?;
 
-            rx.buf.resize_default(MAX_RX_BUF_SIZE).unwrap();
+            {
+                let mut rx = self.get_if(&self.rx, |packet| packet.buf.is_empty()).await;
 
-            if let Ok((len, peer)) = Self::netw_recv(&mut recv, &mut rx.buf).await {
-                rx.buf.truncate(len);
-                rx.payload_start = 0;
-                rx.peer = peer;
+                rx.buf.resize_default(MAX_RX_BUF_SIZE).unwrap();
 
-                let mut reply = false;
+                if let Ok((len, peer)) = Self::netw_recv(&mut recv, &mut rx.buf).await {
+                    rx.buf.truncate(len);
+                    rx.payload_start = 0;
+                    rx.peer = peer;
 
-                let result = self.read_packet(&mut rx);
-                match result {
-                    Err(e) if matches!(e.code(), ErrorCode::Duplicate) => {
-                        info!(">>> {rx} => Duplicate, sending ACK");
+                    let mut reply = false;
 
-                        let mut session_mgr = self.session_mgr.borrow_mut();
-                        let epoch = session_mgr.epoch;
-                        let session = session_mgr.get_for(&rx.peer, &rx.header.plain).unwrap();
+                    let result = self.decode_packet(&mut rx);
+                    match result {
+                        Err(e) if matches!(e.code(), ErrorCode::Duplicate) => {
+                            info!(">>> {rx} => Duplicate, sending ACK");
 
-                        let ack = rx.header.plain.ctr;
+                            let mut session_mgr = self.session_mgr.borrow_mut();
+                            let epoch = session_mgr.epoch;
+                            let session = session_mgr.get_for(&rx.peer, &rx.header.plain).unwrap();
 
-                        rx.header.proto.unset_initiator();
-                        rx.header.proto.set_ack(Some(ack));
+                            let ack = rx.header.plain.ctr;
 
-                        self.write_packet(&mut rx, Some(session), None, epoch, |_| {
-                            Ok(OpCode::MRPStandAloneAck.into())
-                        })?;
+                            rx.header.proto.unset_initiator();
+                            rx.header.proto.set_ack(Some(ack));
 
-                        reply = true;
-                    }
-                    Err(e) if matches!(e.code(), ErrorCode::NoSpaceSessions) => {
-                        if !rx.header.plain.is_encrypted()
-                            && rx.header.proto.proto_id == PROTO_ID_SECURE_CHANNEL
-                            && (rx.header.proto.proto_opcode == OpCode::PBKDFParamRequest as u8
-                                || rx.header.proto.proto_opcode == OpCode::CASESigma1 as u8)
-                        {
-                            error!(">>> {rx} => No space for a new session, sending Busy");
+                            self.encode_packet(&mut rx, Some(session), None, epoch, |_| {
+                                Ok(OpCode::MRPStandAloneAck.into())
+                            })?;
 
-                            let exch_id = rx.header.proto.exch_id;
+                            reply = true;
+                        }
+                        Err(e) if matches!(e.code(), ErrorCode::NoSpaceSessions) => {
+                            if !rx.header.plain.is_encrypted()
+                                && rx.header.proto.proto_id == PROTO_ID_SECURE_CHANNEL
+                                && (rx.header.proto.proto_opcode == OpCode::PBKDFParamRequest as u8
+                                    || rx.header.proto.proto_opcode == OpCode::CASESigma1 as u8)
+                            {
+                                error!(">>> {rx} => No space for a new session, sending Busy");
 
-                            rx.header.reset();
-                            rx.header.proto.exch_id = exch_id;
+                                let exch_id = rx.header.proto.exch_id;
 
-                            self.write_packet(
+                                rx.header.reset();
+                                rx.header.proto.exch_id = exch_id;
+
+                                self.encode_packet(
+                                    &mut rx,
+                                    None,
+                                    None,
+                                    self.session_mgr.borrow().epoch,
+                                    |wb| sc_write(wb, SCStatusCodes::Busy, None),
+                                )?;
+                            } else {
+                                error!(">>> {rx} => No space for a new session, dropping");
+                            }
+                        }
+                        Err(e) if matches!(e.code(), ErrorCode::NoSpaceExchanges) => {
+                            // TODO: Before closing the session, try to take other measures:
+                            // - For CASESigma1 & PBKDFParamRequest - send Busy instead
+                            // - For Interaction Model interactions that do need an ACK - send IM Busy,
+                            //   wait for ACK and retransmit without releasing the RX buffer, potentially
+                            //   blocking all other interactions
+
+                            error!(">>> {rx} => No space for a new exchange, closing session");
+
+                            let mut session_mgr = self.session_mgr.borrow_mut();
+                            let session_id =
+                                session_mgr.get_for(&rx.peer, &rx.header.plain).unwrap().id;
+
+                            rx.header.proto.exch_id = session_mgr.get_next_exch_id();
+                            rx.header.proto.set_initiator();
+
+                            let mut session = session_mgr.remove(session_id).unwrap();
+
+                            self.encode_packet(
                                 &mut rx,
+                                Some(&mut session),
                                 None,
-                                None,
-                                self.session_mgr.borrow().epoch,
-                                |wb| sc_write(wb, SCStatusCodes::Busy, None),
+                                session_mgr.epoch,
+                                |wb| sc_write(wb, SCStatusCodes::CloseSession, None),
                             )?;
-                        } else {
-                            error!(">>> {rx} => No space for a new session, dropping");
+
+                            reply = true;
                         }
-                    }
-                    Err(e) if matches!(e.code(), ErrorCode::NoSpaceExchanges) => {
-                        // TODO: Before closing the session, try to take other measures:
-                        // - For CASESigma1 & PBKDFParamRequest - send Busy instead
-                        // - For Interaction Model interactions that do need an ACK - send IM Busy,
-                        //   wait for ACK and retransmit without releasing the RX buffer, potentially
-                        //   blocking all other interactions
-
-                        error!(">>> {rx} => No space for a new exchange, closing session");
-
-                        let mut session_mgr = self.session_mgr.borrow_mut();
-                        let session_id =
-                            session_mgr.get_for(&rx.peer, &rx.header.plain).unwrap().id;
-
-                        rx.header.proto.exch_id = session_mgr.get_next_exch_id();
-                        rx.header.proto.set_initiator();
-
-                        let mut session = session_mgr.remove(session_id).unwrap();
-
-                        self.write_packet(
-                            &mut rx,
-                            Some(&mut session),
-                            None,
-                            session_mgr.epoch,
-                            |wb| sc_write(wb, SCStatusCodes::CloseSession, None),
-                        )?;
-
-                        reply = true;
-                    }
-                    Err(e) => {
-                        rx.buf.clear();
-
-                        error!(">>> {rx} => Error ({e:?}), dropping");
-                    }
-                    Ok(new_exchange) => {
-                        if rx.header.proto.proto_id == PROTO_ID_SECURE_CHANNEL
-                            && rx.header.proto.proto_opcode == OpCode::MRPStandAloneAck as u8
-                        {
-                            // No need to propagate this further
+                        Err(e) => {
                             rx.buf.clear();
-                        } else {
-                            info!(
-                                ">>> {rx} => Processing{}",
-                                if new_exchange { " (new exchange)" } else { "" }
-                            );
+
+                            error!(">>> {rx} => Error ({e:?}), dropping");
+                        }
+                        Ok(new_exchange) => {
+                            if rx.header.proto.proto_id == PROTO_ID_SECURE_CHANNEL
+                                && rx.header.proto.proto_opcode == OpCode::MRPStandAloneAck as u8
+                            {
+                                // No need to propagate this further
+                                info!(">>> {rx} => Standalone Ack, dropping");
+
+                                rx.buf.clear();
+                            } else {
+                                info!(
+                                    ">>> {rx} => Processing{}",
+                                    if new_exchange { " (new exchange)" } else { "" }
+                                );
+
+                                debug!(
+                                    "{}",
+                                    Packet::<0>::display_payload(
+                                        &rx.header.proto,
+                                        &rx.buf[core::cmp::min(rx.payload_start, rx.buf.len())..]
+                                    )
+                                );
+                            }
                         }
                     }
-                }
 
-                if reply {
-                    Self::netw_send(send, rx.peer, &rx.buf[rx.payload_start..], true).await?;
+                    if reply {
+                        Self::netw_send(send, rx.peer, &rx.buf[rx.payload_start..], true).await?;
+                        rx.buf.clear();
+                    }
+                } else {
                     rx.buf.clear();
                 }
-            } else {
-                rx.buf.clear();
             }
         }
     }
@@ -549,7 +605,7 @@ impl TransportMgr {
                             "Orphaned exchange {exchange_id}: Closing session because the exchange cannot be closed cleanly"
                         );
 
-                        self.write_evict_session(&mut tx, &mut session_mgr, session_id)?;
+                        self.encode_evict_session(&mut tx, &mut session_mgr, session_id)?;
                     } else {
                         // Found an orphaned exchange that can be completed cleanly
                         // Figure out the right reply and send it with re-transmission
@@ -566,7 +622,7 @@ impl TransportMgr {
                             session.exchanges[exch_index] = None;
                             warn!("Orphaned exchange {exchange_id}: Closed");
                         } else if let Some(meta) = exchange.last_received {
-                            self.write_orphaned_close_resp(
+                            self.encode_orphaned_close_resp(
                                 &mut tx, session, exch_index, epoch, meta,
                             )?;
 
@@ -604,13 +660,13 @@ impl TransportMgr {
         let mut session_mgr = self.session_mgr.borrow_mut();
         let id = session_mgr.get_session_for_eviction().map(|sess| sess.id);
         if let Some(id) = id {
-            self.write_evict_session(&mut tx, &mut session_mgr, id)
+            self.encode_evict_session(&mut tx, &mut session_mgr, id)
         } else {
             Err(ErrorCode::NoSpaceSessions.into())
         }
     }
 
-    fn read_packet<const N: usize>(&self, packet: &mut Packet<N>) -> Result<bool, Error> {
+    fn decode_packet<const N: usize>(&self, packet: &mut Packet<N>) -> Result<bool, Error> {
         packet.header.reset();
 
         let mut pb = ParseBuf::new(&mut packet.buf[packet.payload_start..]);
@@ -645,13 +701,13 @@ impl TransportMgr {
         }
     }
 
-    fn write_packet<const N: usize, F>(
+    fn encode_packet<const N: usize, F>(
         &self,
         packet: &mut Packet<N>,
         mut session: Option<&mut Session>,
         exchange_index: Option<usize>,
         epoch: Epoch,
-        writer: F,
+        payload_writer: F,
     ) -> Result<(), Error>
     where
         F: FnOnce(&mut WriteBuf) -> Result<ExchangeMeta, Error>,
@@ -663,7 +719,7 @@ impl TransportMgr {
         let mut wb = WriteBuf::new(&mut packet.buf);
         wb.reserve(PacketHdr::HDR_RESERVE)?;
 
-        writer(&mut wb)?.set_into(&mut packet.header.proto);
+        payload_writer(&mut wb)?.set_into(&mut packet.header.proto);
 
         if let Some(session) = &mut session {
             packet.peer = session.pre_send(exchange_index, &mut packet.header, epoch)?;
@@ -671,7 +727,12 @@ impl TransportMgr {
 
         info!(
             "<<< {} => Sending (system)",
-            Packet::<0>::display(&packet.peer, &packet.header, wb.as_slice())
+            Packet::<0>::display(&packet.peer, &packet.header)
+        );
+
+        debug!(
+            "{}",
+            Packet::<0>::display_payload(&packet.header.proto, wb.as_slice())
         );
 
         if let Some(session) = session {
@@ -686,7 +747,7 @@ impl TransportMgr {
         Ok(())
     }
 
-    fn write_orphaned_close_resp<const N: usize>(
+    fn encode_orphaned_close_resp<const N: usize>(
         &self,
         packet: &mut Packet<N>,
         session: &mut Session,
@@ -694,7 +755,7 @@ impl TransportMgr {
         epoch: Epoch,
         meta: ExchangeMeta,
     ) -> Result<(), Error> {
-        self.write_packet(packet, Some(session), Some(exchange_index), epoch, |wb| {
+        self.encode_packet(packet, Some(session), Some(exchange_index), epoch, |wb| {
             let meta = if meta.proto_id == PROTO_ID_SECURE_CHANNEL {
                 match meta.opcode()? {
                     OpCode::PBKDFParamRequest | OpCode::CASESigma1 => {
@@ -727,7 +788,7 @@ impl TransportMgr {
         })
     }
 
-    fn write_evict_session<const N: usize>(
+    fn encode_evict_session<const N: usize>(
         &self,
         packet: &mut Packet<N>,
         session_mgr: &mut SessionMgr,
@@ -738,7 +799,7 @@ impl TransportMgr {
 
         let mut session = session_mgr.remove(id).unwrap();
 
-        self.write_packet(packet, Some(&mut session), None, session_mgr.epoch, |wb| {
+        self.encode_packet(packet, Some(&mut session), None, session_mgr.epoch, |wb| {
             sc_write(wb, SCStatusCodes::CloseSession, None)
         })?;
 
@@ -747,13 +808,11 @@ impl TransportMgr {
 
     async fn netw_recv<R>(mut recv: R, buf: &mut [u8]) -> Result<(usize, Address), Error>
     where
-        R: UdpReceive,
+        R: NetworkReceive,
     {
         match recv.recv_from(buf).await {
             Ok((len, addr)) => {
-                let addr = Address::Udp(addr);
-
-                info!("{} -> {}B: {:02x?}", addr, len, &buf[..len]);
+                debug!(">>> {} {}B: {:02x?}", addr, len, &buf[..len]);
 
                 Ok((len, addr))
             }
@@ -772,27 +831,27 @@ impl TransportMgr {
         system: bool,
     ) -> Result<(), Error>
     where
-        S: UdpSend,
+        S: NetworkSend,
     {
-        match send.lock().await.send_to(data, peer.unwrap_udp()).await {
+        match send.lock().await.send_to(data, peer).await {
             Ok(_) => {
-                info!(
-                    "{} <- {}B: {:02x?}{}",
+                debug!(
+                    "<<< {} {}B{}: {:02x?}",
                     peer,
                     data.len(),
-                    data,
-                    if system { " (system)" } else { "" }
+                    if system { " (system)" } else { "" },
+                    data
                 );
 
                 Ok(())
             }
             Err(e) => {
                 error!(
-                    "FAILED {} <- {}B: {:02x?}{}: {e:?}",
+                    "<<< {} {}B{} !FAILED!: {e:?}: {:02x?}",
                     peer,
                     data.len(),
-                    data,
-                    if system { " (system)" } else { "" }
+                    if system { " (system)" } else { "" },
+                    data
                 );
 
                 Err(e)

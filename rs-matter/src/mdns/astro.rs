@@ -13,7 +13,7 @@ use super::ServiceMode;
 pub struct MdnsService<'a> {
     dev_det: &'a BasicInfoConfig<'a>,
     matter_port: u16,
-    services: RefCell<HashMap<String, RegisteredDnsService>>,
+    services: RefCell<Option<HashMap<String, RegisteredDnsService>>>,
 }
 
 impl<'a> MdnsService<'a> {
@@ -21,58 +21,66 @@ impl<'a> MdnsService<'a> {
         Self {
             dev_det,
             matter_port,
-            services: RefCell::new(HashMap::new()),
+            services: RefCell::new(None),
+        }
+    }
+
+    pub fn reset(&self) {
+        self.services.replace(None);
+    }
+
+    pub fn enable(&self, enable: bool) {
+        if enable {
+            if self.services.borrow().is_none() {
+                self.services.replace(Some(HashMap::new()));
+            }
+        } else {
+            self.services.replace(None);
         }
     }
 
     pub fn add(&self, name: &str, mode: ServiceMode) -> Result<(), Error> {
-        info!("Registering mDNS service {}/{:?}", name, mode);
-
         let _ = self.remove(name);
 
-        mode.service(self.dev_det, self.matter_port, name, |service| {
-            let composite_service_type = if !service.service_subtypes.is_empty() {
-                format!(
-                    "{}.{},{}",
-                    service.service,
-                    service.protocol,
-                    service.service_subtypes.join(",")
-                )
-            } else {
-                format!("{}.{}", service.service, service.protocol)
-            };
+        if let Some(services) = self.services.borrow().as_mut() {
+            info!("Registering mDNS service {}/{:?}", name, mode);
 
-            let mut builder = DNSServiceBuilder::new(&composite_service_type, service.port)
-                .with_name(service.name);
+            mode.service(self.dev_det, self.matter_port, name, |service| {
+                let composite_service_type = if !service.service_subtypes.is_empty() {
+                    format!(
+                        "{}.{},{}",
+                        service.service,
+                        service.protocol,
+                        service.service_subtypes.join(",")
+                    )
+                } else {
+                    format!("{}.{}", service.service, service.protocol)
+                };
 
-            for kvs in service.txt_kvs {
-                info!("mDNS TXT key {} val {}", kvs.0, kvs.1);
-                builder = builder.with_key_value(kvs.0.to_string(), kvs.1.to_string());
-            }
+                let mut builder = DNSServiceBuilder::new(&composite_service_type, service.port)
+                    .with_name(service.name);
 
-            let svc = builder.register().map_err(|_| ErrorCode::MdnsError)?;
+                for kvs in service.txt_kvs {
+                    info!("mDNS TXT key {} val {}", kvs.0, kvs.1);
+                    builder = builder.with_key_value(kvs.0.to_string(), kvs.1.to_string());
+                }
 
-            self.services.borrow_mut().insert(service.name.into(), svc);
+                let svc = builder.register().map_err(|_| ErrorCode::MdnsError)?;
 
-            Ok(())
-        })
+                services.insert(service.name.into(), svc);
+
+                Ok(())
+            })
+        }
     }
 
     pub fn remove(&self, name: &str) -> Result<(), Error> {
-        if self.services.borrow_mut().remove(name).is_some() {
-            info!("Deregistering mDNS service {}", name);
+        if let Some(services) = self.services.borrow().as_mut() {
+            if services.remove(name).is_some() {
+                info!("Deregistering mDNS service {}", name);
+            }
         }
 
         Ok(())
-    }
-}
-
-impl<'a> super::Mdns for MdnsService<'a> {
-    fn add(&self, service: &str, mode: ServiceMode) -> Result<(), Error> {
-        MdnsService::add(self, service, mode)
-    }
-
-    fn remove(&self, service: &str) -> Result<(), Error> {
-        MdnsService::remove(self, service)
     }
 }

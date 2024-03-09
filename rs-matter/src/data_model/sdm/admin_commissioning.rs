@@ -19,7 +19,7 @@ use core::cell::RefCell;
 use core::convert::TryInto;
 
 use crate::data_model::objects::*;
-use crate::mdns::Mdns;
+use crate::mdns::MdnsService;
 use crate::secure_channel::pake::PaseMgr;
 use crate::secure_channel::spake2p::VerifierData;
 use crate::tlv::{FromTLV, Nullable, OctetStr, TLVElement};
@@ -102,11 +102,11 @@ pub struct OpenCommWindowReq<'a> {
 pub struct AdminCommCluster<'a> {
     data_ver: Dataver,
     pase_mgr: &'a RefCell<PaseMgr>,
-    mdns: &'a dyn Mdns,
+    mdns: &'a MdnsService<'a>,
 }
 
 impl<'a> AdminCommCluster<'a> {
-    pub fn new(pase_mgr: &'a RefCell<PaseMgr>, mdns: &'a dyn Mdns, rand: Rand) -> Self {
+    pub fn new(pase_mgr: &'a RefCell<PaseMgr>, mdns: &'a MdnsService<'a>, rand: Rand) -> Self {
         Self {
             data_ver: Dataver::new(rand),
             pase_mgr,

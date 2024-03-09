@@ -20,59 +20,44 @@ use core::fmt::Write;
 use crate::{data_model::cluster_basic_information::BasicInfoConfig, error::Error};
 
 #[cfg(all(feature = "std", target_os = "macos"))]
-pub mod astro;
-pub mod builtin;
-pub mod proto;
+mod astro;
+#[cfg(not(all(
+    feature = "std",
+    any(target_os = "macos", all(feature = "zeroconf", target_os = "linux"))
+)))]
+mod builtin;
+#[cfg(not(all(
+    feature = "std",
+    any(target_os = "macos", all(feature = "zeroconf", target_os = "linux"))
+)))]
+mod proto;
 #[cfg(all(feature = "std", feature = "zeroconf", target_os = "linux"))]
-pub mod zeroconf;
+mod zeroconf;
 
-pub trait Mdns {
-    fn add(&self, service: &str, mode: ServiceMode) -> Result<(), Error>;
-    fn remove(&self, service: &str) -> Result<(), Error>;
+#[cfg(all(feature = "std", target_os = "macos"))]
+pub use astro::MdnsService;
+#[cfg(all(feature = "std", feature = "zeroconf", target_os = "linux"))]
+pub use zeroconf::MdnsService;
+#[cfg(not(all(
+    feature = "std",
+    any(target_os = "macos", all(feature = "zeroconf", target_os = "linux"))
+)))]
+pub use {
+    builtin::{
+        MdnsService, MDNS_IPV4_BROADCAST_ADDR, MDNS_IPV6_BROADCAST_ADDR, MDNS_PORT,
+        MDNS_SOCKET_BIND_ADDR,
+    },
+    proto::Host,
+};
+
+pub struct Service<'a> {
+    pub name: &'a str,
+    pub service: &'a str,
+    pub protocol: &'a str,
+    pub port: u16,
+    pub service_subtypes: &'a [&'a str],
+    pub txt_kvs: &'a [(&'a str, &'a str)],
 }
-
-impl<T> Mdns for &mut T
-where
-    T: Mdns,
-{
-    fn add(&self, service: &str, mode: ServiceMode) -> Result<(), Error> {
-        (**self).add(service, mode)
-    }
-
-    fn remove(&self, service: &str) -> Result<(), Error> {
-        (**self).remove(service)
-    }
-}
-
-impl<T> Mdns for &T
-where
-    T: Mdns,
-{
-    fn add(&self, service: &str, mode: ServiceMode) -> Result<(), Error> {
-        (**self).add(service, mode)
-    }
-
-    fn remove(&self, service: &str) -> Result<(), Error> {
-        (**self).remove(service)
-    }
-}
-
-#[cfg(not(all(feature = "std", target_os = "macos")))]
-pub use builtin::MdnsService;
-
-pub struct DummyMdns;
-
-impl Mdns for DummyMdns {
-    fn add(&self, _service: &str, _mode: ServiceMode) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn remove(&self, _service: &str) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-pub type Service<'a> = proto::Service<'a>;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ServiceMode {

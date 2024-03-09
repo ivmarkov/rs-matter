@@ -49,12 +49,11 @@ use rs_matter::{
     error::{Error, ErrorCode},
     handler_chain_type,
     interaction_model::core::{OpCode, PROTO_ID_INTERACTION_MODEL},
-    mdns::DummyMdns,
     respond::Responder,
     tlv::{TLVWriter, TagType, ToTLV},
     transport::{
         exchange::{Exchange, ExchangeMeta},
-        network::{Address, Ipv4Addr, SocketAddr, SocketAddrV4, UdpReceive, UdpSend},
+        network::{Address, Ipv4Addr, NetworkReceive, NetworkSend, SocketAddr, SocketAddrV4},
         packet::{MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
         session::{CaseDetails, NocCatIds, ReservedSession, SessionMode},
     },
@@ -195,8 +194,6 @@ impl<'a> Metadata for ImEngineHandler<'a> {
     }
 }
 
-static mut DNS: DummyMdns = DummyMdns;
-
 /// An Interaction Model Engine to facilitate easy testing
 pub struct ImEngine<'a> {
     pub matter: Matter<'a>,
@@ -240,14 +237,7 @@ impl<'a> ImEngine<'a> {
         #[cfg(not(feature = "std"))]
         use rs_matter::utils::rand::dummy_rand as rand;
 
-        Matter::new(
-            &BASIC_INFO,
-            &DummyDevAtt,
-            unsafe { &mut DNS },
-            epoch,
-            rand,
-            MATTER_PORT,
-        )
+        Matter::new(&BASIC_INFO, &DummyDevAtt, epoch, rand, MATTER_PORT)
     }
 
     fn init_matter(matter: &Matter, local_nodeid: u64, remote_nodeid: u64, cat_ids: &NocCatIds) {
@@ -310,8 +300,11 @@ impl<'a> ImEngine<'a> {
 
         embassy_futures::block_on(async move {
             select4(
-                matter_client.run(PseudoUdpSend(send_local), PseudoUdpReceive(recv_local)),
+                matter_client
+                    .transport_mgr
+                    .run(PseudoUdpSend(send_local), PseudoUdpReceive(recv_local)),
                 self.matter
+                    .transport_mgr
                     .run(PseudoUdpSend(send_remote), PseudoUdpReceive(recv_remote)),
                 responder.run::<4>(&self.matter),
                 async move {
@@ -359,14 +352,14 @@ impl<'a> ImEngine<'a> {
     }
 }
 
-const SOCKET_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
+const ADDR: Address = Address::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
 
 type PseudoUdpPipe<'a, const N: usize> = Channel<'a, NoopRawMutex, heapless::Vec<u8, N>>;
 struct PseudoUdpReceive<'a, const N: usize>(Receiver<'a, NoopRawMutex, heapless::Vec<u8, N>>);
 struct PseudoUdpSend<'a, const N: usize>(Sender<'a, NoopRawMutex, heapless::Vec<u8, N>>);
 
-impl<'a, const N: usize> UdpSend for PseudoUdpSend<'a, N> {
-    async fn send_to(&mut self, data: &[u8], _addr: SocketAddr) -> Result<(), Error> {
+impl<'a, const N: usize> NetworkSend for PseudoUdpSend<'a, N> {
+    async fn send_to(&mut self, data: &[u8], _addr: Address) -> Result<(), Error> {
         let vec = self.0.send().await;
 
         vec.clear();
@@ -378,8 +371,14 @@ impl<'a, const N: usize> UdpSend for PseudoUdpSend<'a, N> {
     }
 }
 
-impl<'a, const N: usize> UdpReceive for PseudoUdpReceive<'a, N> {
-    async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), Error> {
+impl<'a, const N: usize> NetworkReceive for PseudoUdpReceive<'a, N> {
+    async fn wait_available(&mut self) -> Result<(), Error> {
+        self.0.receive().await;
+
+        Ok(())
+    }
+
+    async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, Address), Error> {
         let vec = self.0.receive().await;
 
         buffer[..vec.len()].copy_from_slice(vec);
@@ -387,6 +386,6 @@ impl<'a, const N: usize> UdpReceive for PseudoUdpReceive<'a, N> {
 
         self.0.receive_done();
 
-        Ok((len, SOCKET_ADDR))
+        Ok((len, ADDR))
     }
 }

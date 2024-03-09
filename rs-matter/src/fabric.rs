@@ -26,7 +26,7 @@ use crate::{
     crypto::{self, hkdf_sha256, HmacSha256, KeyPair},
     error::{Error, ErrorCode},
     group_keys::KeySet,
-    mdns::{Mdns, ServiceMode},
+    mdns::{MdnsService, ServiceMode},
     tlv::{self, FromTLV, OctetStr, TLVList, TLVWriter, TagType, ToTLV, UtfStr},
     utils::writebuf::WriteBuf,
 };
@@ -199,7 +199,7 @@ impl FabricMgr {
         }
     }
 
-    pub fn load(&mut self, data: &[u8], mdns: &dyn Mdns) -> Result<(), Error> {
+    pub fn load(&mut self, data: &[u8], mdns: &MdnsService) -> Result<(), Error> {
         for fabric in self.fabrics.iter().flatten() {
             mdns.remove(&fabric.mdns_service_name)?;
         }
@@ -240,7 +240,7 @@ impl FabricMgr {
         self.changed
     }
 
-    pub fn add(&mut self, f: Fabric, mdns: &dyn Mdns) -> Result<u8, Error> {
+    pub fn add(&mut self, f: Fabric, mdns: &MdnsService) -> Result<u8, Error> {
         let slot = self.fabrics.iter().position(|x| x.is_none());
 
         if slot.is_some() || self.fabrics.len() < MAX_SUPPORTED_FABRICS {
@@ -264,7 +264,7 @@ impl FabricMgr {
         }
     }
 
-    pub fn remove(&mut self, fab_idx: u8, mdns: &dyn Mdns) -> Result<(), Error> {
+    pub fn remove(&mut self, fab_idx: u8, mdns: &MdnsService) -> Result<(), Error> {
         if fab_idx > 0 && fab_idx as usize <= self.fabrics.len() {
             if let Some(f) = self.fabrics[(fab_idx - 1) as usize].take() {
                 mdns.remove(&f.mdns_service_name)?;

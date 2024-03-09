@@ -16,7 +16,7 @@
  */
 
 use core::fmt::{Debug, Display};
-use core::mem::MaybeUninit;
+use core::ops::DerefMut;
 
 #[cfg(not(feature = "std"))]
 pub use no_std_net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
@@ -24,8 +24,6 @@ pub use no_std_net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, Socke
 pub use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use crate::error::Error;
-
-use super::packet::{MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE};
 
 #[derive(Eq, PartialEq, Copy, Clone)]
 pub enum Address {
@@ -35,6 +33,12 @@ pub enum Address {
 impl Address {
     pub const fn new() -> Self {
         Self::Udp(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+    }
+
+    pub fn is_reliable(&self) -> bool {
+        match self {
+            Self::Udp(_) => false,
+        }
     }
 
     pub fn unwrap_udp(self) -> SocketAddr {
@@ -66,44 +70,54 @@ impl Debug for Address {
     }
 }
 
-pub trait UdpSend {
-    async fn send_to(&mut self, data: &[u8], addr: SocketAddr) -> Result<(), Error>;
+pub trait NetworkSend {
+    async fn send_to(&mut self, data: &[u8], addr: Address) -> Result<(), Error>;
 }
 
-impl<T> UdpSend for &mut T
+impl<T> NetworkSend for &mut T
 where
-    T: UdpSend,
+    T: NetworkSend,
 {
-    async fn send_to(&mut self, data: &[u8], addr: SocketAddr) -> Result<(), Error> {
+    async fn send_to(&mut self, data: &[u8], addr: Address) -> Result<(), Error> {
         (*self).send_to(data, addr).await
     }
 }
 
-pub trait UdpReceive {
-    async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), Error>;
+pub trait NetworkReceive {
+    async fn wait_available(&mut self) -> Result<(), Error>;
+
+    async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, Address), Error>;
 }
 
-impl<T> UdpReceive for &mut T
+impl<T> NetworkReceive for &mut T
 where
-    T: UdpReceive,
+    T: NetworkReceive,
 {
-    async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), Error> {
+    async fn wait_available(&mut self) -> Result<(), Error> {
+        (*self).wait_available().await
+    }
+
+    async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, Address), Error> {
         (*self).recv_from(buffer).await
     }
 }
 
-pub struct UdpBuffers(MaybeUninit<([u8; MAX_TX_BUF_SIZE], [u8; MAX_RX_BUF_SIZE])>);
+pub trait BufferAccess {
+    type Buffer<'a>: DerefMut<Target = [u8]>
+    where
+        Self: 'a;
 
-impl UdpBuffers {
-    #[inline(always)]
-    pub const fn new() -> Self {
-        Self(MaybeUninit::uninit())
-    }
+    async fn get(&self) -> Self::Buffer<'_>;
+}
 
-    pub fn split(&mut self) -> (&mut [u8], &mut [u8]) {
-        let init = unsafe { self.0.assume_init_mut() };
+impl<T> BufferAccess for &T
+where
+    T: BufferAccess,
+{
+    type Buffer<'a> = T::Buffer<'a> where Self: 'a;
 
-        (&mut init.0, &mut init.1)
+    async fn get(&self) -> Self::Buffer<'_> {
+        (*self).get().await
     }
 }
 
@@ -115,23 +129,37 @@ mod async_io {
 
     use async_io::Async;
 
-    use crate::transport::network::SocketAddr;
+    use crate::transport::network::Address;
 
-    use super::{UdpReceive, UdpSend};
+    use super::{NetworkReceive, NetworkSend};
 
-    impl UdpSend for &Async<UdpSocket> {
-        async fn send_to(&mut self, data: &[u8], addr: SocketAddr) -> Result<(), Error> {
-            Async::<UdpSocket>::send_to(self, data, addr).await?;
+    impl NetworkSend for &Async<UdpSocket> {
+        async fn send_to(&mut self, data: &[u8], addr: Address) -> Result<(), Error> {
+            Async::<UdpSocket>::send_to(self, data, addr.unwrap_udp()).await?;
 
             Ok(())
         }
     }
 
-    impl UdpReceive for &Async<UdpSocket> {
-        async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), Error> {
+    impl NetworkReceive for &Async<UdpSocket> {
+        async fn wait_available(&mut self) -> Result<(), Error> {
+            let mut buf = [0];
+
+            loop {
+                let (len, _) = Async::<UdpSocket>::peek_from(self, &mut buf).await?;
+
+                if len > 0 {
+                    break;
+                }
+            }
+
+            Ok(())
+        }
+
+        async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, Address), Error> {
             let (len, addr) = Async::<UdpSocket>::recv_from(self, buffer).await?;
 
-            Ok((len, addr))
+            Ok((len, Address::Udp(addr)))
         }
     }
 }

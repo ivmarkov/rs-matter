@@ -4,7 +4,7 @@ use crate::{
     acl::AclMgr,
     fabric::FabricMgr,
     handler_chain_type,
-    mdns::Mdns,
+    mdns::MdnsService,
     secure_channel::pake::PaseMgr,
     utils::{epoch::Epoch, rand::Rand},
 };
@@ -72,7 +72,7 @@ where
         + Borrow<RefCell<FabricMgr>>
         + Borrow<RefCell<AclMgr>>
         + Borrow<RefCell<FailSafe>>
-        + Borrow<dyn Mdns + 'a>
+        + Borrow<MdnsService<'a>>
         + Borrow<Epoch>
         + Borrow<Rand>
         + 'a,
@@ -100,7 +100,7 @@ pub fn wrap<'a>(
     fabric: &'a RefCell<FabricMgr>,
     acl: &'a RefCell<AclMgr>,
     failsafe: &'a RefCell<FailSafe>,
-    mdns: &'a dyn Mdns,
+    mdns: &'a MdnsService<'a>,
     epoch: Epoch,
     rand: Rand,
 ) -> RootEndpointHandler<'a> {

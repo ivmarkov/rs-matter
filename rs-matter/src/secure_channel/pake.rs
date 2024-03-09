@@ -24,7 +24,7 @@ use super::{
 use crate::{
     crypto,
     error::{Error, ErrorCode},
-    mdns::{Mdns, ServiceMode},
+    mdns::{MdnsService, ServiceMode},
     secure_channel::common::{complete_with_status, OpCode},
     tlv::{self, get_root_node_struct, FromTLV, OctetStr, TLVWriter, TagType, ToTLV},
     transport::{
@@ -66,7 +66,7 @@ impl PaseMgr {
         &mut self,
         verifier: VerifierData,
         discriminator: u16,
-        mdns: &dyn Mdns,
+        mdns: &MdnsService,
     ) -> Result<(), Error> {
         let mut buf = [0; 8];
         (self.rand)(&mut buf);
@@ -88,7 +88,7 @@ impl PaseMgr {
         Ok(())
     }
 
-    pub fn disable_pase_session(&mut self, mdns: &dyn Mdns) -> Result<(), Error> {
+    pub fn disable_pase_session(&mut self, mdns: &MdnsService) -> Result<(), Error> {
         if let Some(session) = self.session.as_ref() {
             mdns.remove(&session.mdns_service_name)?;
         }
@@ -204,7 +204,7 @@ impl Pake {
 
         let status = match result {
             Ok(()) => {
-                let mdns = exchange.matter().mdns;
+                let mdns = &exchange.matter().mdns;
 
                 exchange
                     .matter()

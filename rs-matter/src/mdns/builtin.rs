@@ -67,6 +67,8 @@ impl<'a> MdnsService<'a> {
 
         services.retain(|(name, _)| name != service);
 
+        self.notification.signal(());
+
         Ok(())
     }
 

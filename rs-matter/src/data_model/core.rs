@@ -139,9 +139,6 @@ impl<'a, T> DataModel<'a, T>
 where
     T: DataModelHandler,
 {
-    const EMPTY_SUB_REPORT_DATA_REQ: ReportDataReq<'static> =
-        ReportDataReq::Subscribe(&SubscribeReq::new(false, 0, 0));
-
     pub const fn new(handler: T, subscriptions: &'a Subscriptions) -> Self {
         Self {
             handler,
@@ -371,7 +368,7 @@ where
 
             if subscribed {
                 let min_int_secs = req.min_int_floor;
-                let max_int_secs = core::cmp::max(req.max_int_ceil, 16); // Say we need at least 16 for potential latencies
+                let max_int_secs = core::cmp::max(req.max_int_ceil, 10); // Say we need at least 4 secs for potential latencies
 
                 info!("New subscription {node_id:x}::{subscription_id}; reporting interval: {min_int_secs}s - {max_int_secs}s");
 
@@ -401,11 +398,20 @@ where
                     }
 
                     let now = Instant::now();
-                    let min_int_over =
-                        reported_at + embassy_time::Duration::from_secs(min_int_secs as _) <= now;
 
-                    if min_int_over {
-                        if changed {
+                    let max_int_over = reported_at
+                        + embassy_time::Duration::from_secs((max_int_secs - 4) as _)
+                        <= now;
+
+                    if max_int_over {
+                        info!("Subscription {node_id:x}::{subscription_id}: No activity within {max_int_secs}s, dropping subscription");
+                        break;
+                    } else if changed {
+                        let min_int_over = reported_at
+                            + embassy_time::Duration::from_secs(min_int_secs as _)
+                            <= now;
+
+                        if min_int_over {
                             info!("Subscription {node_id:x}::{subscription_id}: Reporting due to detected change");
 
                             reported_at = now;
@@ -418,23 +424,6 @@ where
                                     Some(subscription_id),
                                     wb,
                                     false,
-                                )
-                                .await?;
-                        } else if reported_at
-                            + embassy_time::Duration::from_secs((max_int_secs / 2) as _)
-                            <= now
-                        {
-                            info!("Subscription {node_id:x}::{subscription_id}: Reporting empty to keep the subscription alive");
-
-                            reported_at = now;
-
-                            subscribed = self
-                                .report_data(
-                                    exchange,
-                                    &Self::EMPTY_SUB_REPORT_DATA_REQ,
-                                    Some(subscription_id),
-                                    wb,
-                                    true,
                                 )
                                 .await?;
                         }

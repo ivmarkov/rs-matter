@@ -72,18 +72,16 @@ where
     async fn respond(&self, matter: &Matter<'_>, handler_id: impl Display) -> Result<(), Error> {
         loop {
             let exchange = Exchange::accept(matter).await?;
+            let exchange_id = exchange.id();
 
-            info!("Handler {}: Got exchange {:?}", handler_id, exchange.id());
+            info!("Handler {handler_id} / exchange {exchange_id}: Starting");
 
             let result = self.process(exchange).await;
 
             if let Err(err) = result {
-                error!(
-                    "Handler {}: Exchange abandoned because of error: {:?}",
-                    handler_id, err
-                );
+                error!("Handler {handler_id} / Exchange {exchange_id}: Abandoned because of error {err:?}");
             } else {
-                info!("Handler {}: Exchange completed", handler_id);
+                info!("Handler {handler_id} / exchange {exchange_id}: Completed");
             }
         }
     }

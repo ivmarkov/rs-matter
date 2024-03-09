@@ -102,7 +102,7 @@ impl<const N: usize> Packet<N> {
     fn fmt(f: &mut fmt::Formatter<'_>, peer: &Address, header: &PacketHdr) -> fmt::Result {
         let meta = ExchangeMeta::from(&header.proto);
 
-        write!(f, "{peer} {header} {meta}")
+        write!(f, "{peer} {header}\n{meta}")
     }
 
     fn fmt_payload(f: &mut fmt::Formatter<'_>, proto: &ProtoHdr, buf: &[u8]) -> fmt::Result {
@@ -117,7 +117,11 @@ impl<const N: usize> Packet<N> {
                 TLVList::new(buf)
             )?;
         } else {
-            write!(f, "; Payload: {:02x?}", buf)?;
+            write!(
+                f,
+                "; Payload:\n----------------\n{:02x?}\n----------------\n",
+                buf
+            )?;
         }
 
         Ok(())
@@ -358,7 +362,7 @@ impl TransportMgr {
                     let result = self.decode_packet(&mut rx);
                     match result {
                         Err(e) if matches!(e.code(), ErrorCode::Duplicate) => {
-                            info!(">>> {rx} => Duplicate, sending ACK");
+                            info!("\n>>>>> {rx}\n => Duplicate, sending ACK");
 
                             let mut session_mgr = self.session_mgr.borrow_mut();
                             let epoch = session_mgr.epoch;
@@ -381,7 +385,9 @@ impl TransportMgr {
                                 && (rx.header.proto.proto_opcode == OpCode::PBKDFParamRequest as u8
                                     || rx.header.proto.proto_opcode == OpCode::CASESigma1 as u8)
                             {
-                                error!(">>> {rx} => No space for a new session, sending Busy");
+                                error!(
+                                    "\n>>>>> {rx}\n => No space for a new session, sending Busy"
+                                );
 
                                 let exch_id = rx.header.proto.exch_id;
 
@@ -396,7 +402,7 @@ impl TransportMgr {
                                     |wb| sc_write(wb, SCStatusCodes::Busy, None),
                                 )?;
                             } else {
-                                error!(">>> {rx} => No space for a new session, dropping");
+                                error!("\n>>>>> {rx}\n => No space for a new session, dropping");
                             }
                         }
                         Err(e) if matches!(e.code(), ErrorCode::NoSpaceExchanges) => {
@@ -406,7 +412,9 @@ impl TransportMgr {
                             //   wait for ACK and retransmit without releasing the RX buffer, potentially
                             //   blocking all other interactions
 
-                            error!(">>> {rx} => No space for a new exchange, closing session");
+                            error!(
+                                "\n>>>>> {rx}\n => No space for a new exchange, closing session"
+                            );
 
                             let mut session_mgr = self.session_mgr.borrow_mut();
                             let session_id =
@@ -430,19 +438,19 @@ impl TransportMgr {
                         Err(e) => {
                             rx.buf.clear();
 
-                            error!(">>> {rx} => Error ({e:?}), dropping");
+                            error!("\n>>>>> {rx}\n => Error ({e:?}), dropping");
                         }
                         Ok(new_exchange) => {
                             if rx.header.proto.proto_id == PROTO_ID_SECURE_CHANNEL
                                 && rx.header.proto.proto_opcode == OpCode::MRPStandAloneAck as u8
                             {
                                 // No need to propagate this further
-                                info!(">>> {rx} => Standalone Ack, dropping");
+                                info!("\n>>>>> {rx}\n => Standalone Ack, dropping");
 
                                 rx.buf.clear();
                             } else {
                                 info!(
-                                    ">>> {rx} => Processing{}",
+                                    "\n>>>>> {rx}\n => Processing{}",
                                     if new_exchange { " (new exchange)" } else { "" }
                                 );
 
@@ -500,7 +508,7 @@ impl TransportMgr {
                                     .map(|ack| ack.has_timed_out(ACCEPT_TIMEOUT_MS, epoch))
                                     .unwrap_or(false)
                             {
-                                warn!("--- {packet} => Accept timeout, marking as orphaned");
+                                warn!("\n----- {packet}\n => Accept timeout, marking as orphaned");
 
                                 exchange.owned_state = OwnedState::Orphaned;
                                 packet.buf.clear();
@@ -539,7 +547,7 @@ impl TransportMgr {
                                 OwnedState::Orphaned | OwnedState::OrphanedClosing
                             ) {
                                 warn!(
-                                    "--- {packet} => Owned by orphaned exchange {}, dropping",
+                                    "\n----- {packet}\n => Owned by orphaned exchange {}, dropping",
                                     ExchangeId::new(session.id, exchange_index)
                                 );
 
@@ -549,13 +557,13 @@ impl TransportMgr {
                                 return Some(());
                             }
                         } else {
-                            warn!("--- {packet} => No exchange, dropping");
+                            warn!("\n----- {packet}\n => No exchange, dropping");
 
                             packet.buf.clear();
                             return Some(());
                         }
                     } else {
-                        warn!("--- {packet} => No session, dropping");
+                        warn!("\n----- {packet}\n => No session, dropping");
 
                         packet.buf.clear();
                         return Some(());
@@ -721,13 +729,25 @@ impl TransportMgr {
 
         payload_writer(&mut wb)?.set_into(&mut packet.header.proto);
 
-        if let Some(session) = &mut session {
-            packet.peer = session.pre_send(exchange_index, &mut packet.header, epoch)?;
-        }
+        let retransmission = if let Some(session) = &mut session {
+            let (peer, retransmission) =
+                session.pre_send(exchange_index, &mut packet.header, epoch)?;
+
+            packet.peer = peer;
+
+            retransmission
+        } else {
+            false
+        };
 
         info!(
-            "<<< {} => Sending (system)",
-            Packet::<0>::display(&packet.peer, &packet.header)
+            "\n<<<<< {}\n => {} (system)",
+            Packet::<0>::display(&packet.peer, &packet.header),
+            if retransmission {
+                "Re-sending"
+            } else {
+                "Sending"
+            }
         );
 
         debug!(
@@ -812,7 +832,7 @@ impl TransportMgr {
     {
         match recv.recv_from(buf).await {
             Ok((len, addr)) => {
-                debug!(">>> {} {}B: {:02x?}", addr, len, &buf[..len]);
+                debug!("\n>>>>> {} {}B:\n{:02x?}", addr, len, &buf[..len]);
 
                 Ok((len, addr))
             }
@@ -836,7 +856,7 @@ impl TransportMgr {
         match send.lock().await.send_to(data, peer).await {
             Ok(_) => {
                 debug!(
-                    "<<< {} {}B{}: {:02x?}",
+                    "\n<<<<< {} {}B{}: {:02x?}",
                     peer,
                     data.len(),
                     if system { " (system)" } else { "" },
@@ -847,7 +867,7 @@ impl TransportMgr {
             }
             Err(e) => {
                 error!(
-                    "<<< {} {}B{} !FAILED!: {e:?}: {:02x?}",
+                    "\n<<<<< {} {}B{} !FAILED!: {e:?}: {:02x?}",
                     peer,
                     data.len(),
                     if system { " (system)" } else { "" },

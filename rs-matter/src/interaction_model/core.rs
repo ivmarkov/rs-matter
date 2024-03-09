@@ -248,10 +248,12 @@ impl<'a, 'b> ReportDataStreamingResp<'a, 'b> {
             tw.bool(TagType::Context(ReportDataTag::MoreChunkedMsgs as u8), true)?;
         }
 
-        tw.bool(
-            TagType::Context(ReportDataTag::SupressResponse as u8),
-            suppress_resp,
-        )?;
+        if suppress_resp {
+            tw.bool(
+                TagType::Context(ReportDataTag::SupressResponse as u8),
+                suppress_resp,
+            )?;
+        }
 
         tw.end_container()?;
 

@@ -368,7 +368,7 @@ where
 
             if subscribed {
                 let min_int_secs = req.min_int_floor;
-                let max_int_secs = core::cmp::max(req.max_int_ceil, 4); // TODO
+                let max_int_secs = core::cmp::max(req.max_int_ceil, 16); // Say we need at least 16 for potential latencies
 
                 info!("New subscription {node_id:x}::{subscription_id}; reporting interval: {min_int_secs}s - {max_int_secs}s");
 
@@ -399,14 +399,15 @@ where
 
                     let now = Instant::now();
 
-                    let changed_due = changed
+                    let change_due = changed
                         && reported_at + embassy_time::Duration::from_secs(min_int_secs as _)
                             <= now;
-                    let timeout_due =
-                        reported_at + embassy_time::Duration::from_secs(max_int_secs as _) <= now; // TODO
+                    let timeout_due = reported_at
+                        + embassy_time::Duration::from_secs((max_int_secs - 4 * 2) as _)
+                        <= now; // TODO
 
-                    if changed_due || timeout_due {
-                        if changed_due {
+                    if change_due || timeout_due {
+                        if change_due {
                             info!("Subscription {node_id:x}::{subscription_id}: Reporting due to detected change");
                         } else {
                             info!("Subscription {node_id:x}::{subscription_id}: Reporting due to {max_int_secs}s interval expiry");
@@ -421,9 +422,11 @@ where
                                 &ReportDataReq::Subscribe(req),
                                 Some(subscription_id),
                                 wb,
-                                false,
+                                !change_due, // TODO: Need to be more sophisticated here and track if we really did send anything
                             )
                             .await?;
+
+                        info!("Subscription {node_id:x}::{subscription_id}: Reporting done, subscribed: {subscribed}");
                     } else if changed {
                         info!("Subscription {node_id:x}::{subscription_id}: Waiting for {min_int_secs}s interval to report the change");
                     }

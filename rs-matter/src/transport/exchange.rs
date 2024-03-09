@@ -346,21 +346,33 @@ impl<'a, 'b> TxPayload<'a, 'b> {
             .get(self.exchange.id.session_id())
             .ok_or(ErrorCode::NoSession)?;
 
-        *self.peer = session.pre_send(
+        let (peer, retransmission) = session.pre_send(
             Some(self.exchange.id.exchange_index()),
             self.header,
             self.exchange.matter.epoch,
         )?;
 
-        if self.header.proto.is_reliable()
-            || self.header.proto.proto_id != PROTO_ID_SECURE_CHANNEL
-            || self.header.proto.proto_opcode
-                != secure_channel::common::OpCode::MRPStandAloneAck as u8
-            || self.header.proto.get_ack().is_none()
-        {
+        *self.peer = peer;
+
+        let standalone_ack = self.header.proto.proto_id == PROTO_ID_SECURE_CHANNEL
+            && self.header.proto.proto_opcode
+                == secure_channel::common::OpCode::MRPStandAloneAck as u8
+            && !self.header.proto.is_reliable();
+        let ack = self.header.proto.get_ack().is_some();
+
+        if standalone_ack && !ack {
+            // No need to send a standalone ACK when there is nothing to acknowledge
+            *self.completed = None;
+            Ok(false)
+        } else {
             info!(
-                "<<< {} => Sending",
-                Packet::<0>::display(self.peer, self.header)
+                "\n<<<<< {}\n => {}",
+                Packet::<0>::display(self.peer, self.header),
+                if retransmission {
+                    "Re-sending"
+                } else {
+                    "Sending"
+                },
             );
 
             debug!(
@@ -373,10 +385,6 @@ impl<'a, 'b> TxPayload<'a, 'b> {
             *self.completed = Some((self.writebuf.get_start(), self.writebuf.get_tail()));
 
             Ok(true)
-        } else {
-            // No need to send a standalone ACK when there is nothing to acknowledge
-            *self.completed = None;
-            Ok(false)
         }
     }
 }
@@ -508,28 +516,35 @@ impl<'a> Exchange<'a> {
         let mut retrans = false;
 
         loop {
-            let reliable = {
+            {
                 let mut tx = self.tx().await?;
 
-                if !retrans || tx.exchange.retrans_delay_ms()?.is_some() {
-                    let mut payload = tx.payload()?;
-
-                    let meta = f(payload.writebuf())?;
-
-                    if !payload.complete(meta)? {
-                        break;
-                    }
-
-                    meta.reliable
-                } else {
+                if retrans && tx.exchange.retrans_delay_ms()?.is_none() {
+                    // The other side has acknowledged the message
                     break;
                 }
-            };
 
-            if !reliable || self.wait_ack().await? {
+                let mut payload = tx.payload()?;
+
+                let meta = f(payload.writebuf())?;
+
+                if !payload.complete(meta)? {
+                    // Nothing was sent
+                    break;
+                }
+
+                if !meta.reliable {
+                    // No need to re-transmit
+                    break;
+                }
+            }
+
+            if self.wait_ack().await? {
+                // The other side has acknowledged the message
                 break;
             }
 
+            // Mark for re-transmission and try again
             retrans = true;
         }
 

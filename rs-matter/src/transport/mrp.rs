@@ -180,18 +180,23 @@ impl ReliableMessage {
     ) -> Result<(), Error> {
         if let Some(ack_msg_ctr) = proto.get_ack() {
             // Handle received Acks
-            if let Some(entry) = self.retrans.take() {
+            if let Some(entry) = &self.retrans {
                 if entry.get_msg_ctr() != ack_msg_ctr {
-                    error!("Mismatch in retrans-table's msg counter and received msg counter: received {}, expected {}.", ack_msg_ctr, entry.msg_ctr);
+                    error!("Mismatch in retrans-table's msg counter and received msg counter: received {:x}, expected {:x}.", ack_msg_ctr, entry.msg_ctr);
+                } else {
+                    self.retrans = None;
                 }
             }
         }
 
         if proto.is_reliable() {
-            if self.ack.is_some() {
+            if let Some(ack) = &self.ack {
                 // This indicates there was some existing entry for same sess-id/exch-id, which shouldnt happen
                 // TODO: As per the spec if this happens, we need to send out the previous ACK and note this new ACK
-                error!("Previous ACK entry for this exchange already exists");
+                error!(
+                    "Previous ACK entry {:x} for this exchange already exists",
+                    ack.get_msg_ctr()
+                );
                 Err(ErrorCode::Invalid)?;
             }
 

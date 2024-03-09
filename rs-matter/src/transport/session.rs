@@ -268,13 +268,15 @@ impl Session {
         exchange_index: Option<usize>,
         header: &mut PacketHdr,
         epoch: Epoch,
-    ) -> Result<Address, Error> {
+    ) -> Result<(Address, bool), Error> {
         let ctr = if let Some(exchange_index) = exchange_index {
             let exchange = self.exchanges[exchange_index].as_mut().unwrap();
             exchange.mrp.retrans().map(RetransEntry::get_msg_ctr)
         } else {
             None
         };
+
+        let retransmission = ctr.is_some();
 
         header.plain.sess_id = self.get_peer_sess_id();
         header.plain.ctr = ctr.unwrap_or_else(|| self.get_msg_ctr());
@@ -291,7 +293,7 @@ impl Session {
             exchange.pre_send(&header.plain, &mut header.proto, epoch)?;
         }
 
-        Ok(self.peer_addr)
+        Ok((self.peer_addr, retransmission))
     }
 
     fn decode_remaining(&self, rx: &mut PacketHdr, pb: &mut ParseBuf) -> Result<(), Error> {
@@ -334,7 +336,7 @@ impl Session {
             None?;
         }
 
-        info!("Creating a new exchange: {}/{:?}", exch_id, role);
+        info!("Creating a new exchange: {:x}/{:?}", exch_id, role);
 
         let exch_state = Some(ExchangeState {
             exch_id,

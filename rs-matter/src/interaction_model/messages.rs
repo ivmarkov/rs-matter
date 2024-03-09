@@ -93,12 +93,17 @@ pub mod msg {
     }
 
     impl<'a> SubscribeReq<'a> {
-        pub fn new(fabric_filtered: bool, min_int_floor: u16, max_int_ceil: u16) -> Self {
+        pub const fn new(fabric_filtered: bool, min_int_floor: u16, max_int_ceil: u16) -> Self {
             Self {
                 fabric_filtered,
                 min_int_floor,
                 max_int_ceil,
-                ..Default::default()
+                keep_subs: false,
+                attr_requests: None,
+                event_requests: None,
+                event_filters: None,
+                _dummy: None,
+                dataver_filters: None,
             }
         }
 
@@ -168,17 +173,20 @@ pub mod msg {
     #[tlvargs(lifetime = "'a")]
     pub struct ReadReq<'a> {
         pub attr_requests: Option<TLVArray<'a, AttrPath>>,
-        event_requests: Option<TLVArray<'a, EventPath>>,
-        event_filters: Option<TLVArray<'a, EventFilter>>,
+        pub event_requests: Option<TLVArray<'a, EventPath>>,
+        pub event_filters: Option<TLVArray<'a, EventFilter>>,
         pub fabric_filtered: bool,
         pub dataver_filters: Option<TLVArray<'a, DataVersionFilter>>,
     }
 
     impl<'a> ReadReq<'a> {
-        pub fn new(fabric_filtered: bool) -> Self {
+        pub const fn new(fabric_filtered: bool) -> Self {
             Self {
                 fabric_filtered,
-                ..Default::default()
+                attr_requests: None,
+                event_requests: None,
+                event_filters: None,
+                dataver_filters: None,
             }
         }
 

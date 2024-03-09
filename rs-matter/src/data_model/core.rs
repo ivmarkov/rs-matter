@@ -139,6 +139,9 @@ impl<'a, T> DataModel<'a, T>
 where
     T: DataModelHandler,
 {
+    const EMPTY_SUB_REPORT_DATA_REQ: ReportDataReq<'static> =
+        ReportDataReq::Subscribe(&SubscribeReq::new(false, 0, 0));
+
     pub const fn new(handler: T, subscriptions: &'a Subscriptions) -> Self {
         Self {
             handler,
@@ -398,37 +401,43 @@ where
                     }
 
                     let now = Instant::now();
+                    let min_int_over =
+                        reported_at + embassy_time::Duration::from_secs(min_int_secs as _) <= now;
 
-                    let change_due = changed
-                        && reported_at + embassy_time::Duration::from_secs(min_int_secs as _)
-                            <= now;
-                    let timeout_due = reported_at
-                        + embassy_time::Duration::from_secs((max_int_secs - 4 * 2) as _)
-                        <= now; // TODO
-
-                    if change_due || timeout_due {
-                        if change_due {
+                    if min_int_over {
+                        if changed {
                             info!("Subscription {node_id:x}::{subscription_id}: Reporting due to detected change");
-                        } else {
-                            info!("Subscription {node_id:x}::{subscription_id}: Reporting due to {max_int_secs}s interval expiry");
+
+                            reported_at = now;
+                            changed = false;
+
+                            subscribed = self
+                                .report_data(
+                                    exchange,
+                                    &ReportDataReq::Subscribe(req),
+                                    Some(subscription_id),
+                                    wb,
+                                    false,
+                                )
+                                .await?;
+                        } else if reported_at
+                            + embassy_time::Duration::from_secs((max_int_secs / 2) as _)
+                            <= now
+                        {
+                            info!("Subscription {node_id:x}::{subscription_id}: Reporting empty to keep the subscription alive");
+
+                            reported_at = now;
+
+                            subscribed = self
+                                .report_data(
+                                    exchange,
+                                    &Self::EMPTY_SUB_REPORT_DATA_REQ,
+                                    Some(subscription_id),
+                                    wb,
+                                    true,
+                                )
+                                .await?;
                         }
-
-                        reported_at = now;
-                        changed = false;
-
-                        subscribed = self
-                            .report_data(
-                                exchange,
-                                &ReportDataReq::Subscribe(req),
-                                Some(subscription_id),
-                                wb,
-                                !change_due, // TODO: Need to be more sophisticated here and track if we really did send anything
-                            )
-                            .await?;
-
-                        info!("Subscription {node_id:x}::{subscription_id}: Reporting done, subscribed: {subscribed}");
-                    } else if changed {
-                        info!("Subscription {node_id:x}::{subscription_id}: Waiting for {min_int_secs}s interval to report the change");
                     }
                 }
             }

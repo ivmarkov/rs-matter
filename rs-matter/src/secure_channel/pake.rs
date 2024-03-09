@@ -88,14 +88,18 @@ impl PaseMgr {
         Ok(())
     }
 
-    pub fn disable_pase_session(&mut self, mdns: &MdnsService) -> Result<(), Error> {
-        if let Some(session) = self.session.as_ref() {
+    pub fn disable_pase_session(&mut self, mdns: &MdnsService) -> Result<bool, Error> {
+        let disabled = if let Some(session) = self.session.as_ref() {
             mdns.remove(&session.mdns_service_name)?;
-        }
+
+            true
+        } else {
+            false
+        };
 
         self.session = None;
 
-        Ok(())
+        Ok(disabled)
     }
 }
 

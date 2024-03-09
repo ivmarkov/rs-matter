@@ -53,7 +53,7 @@ pub struct Subscriptions {
 impl Subscriptions {
     pub const fn new() -> Self {
         Self {
-            next_subscription_id: AtomicU32::new(0),
+            next_subscription_id: AtomicU32::new(1),
             notification: Notification2::new(heapless::Vec::new()),
         }
     }
@@ -368,7 +368,7 @@ where
 
             if subscribed {
                 let min_int_secs = req.min_int_floor;
-                let max_int_secs = core::cmp::max(req.max_int_ceil, 20); // TODO
+                let max_int_secs = core::cmp::max(req.max_int_ceil, 4); // TODO
 
                 info!("New subscription {node_id:x}::{subscription_id}; reporting interval: {min_int_secs}s - {max_int_secs}s");
 
@@ -383,7 +383,7 @@ where
 
                 while subscribed {
                     let removed = self.subscriptions.wait_removed(node_id, subscription_id);
-                    let timeout = Timer::after(embassy_time::Duration::from_secs(10));
+                    let timeout = Timer::after(embassy_time::Duration::from_secs(4));
 
                     let result = select(removed, timeout).await;
 

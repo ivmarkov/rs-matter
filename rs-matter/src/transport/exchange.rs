@@ -258,11 +258,11 @@ pub struct Rx<'a, 'b> {
 
 impl<'a, 'b> Rx<'a, 'b> {
     pub fn meta(&self) -> ExchangeMeta {
-        ExchangeMeta::from(&self.packet.packet_ref().header.proto)
+        ExchangeMeta::from(&self.packet.header.proto)
     }
 
     pub fn payload(&self) -> &[u8] {
-        &self.packet.packet_ref().buf[self.packet.packet_ref().payload_start..]
+        &self.packet.buf[self.packet.payload_start..]
     }
 
     pub fn consume(&mut self) -> &mut Self {
@@ -293,7 +293,7 @@ impl<'a, 'b> Tx<'a, 'b> {
     pub fn payload(&mut self) -> Result<TxPayload<'a, '_>, Error> {
         self.completed = None;
 
-        let packet = self.packet.packet_mut();
+        let packet = &mut *self.packet;
         packet.buf.resize_default(MAX_TX_BUF_SIZE).unwrap();
 
         let mut writebuf = WriteBuf::new(&mut packet.buf);

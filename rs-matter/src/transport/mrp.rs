@@ -197,7 +197,7 @@ impl ReliableMessage {
                     "Previous ACK entry {:x} for this exchange already exists",
                     ack.get_msg_ctr()
                 );
-                Err(ErrorCode::Invalid)?;
+                //TODO Err(ErrorCode::Invalid)?;
             }
 
             self.ack = Some(AckEntry::new(plain.ctr, epoch)?);

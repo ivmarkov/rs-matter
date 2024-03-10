@@ -81,6 +81,10 @@ impl OnOffCluster {
         }
     }
 
+    pub fn toggle(&self) {
+        self.set(!self.on.get());
+    }
+
     pub fn read(&self, attr: &AttrDetails, encoder: AttrDataEncoder) -> Result<(), Error> {
         if let Some(writer) = encoder.with_dataver(self.data_ver.get())? {
             if attr.is_system() {
@@ -101,8 +105,6 @@ impl OnOffCluster {
         match attr.attr_id.try_into()? {
             Attributes::OnOff(codec) => self.set(codec.decode(data)?),
         }
-
-        self.data_ver.changed();
 
         Ok(())
     }
@@ -131,8 +133,6 @@ impl OnOffCluster {
             | Commands::OnWithRecallGlobalScene
             | Commands::OnWithTimedOff => todo!(),
         }
-
-        self.data_ver.changed();
 
         Ok(())
     }

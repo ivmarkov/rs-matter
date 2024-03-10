@@ -84,8 +84,8 @@ pub mod msg {
         pub min_int_floor: u16,
         pub max_int_ceil: u16,
         pub attr_requests: Option<TLVArray<'a, AttrPath>>,
-        event_requests: Option<TLVArray<'a, EventPath>>,
-        event_filters: Option<TLVArray<'a, EventFilter>>,
+        pub event_requests: Option<TLVArray<'a, EventPath>>,
+        pub event_filters: Option<TLVArray<'a, EventFilter>>,
         // The Context Tags are discontiguous for some reason
         _dummy: Option<bool>,
         pub fabric_filtered: bool,

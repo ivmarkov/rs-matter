@@ -153,15 +153,25 @@ where
         tb: &mut WriteBuf<'_>,
     ) -> Result<(), Error> {
         let mut timeout_instant = None;
+        let mut repeat = true;
 
-        loop {
+        while repeat {
             let meta = exchange.recv_into(rb).await?;
 
             let interaction = Interaction::new(meta.opcode()?, rb.as_slice())?;
 
+            repeat = matches!(interaction, Interaction::Timed(_))
+                || matches!(
+                    interaction,
+                    Interaction::Write(WriteReq {
+                        more_chunked: Some(true),
+                        ..
+                    })
+                );
+
             tb.reset();
 
-            match &interaction {
+            match interaction {
                 Interaction::Read(req) => self.read(&mut exchange, req, tb).await?,
                 Interaction::Write(req) => {
                     self.write(&mut exchange, req, tb, timeout_instant).await?
@@ -174,18 +184,6 @@ where
                     timeout_instant = Some(self.timed(&mut exchange, req, tb).await?)
                 }
             }
-
-            if !matches!(interaction, Interaction::Timed(_))
-                && !matches!(
-                    interaction,
-                    Interaction::Write(WriteReq {
-                        more_chunked: Some(true),
-                        ..
-                    })
-                )
-            {
-                break;
-            }
         }
 
         exchange.matter().notify_changed();
@@ -196,10 +194,10 @@ where
     async fn read(
         &self,
         exchange: &mut Exchange<'_>,
-        req: &ReadReq<'_>,
+        req: ReadReq<'_>,
         wb: &mut WriteBuf<'_>,
     ) -> Result<(), Error> {
-        self.report_data(exchange, &ReportDataReq::Read(req), None, wb, true)
+        self.report_data(exchange, &ReportDataReq::Read(&req), None, wb, true)
             .await?;
 
         Ok(())
@@ -249,7 +247,7 @@ where
     async fn write(
         &self,
         exchange: &mut Exchange<'_>,
-        req: &WriteReq<'_>,
+        req: WriteReq<'_>,
         wb: &mut WriteBuf<'_>,
         timeout_instant: Option<Duration>,
     ) -> Result<(), Error> {
@@ -282,7 +280,7 @@ where
         // additional list of expanded write requests as we start processing those.
         let node = metadata.node();
         let write_attrs: heapless::Vec<_, MAX_WRITE_ATTRS_IN_ONE_TRANS> =
-            node.write(req, &accessor).collect();
+            node.write(&req, &accessor).collect();
 
         for item in write_attrs {
             AttrDataEncoder::handle_write(&item, &self.handler, &mut resp.writer()).await?;
@@ -294,7 +292,7 @@ where
     async fn invoke(
         &self,
         exchange: &mut Exchange<'_>,
-        req: &InvReq<'_>,
+        req: InvReq<'_>,
         wb: &mut WriteBuf<'_>,
         timeout_instant: Option<Duration>,
     ) -> Result<(), Error> {
@@ -308,10 +306,10 @@ where
         } else {
             let mut resp = InvStreamingResp::new(wb);
 
-            if resp.timeout(req, timeout_instant)? {
+            if resp.timeout(&req, timeout_instant)? {
                 exchange.send(OpCode::StatusResponse, wb.as_slice()).await
             } else {
-                resp.start(req)?;
+                resp.start(&req)?;
 
                 let accessor = exchange.accessor()?;
 
@@ -319,13 +317,13 @@ where
 
                 let node = metadata.node();
 
-                for item in node.invoke(req, &accessor) {
+                for item in node.invoke(&req, &accessor) {
                     CmdDataEncoder::handle(&item, &self.handler, &mut resp.writer(), exchange)
                         .await?;
                 }
 
                 exchange
-                    .send(OpCode::InvokeResponse, resp.finish(req)?)
+                    .send(OpCode::InvokeResponse, resp.finish(&req)?)
                     .await
             }
         }
@@ -334,7 +332,7 @@ where
     async fn subscribe(
         &self,
         exchange: &mut Exchange<'_>,
-        req: &SubscribeReq<'_>,
+        mut req: SubscribeReq<'_>,
         wb: &mut WriteBuf<'_>,
     ) -> Result<(), Error> {
         let mut reported_at = Instant::now();
@@ -359,7 +357,7 @@ where
             let mut subscribed = self
                 .report_data(
                     exchange,
-                    &ReportDataReq::Subscribe(req),
+                    &ReportDataReq::Subscribe(&req),
                     Some(subscription_id),
                     wb,
                     false,
@@ -368,7 +366,7 @@ where
 
             if subscribed {
                 let min_int_secs = req.min_int_floor;
-                let max_int_secs = core::cmp::max(req.max_int_ceil, 10); // Say we need at least 4 secs for potential latencies
+                let max_int_secs = core::cmp::max(req.max_int_ceil, 40); // Say we need at least 4 secs for potential latencies
 
                 info!("New subscription {node_id:x}::{subscription_id}; reporting interval: {min_int_secs}s - {max_int_secs}s");
 
@@ -382,6 +380,10 @@ where
                 let mut changed = false;
 
                 while subscribed {
+                    // Only used when priming the subscription
+                    req.event_filters = None;
+                    req.dataver_filters = None;
+
                     let removed = self.subscriptions.wait_removed(node_id, subscription_id);
                     let timeout = Timer::after(embassy_time::Duration::from_secs(4));
 
@@ -420,8 +422,8 @@ where
                             subscribed = self
                                 .report_data(
                                     exchange,
-                                    &ReportDataReq::Subscribe(req),
-                                    Some(subscription_id),
+                                    &ReportDataReq::Subscribe(&req),
+                                    Some(999),
                                     wb,
                                     false,
                                 )
@@ -446,7 +448,7 @@ where
     async fn timed(
         &self,
         exchange: &mut Exchange<'_>,
-        req: &TimedReq,
+        req: TimedReq,
         wb: &mut WriteBuf<'_>,
     ) -> Result<Duration, Error> {
         let timeout_instant = req.timeout_instant(exchange.matter().epoch);

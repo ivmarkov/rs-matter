@@ -213,6 +213,7 @@ impl Session {
             && self.local_sess_id == rx_plain.sess_id
             && self.peer_addr == *rx_peer
             && self.is_encrypted() == rx_plain.is_encrypted()
+            && !self.reserved
     }
 
     pub(crate) fn post_recv(
@@ -413,7 +414,10 @@ impl<'a> ReservedSession<'a> {
     pub fn reserve_now(matter: &'a Matter<'a>) -> Result<Self, Error> {
         let mut mgr = matter.transport_mgr.session_mgr.borrow_mut();
 
-        let id = mgr.add(true, Address::default(), None)?.id;
+        let id = mgr
+            .add(true, Address::default(), None)
+            .ok_or(ErrorCode::NoSpaceSessions)?
+            .id;
 
         Ok(Self {
             id,
@@ -428,7 +432,7 @@ impl<'a> ReservedSession<'a> {
         if let Ok(session) = session {
             Ok(session)
         } else {
-            matter.transport_mgr.evict_session().await?;
+            matter.transport_mgr.evict_some_session().await?;
 
             Self::reserve_now(matter)
         }
@@ -587,7 +591,7 @@ impl SessionMgr {
         reserved: bool,
         peer_addr: Address,
         peer_nodeid: Option<u64>,
-    ) -> Result<&mut Session, Error> {
+    ) -> Option<&mut Session> {
         let session_id = self.next_sess_unique_id;
 
         self.next_sess_unique_id += 1;
@@ -605,16 +609,9 @@ impl SessionMgr {
             self.rand,
         );
 
-        if self.sessions.len() < MAX_SESSIONS {
-            self.sessions
-                .push(session)
-                .map_err(|_| ErrorCode::NoSpaceSessions)
-                .unwrap();
+        self.sessions.push(session).ok()?;
 
-            Ok(self.sessions.last_mut().unwrap())
-        } else {
-            Err(ErrorCode::NoSpaceSessions.into())
-        }
+        Some(self.sessions.last_mut().unwrap())
     }
 
     /// This assumes that the higher layer has taken care of doing anything required

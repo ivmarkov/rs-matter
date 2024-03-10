@@ -22,6 +22,7 @@ use std::net::UdpSocket;
 
 use embassy_futures::select::{select, select3, select4};
 
+use embassy_time::{Duration, Timer};
 use log::info;
 
 use rs_matter::core::{CommissioningData, Matter};
@@ -96,7 +97,9 @@ fn run() -> Result<(), Error> {
 
     info!("Matter initialized");
 
-    let handler = HandlerCompat(handler(&matter));
+    let on_off = cluster_on_off::OnOffCluster::new(*matter.borrow());
+
+    let handler = HandlerCompat(handler(&matter, &on_off));
 
     // NOTE:
     // When using a custom UDP stack (e.g. for `no_std` environments), replace with a UDP socket bind + multicast join for your custom UDP stack
@@ -141,10 +144,24 @@ fn run() -> Result<(), Error> {
     let responder = Responder::new(handler);
     let mut responder_runner = pin!(responder.run::<4>(&matter));
 
-    let runner = select(
+    // This is a sample code that simulates state changed from within the app
+    // It should be properly reflected in the matter controller and its apps (i.e. Google Home), thanks to subscriptions
+    let mut on_off_toggle_runner = pin!(async {
+        loop {
+            Timer::after(Duration::from_secs(5)).await;
+
+            on_off.toggle();
+            responder.subscriptions().notify_changed();
+
+            info!("Lamp toggled");
+        }
+    });
+
+    let runner = select3(
         &mut runner,
         //&mut psm_runner,
         &mut responder_runner,
+        &mut on_off_toggle_runner,
     );
 
     // NOTE:
@@ -166,7 +183,10 @@ const NODE: Node<'static> = Node {
     ],
 };
 
-fn handler<'a>(matter: &'a Matter<'a>) -> impl Metadata + NonBlockingHandler + 'a {
+fn handler<'a>(
+    matter: &'a Matter<'a>,
+    on_off: &'a cluster_on_off::OnOffCluster,
+) -> impl Metadata + NonBlockingHandler + 'a {
     (
         NODE,
         root_endpoint::handler(0, matter)
@@ -175,11 +195,7 @@ fn handler<'a>(matter: &'a Matter<'a>) -> impl Metadata + NonBlockingHandler + '
                 descriptor::ID,
                 descriptor::DescriptorCluster::new(*matter.borrow()),
             )
-            .chain(
-                1,
-                cluster_on_off::ID,
-                cluster_on_off::OnOffCluster::new(*matter.borrow()),
-            ),
+            .chain(1, cluster_on_off::ID, on_off),
     )
 }
 

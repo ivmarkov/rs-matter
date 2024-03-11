@@ -68,17 +68,19 @@ impl Case {
 
     pub async fn handle(
         &mut self,
-        mut exchange: Exchange<'_>,
+        exchange: &mut Exchange<'_>,
         case_session: &mut CaseSession,
     ) -> Result<(), Error> {
         let session = ReservedSession::reserve(exchange.matter()).await?;
 
-        self.handle_casesigma1(&mut exchange, case_session).await?;
-        self.handle_casesigma3(&mut exchange, case_session, session)
+        self.handle_casesigma1(exchange, case_session).await?;
+        self.handle_casesigma3(exchange, case_session, session)
             .await?;
 
+        exchange.acknowledge().await?;
         exchange.matter().notify_changed();
-        exchange.close().await
+
+        Ok(())
     }
 
     async fn handle_casesigma3(

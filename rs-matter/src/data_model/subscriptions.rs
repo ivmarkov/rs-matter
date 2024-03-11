@@ -201,7 +201,7 @@ impl<'a, const N: usize> Subscriptions<'a, N> {
                         }
                     }
 
-                    exchange.close().await?;
+                    exchange.acknowledge().await?;
                 } else {
                     break;
                 }

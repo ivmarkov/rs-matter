@@ -140,19 +140,19 @@ impl Pake {
 
     pub async fn handle(
         &mut self,
-        mut exchange: Exchange<'_>,
+        exchange: &mut Exchange<'_>,
         spake2p: &mut Spake2P,
     ) -> Result<(), Error> {
         let session = ReservedSession::reserve(exchange.matter()).await?;
 
-        self.handle_pbkdfparamrequest(&mut exchange, spake2p)
-            .await?;
-        self.handle_pasepake1(&mut exchange, spake2p).await?;
-        self.handle_pasepake3(&mut exchange, session, spake2p)
-            .await?;
+        self.handle_pbkdfparamrequest(exchange, spake2p).await?;
+        self.handle_pasepake1(exchange, spake2p).await?;
+        self.handle_pasepake3(exchange, session, spake2p).await?;
 
+        exchange.acknowledge().await?;
         exchange.matter().notify_changed();
-        exchange.close().await
+
+        Ok(())
     }
 
     #[allow(non_snake_case)]

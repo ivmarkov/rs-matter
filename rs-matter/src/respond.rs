@@ -21,14 +21,20 @@ use embassy_futures::select::select_slice;
 
 use log::{error, info};
 
+use crate::data_model::core::DataModel;
+use crate::data_model::objects::DataModelHandler;
+use crate::data_model::subscriptions::Subscriptions;
 use crate::error::{Error, ErrorCode};
+use crate::interaction_model::busy::BusyInteractionModel;
+use crate::secure_channel::busy::BusySecureChannel;
+use crate::secure_channel::core::SecureChannel;
 use crate::transport::exchange::Exchange;
 use crate::Matter;
 
 pub trait ExchangeHandler {
     async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error>;
 
-    fn compose<T>(self, other: T) -> impl ExchangeHandler
+    fn compose<T>(self, other: T) -> CompositeExchangeHandler<Self, T>
     where
         T: ExchangeHandler,
         Self: Sized,
@@ -46,7 +52,7 @@ where
     }
 }
 
-struct CompositeExchangeHandler<F, S>(F, S);
+pub struct CompositeExchangeHandler<F, S>(F, S);
 
 impl<F, S> ExchangeHandler for CompositeExchangeHandler<F, S>
 where
@@ -112,24 +118,56 @@ where
 
     async fn respond(&self, handler_id: impl Display) -> Result<(), Error> {
         loop {
-            let exchange = Exchange::accept_after(self.matter, self.respond_after_ms).await?;
-            let exchange_id = exchange.id();
+            let mut exchange = Exchange::accept_after(self.matter, self.respond_after_ms).await?;
 
             info!(
-                "{}: Handler {handler_id} / exchange {exchange_id}: Starting",
-                self.name
+                "{}: Handler {handler_id} / exchange {}: Starting",
+                self.name,
+                exchange.id()
             );
 
             let result = self.handler.handle(&mut exchange).await;
 
             if let Err(err) = result {
-                error!("{}: Handler {handler_id} / exchange {exchange_id}: Abandoned because of error {err:?}", self.name);
+                error!(
+                    "{}: Handler {handler_id} / exchange {}: Abandoned because of error {err:?}",
+                    self.name,
+                    exchange.id()
+                );
             } else {
                 info!(
-                    "{}: Handler {handler_id} / exchange {exchange_id}: Completed",
-                    self.name
+                    "{}: Handler {handler_id} / exchange {}: Completed",
+                    self.name,
+                    exchange.id()
                 );
             }
         }
+    }
+}
+
+impl<'a, const N: usize, H>
+    Responder<'a, CompositeExchangeHandler<DataModel<'a, N, H>, SecureChannel>>
+{
+    pub fn new_default(subscriptions: &'a Subscriptions<'a, N>, dm_handler: H) -> Self
+    where
+        H: DataModelHandler,
+    {
+        Self::new(
+            "Responder",
+            DataModel::new(dm_handler, subscriptions).compose(SecureChannel::new()),
+            subscriptions.matter(),
+            0,
+        )
+    }
+}
+
+impl<'a> Responder<'a, CompositeExchangeHandler<BusyInteractionModel, BusySecureChannel>> {
+    pub fn new_busy(matter: &'a Matter<'a>) -> Self {
+        Self::new(
+            "Busy Responder",
+            BusyInteractionModel::new().compose(BusySecureChannel::new()),
+            matter,
+            200,
+        )
     }
 }

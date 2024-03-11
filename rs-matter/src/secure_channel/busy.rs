@@ -17,25 +17,30 @@
 
 use log::error;
 
-use crate::{
-    alloc,
-    error::*,
-    respond::ExchangeHandler,
-    secure_channel::{common::*, pake::Pake},
-    transport::exchange::Exchange,
-};
+use crate::error::*;
+use crate::respond::ExchangeHandler;
+use crate::transport::exchange::Exchange;
 
-use super::{
-    case::{Case, CaseSession},
-    spake2p::Spake2P,
-};
+use super::common::{sc_write, OpCode, SCStatusCodes, PROTO_ID_SECURE_CHANNEL};
 
-/* Handle messages related to the Secure Channel
- */
+/// A Secure Channel implementation that is only capable of sending Busy status codes
+///
+/// Use with e.g.
+///
+/// ```rust
+/// let matter = Matter::new(...);
+///
+/// // ...
+///
+/// let busy_responder = Responder::new("SC Busy Responder", BusySecureChannel::new(), &matter, 200/*ms*/);
+/// busy_responder.run::<10>().await?;
+/// ```
+///
+/// ... to respond with "I'm busy, please try later" status code to all incoming Secure Channel messages, which were
+/// not accepted in time by the actual Secure Channel responder, due to all its handlers being occupied with work.
+pub struct BusySecureChannel(());
 
-pub struct SecureChannel(());
-
-impl SecureChannel {
+impl BusySecureChannel {
     #[inline(always)]
     pub const fn new() -> Self {
         Self(())
@@ -48,13 +53,12 @@ impl SecureChannel {
         }
 
         match meta.opcode()? {
-            OpCode::PBKDFParamRequest => {
-                let mut spake2p = alloc!(Spake2P::new());
-                Pake::new().handle(exchange, &mut spake2p).await
-            }
-            OpCode::CASESigma1 => {
-                let mut case_session = alloc!(CaseSession::new());
-                Case::new().handle(exchange, &mut case_session).await
+            OpCode::PBKDFParamRequest | OpCode::CASESigma1 => {
+                exchange.recv().await?;
+
+                exchange
+                    .send_with(|wb| sc_write(wb, SCStatusCodes::Busy, Some(&[0xF4, 0x01])))
+                    .await
             }
             proto_opcode => {
                 error!("OpCode not handled: {:?}", proto_opcode);
@@ -64,14 +68,8 @@ impl SecureChannel {
     }
 }
 
-impl Default for SecureChannel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ExchangeHandler for SecureChannel {
+impl ExchangeHandler for BusySecureChannel {
     async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error> {
-        SecureChannel::handle(self, exchange).await
+        BusySecureChannel::handle(self, exchange).await
     }
 }

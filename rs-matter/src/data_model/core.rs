@@ -61,7 +61,7 @@ where
         }
     }
 
-    pub async fn handle(&self, exchange: Exchange<'_>) -> Result<(), Error> {
+    pub async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error> {
         let mut rb = Box::new(MaybeUninit::<[u8; MAX_RX_BUF_SIZE]>::uninit());
         let mut tb = Box::new(MaybeUninit::<[u8; MAX_TX_BUF_SIZE]>::uninit());
 
@@ -74,7 +74,7 @@ where
 
     pub async fn handle_with(
         &self,
-        mut exchange: Exchange<'_>,
+        exchange: &mut Exchange<'_>,
         rb: &mut WriteBuf<'_>,
         tb: &mut WriteBuf<'_>,
     ) -> Result<(), Error> {
@@ -104,26 +104,22 @@ where
             tb.reset();
 
             match &interaction {
-                Interaction::Read(req) => self.read(&mut exchange, req, tb).await?,
-                Interaction::Write(req) => {
-                    self.write(&mut exchange, req, tb, timeout_instant).await?
-                }
-                Interaction::Invoke(req) => {
-                    self.invoke(&mut exchange, req, tb, timeout_instant).await?
-                }
+                Interaction::Read(req) => self.read(exchange, req, tb).await?,
+                Interaction::Write(req) => self.write(exchange, req, tb, timeout_instant).await?,
+                Interaction::Invoke(req) => self.invoke(exchange, req, tb, timeout_instant).await?,
                 Interaction::Subscribe(req) => {
-                    self.subscribe(&mut exchange, req, rb.as_slice(), tb)
-                        .await?
+                    self.subscribe(exchange, req, rb.as_slice(), tb).await?
                 }
                 Interaction::Timed(req) => {
-                    timeout_instant = Some(self.timed(&mut exchange, req, tb).await?)
+                    timeout_instant = Some(self.timed(exchange, req, tb).await?)
                 }
             }
         }
 
+        exchange.acknowledge().await?;
         exchange.matter().notify_changed();
 
-        exchange.close().await
+        Ok(())
     }
 
     async fn read(
@@ -383,7 +379,7 @@ impl<'a, const N: usize, T> ExchangeHandler for DataModel<'a, N, T>
 where
     T: DataModelHandler,
 {
-    async fn handle(&self, exchange: Exchange<'_>) -> Result<(), Error> {
+    async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error> {
         DataModel::handle(self, exchange).await
     }
 }

@@ -41,6 +41,7 @@ use rs_matter::{
             dev_att::{DataType, DevAttDataFetcher},
             general_commissioning, noc, nw_commissioning,
         },
+        subscriptions::Subscriptions,
         system_model::{
             access_control,
             descriptor::{self, DescriptorCluster},
@@ -288,24 +289,25 @@ impl<'a> ImEngine<'a> {
         let mut buf1 = [heapless::Vec::new(); 1];
         let mut buf2 = [heapless::Vec::new(); 1];
 
-        let mut pipe1 = PseudoUdpPipe::<MAX_RX_BUF_SIZE>::new(&mut buf1);
-        let mut pipe2 = PseudoUdpPipe::<MAX_TX_BUF_SIZE>::new(&mut buf2);
+        let mut pipe1 = NetworkPipe::<MAX_RX_BUF_SIZE>::new(&mut buf1);
+        let mut pipe2 = NetworkPipe::<MAX_TX_BUF_SIZE>::new(&mut buf2);
 
         let (send_remote, recv_local) = pipe1.split();
         let (send_local, recv_remote) = pipe2.split();
 
         let matter_client = &matter_client;
 
-        let responder = Responder::<1, _>::new(HandlerCompat(handler), &self.matter);
+        let subscriptions = Subscriptions::<3>::new(&self.matter);
+        let responder = Responder::new_default(&subscriptions, HandlerCompat(handler));
 
         embassy_futures::block_on(async move {
             select4(
                 matter_client
                     .transport_mgr
-                    .run(PseudoUdpSend(send_local), PseudoUdpReceive(recv_local)),
+                    .run(NetworkSend(send_local), NetworkReceive(recv_local)),
                 self.matter
                     .transport_mgr
-                    .run(PseudoUdpSend(send_remote), PseudoUdpReceive(recv_remote)),
+                    .run(NetworkSend(send_remote), NetworkReceive(recv_remote)),
                 responder.run::<4>(),
                 async move {
                     let mut exchange =
@@ -355,11 +357,11 @@ impl<'a> ImEngine<'a> {
 
 const ADDR: Address = Address::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
 
-type PseudoUdpPipe<'a, const N: usize> = Channel<'a, NoopRawMutex, heapless::Vec<u8, N>>;
-struct PseudoUdpReceive<'a, const N: usize>(Receiver<'a, NoopRawMutex, heapless::Vec<u8, N>>);
-struct PseudoUdpSend<'a, const N: usize>(Sender<'a, NoopRawMutex, heapless::Vec<u8, N>>);
+type NetworkPipe<'a, const N: usize> = Channel<'a, NoopRawMutex, heapless::Vec<u8, N>>;
+struct NetworkReceive<'a, const N: usize>(Receiver<'a, NoopRawMutex, heapless::Vec<u8, N>>);
+struct NetworkSend<'a, const N: usize>(Sender<'a, NoopRawMutex, heapless::Vec<u8, N>>);
 
-impl<'a, const N: usize> NetworkSend for PseudoUdpSend<'a, N> {
+impl<'a, const N: usize> NetworkSend for NetworkSend<'a, N> {
     async fn send_to(&mut self, data: &[u8], _addr: Address) -> Result<(), Error> {
         let vec = self.0.send().await;
 
@@ -372,7 +374,7 @@ impl<'a, const N: usize> NetworkSend for PseudoUdpSend<'a, N> {
     }
 }
 
-impl<'a, const N: usize> NetworkReceive for PseudoUdpReceive<'a, N> {
+impl<'a, const N: usize> NetworkReceive for NetworkReceive<'a, N> {
     async fn wait_available(&mut self) -> Result<(), Error> {
         self.0.receive().await;
 

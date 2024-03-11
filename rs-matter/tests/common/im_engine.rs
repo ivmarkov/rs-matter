@@ -296,7 +296,7 @@ impl<'a> ImEngine<'a> {
 
         let matter_client = &matter_client;
 
-        let responder = Responder::new(HandlerCompat(handler));
+        let responder = Responder::<1, _>::new(HandlerCompat(handler), &self.matter);
 
         embassy_futures::block_on(async move {
             select4(
@@ -306,9 +306,10 @@ impl<'a> ImEngine<'a> {
                 self.matter
                     .transport_mgr
                     .run(PseudoUdpSend(send_remote), PseudoUdpReceive(recv_remote)),
-                responder.run::<4>(&self.matter),
+                responder.run::<4>(),
                 async move {
-                    let mut exchange = Exchange::initiate(matter_client, 0).await?;
+                    let mut exchange =
+                        Exchange::initiate(matter_client, IM_ENGINE_REMOTE_PEER_ID, true).await?;
 
                     for ip in input {
                         exchange

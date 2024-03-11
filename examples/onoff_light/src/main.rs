@@ -55,7 +55,7 @@ fn main() -> Result<(), Error> {
         // e.g., an opt-level of "0" will require a several times' larger stack.
         //
         // Optimizing/lowering `rs-matter` memory consumption is an ongoing topic.
-        .stack_size(65 * 1024)
+        .stack_size(200 * 1024)
         .spawn(run)
         .unwrap();
 
@@ -141,8 +141,8 @@ fn run() -> Result<(), Error> {
     //let mut psm = Psm::new(matter, std::env::temp_dir().join("rs-matter"))?;
     //let mut psm_runner = pin!(psm.run());
 
-    let responder = Responder::new(handler);
-    let mut responder_runner = pin!(responder.run::<4>(&matter));
+    let responder = Responder::<4, _>::new(handler, &matter);
+    let mut responder_runner = pin!(responder.run::<4>());
 
     // This is a sample code that simulates state changed from within the app
     // It should be properly reflected in the matter controller and its apps (i.e. Google Home), thanks to subscriptions

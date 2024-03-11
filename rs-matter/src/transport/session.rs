@@ -15,23 +15,24 @@
  *    limitations under the License.
  */
 
-use log::{info, warn};
+use core::cell::RefCell;
+use core::fmt;
+use core::time::Duration;
+
+use log::{error, info, trace, warn};
 
 use crate::data_model::sdm::noc::NocData;
+use crate::error::*;
 use crate::transport::exchange::ExchangeId;
 use crate::transport::mrp::ReliableMessage;
 use crate::utils::epoch::Epoch;
 use crate::utils::parsebuf::ParseBuf;
 use crate::utils::rand::Rand;
 use crate::utils::writebuf::WriteBuf;
-use core::cell::RefCell;
-use core::fmt;
-use core::time::Duration;
-
-use crate::{error::*, Matter};
+use crate::Matter;
 
 use super::dedup::RxCtrState;
-use super::exchange::{ExchangeState, OwnedState, Role};
+use super::exchange::{ExchangeState, Role};
 use super::mrp::RetransEntry;
 use super::network::Address;
 use super::packet::PacketHdr;
@@ -204,6 +205,10 @@ impl Session {
         &self.att_challenge
     }
 
+    pub(crate) fn is_for_node(&self, node_id: u64, secure: bool) -> bool {
+        self.peer_nodeid == Some(node_id) && self.is_encrypted() == secure && !self.reserved
+    }
+
     pub(crate) fn is_for(&self, rx_peer: &Address, rx_plain: &PlainHdr) -> bool {
         let nodeid_matches = self.peer_nodeid.is_none()
             || rx_plain.get_src_nodeid().is_none()
@@ -224,35 +229,28 @@ impl Session {
     ) -> Result<bool, Error> {
         self.decode_remaining(header, pb)?;
 
-        let duplicate = !self
+        if !self
             .rx_ctr_state
-            .post_recv(header.plain.ctr, self.is_encrypted());
+            .post_recv(header.plain.ctr, self.is_encrypted())
+        {
+            Err(ErrorCode::Duplicate)?;
+        }
 
-        let exch_index = self.get_exchange_index_for(&header.proto);
+        let exch_index = self.get_exchange_index_for_rx(&header.proto);
         if let Some(exch_index) = exch_index {
             let exch = self.exchanges[exch_index].as_mut().unwrap();
 
             exch.post_recv(&header.plain, &header.proto, epoch)?;
 
-            if matches!(exch.owned_state, OwnedState::OrphanedClosing) && exch.is_closable() {
-                self.exchanges[exch_index] = None;
-            }
-
-            if duplicate {
-                Err(ErrorCode::Duplicate)?;
-            }
-
             Ok(false)
         } else {
-            if duplicate {
-                Err(ErrorCode::Duplicate)?;
-            }
-
             if !header.proto.is_initiator() {
                 Err(ErrorCode::NoExchange)?;
             }
 
-            if let Some(exch_index) = self.add_exchange(header.proto.exch_id, Role::Responder) {
+            if let Some(exch_index) =
+                self.add_exchange(header.proto.exch_id, Role::Responder(Default::default()))
+            {
                 let exch = self.exchanges[exch_index].as_mut().unwrap();
 
                 exch.post_recv(&header.plain, &header.proto, epoch)?;
@@ -315,13 +313,13 @@ impl Session {
         u32::from_be_bytes(buf) & MATTER_MSG_CTR_RANGE
     }
 
-    pub(crate) fn get_exchange_index_for(&self, proto: &ProtoHdr) -> Option<usize> {
+    pub(crate) fn get_exchange_index_for_rx(&self, proto: &ProtoHdr) -> Option<usize> {
         self.exchanges
             .iter()
             .enumerate()
             .filter(|(_, exch)| {
                 exch.as_ref()
-                    .map(|exch| exch.is_for(proto))
+                    .map(|exch| exch.is_for_rx(proto))
                     .unwrap_or(false)
             })
             .map(|(index, _)| index)
@@ -329,61 +327,54 @@ impl Session {
     }
 
     pub(crate) fn add_exchange(&mut self, exch_id: u16, role: Role) -> Option<usize> {
-        let exchanges_count = self.exchanges.iter().filter(|exch| exch.is_some()).count();
-        if matches!(role, Role::Initiator) && exchanges_count == MAX_EXCHANGES - 1 {
-            // Keep the last exchange in our exchange slots available so that
-            // we can answer accept timeouts and too high resources' usage without abruptly closing the session
-            warn!("Number of exchanges is above the high watermark, denying new exchange creation");
-            None?;
-        }
-
-        info!("Creating a new exchange: {:x}/{:?}", exch_id, role);
-
         let exch_state = Some(ExchangeState {
             exch_id,
             role,
             mrp: ReliableMessage::new(),
-            last_received: None,
-            owned_state: if matches!(role, Role::Initiator) {
-                OwnedState::Owned
-            } else if exchanges_count == MAX_EXCHANGES - 1 {
-                warn!(
-                    "Number of exchanges is above the high watermark, exchange created as orphaned"
-                );
-                OwnedState::Orphaned
-            } else {
-                OwnedState::NotAccepted
-            },
         });
 
         if self.exchanges.len() < MAX_EXCHANGES {
             let _ = self.exchanges.push(exch_state);
 
+            info!("Creating a new exchange: {:x}/{:?}", exch_id, role);
             Some(self.exchanges.len() - 1)
         } else {
-            let index = self.exchanges.iter().position(Option::is_none).unwrap();
-            self.exchanges[index] = exch_state;
+            let index = self.exchanges.iter().position(Option::is_none);
 
-            Some(index)
+            if let Some(index) = index {
+                self.exchanges[index] = exch_state;
+
+                info!("Creating a new exchange: {:x}/{:?}", exch_id, role);
+                Some(index)
+            } else {
+                error!(
+                    "Too many exchanges for session {:x}; exchange creation failed",
+                    self.id
+                );
+                None
+            }
         }
     }
 
-    pub(crate) fn close_exchange(&mut self, index: usize) -> bool {
-        let exchange = &mut self.exchanges[index];
+    pub(crate) fn remove_exchange(&mut self, index: usize) -> bool {
+        let exchange = self.exchanges[index].as_mut().unwrap();
         let exchange_id = ExchangeId::new(self.id, index);
 
-        match exchange.as_ref().unwrap().owned_state {
-            OwnedState::Owned => {
-                warn!("Exchange {exchange_id}: Dropped without closing, marking as orphaned");
-                exchange.as_mut().unwrap().owned_state = OwnedState::Orphaned;
+        if exchange.mrp.is_retrans_pending() {
+            exchange.role.set_dropped_state();
+            error!("Exchange {exchange_id}: dropped while a packet is still (re)transmitted! Marking as dropped, but session will be closed");
 
-                false
-            }
-            OwnedState::Closed => {
-                *exchange = None;
-                true
-            }
-            other => unreachable!("Exchange {exchange_id}: Invalid state {other:?}"),
+            false
+        } else if exchange.mrp.is_ack_pending() {
+            exchange.role.set_dropped_state();
+            warn!("Exchange {exchange_id}: dropped with a pending ACK. Marking as dropped");
+
+            false
+        } else {
+            self.exchanges[index] = None;
+            trace!("Exchange {exchange_id}: dropped cleanly");
+
+            true
         }
     }
 }
@@ -565,7 +556,9 @@ impl SessionMgr {
                 .iter()
                 .flat_map(|sess| sess.exchanges.iter())
                 .filter_map(|exch| exch.as_ref())
-                .all(|exch| !matches!(exch.role, Role::Initiator) || exch.exch_id != next_exch_id)
+                .all(|exch| {
+                    !matches!(exch.role, Role::Responder(_)) || exch.exch_id != next_exch_id
+                })
             {
                 break;
             }
@@ -634,7 +627,20 @@ impl SessionMgr {
         session
     }
 
-    pub(crate) fn get_for(
+    pub(crate) fn get_for_node(&mut self, node_id: u64, secure: bool) -> Option<&mut Session> {
+        let mut session = self
+            .sessions
+            .iter_mut()
+            .find(|sess| sess.is_for_node(node_id, secure));
+
+        if let Some(session) = session.as_mut() {
+            session.update_last_used(self.epoch);
+        }
+
+        session
+    }
+
+    pub(crate) fn get_for_rx(
         &mut self,
         rx_peer: &Address,
         rx_plain: &PlainHdr,

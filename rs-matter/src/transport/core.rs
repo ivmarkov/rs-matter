@@ -24,15 +24,10 @@ use embassy_futures::select::{select, select3};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::Timer;
 
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 
 use crate::error::{Error, ErrorCode};
-use crate::interaction_model::{
-    self,
-    core::{IMStatusCode, PROTO_ID_INTERACTION_MODEL},
-    messages::msg::StatusResp,
-};
-use crate::secure_channel::common::{sc_write, OpCode, SCStatusCodes, PROTO_ID_SECURE_CHANNEL};
+use crate::secure_channel::common::{sc_write, OpCode, SCStatusCodes};
 use crate::tlv::TLVList;
 use crate::utils::{
     epoch::Epoch,
@@ -44,7 +39,7 @@ use crate::utils::{
 };
 use crate::{Matter, MATTER_PORT};
 
-use super::exchange::{Exchange, ExchangeId, ExchangeMeta, OwnedState, Role};
+use super::exchange::{Exchange, ExchangeId, ExchangeMeta, ResponderState, Role};
 use super::network::{
     Address, BufferAccess, Ipv6Addr, NetworkReceive, NetworkSend, SocketAddr, SocketAddrV6,
 };
@@ -55,7 +50,7 @@ use super::session::{Session, SessionMgr};
 pub const MATTER_SOCKET_BIND_ADDR: SocketAddr =
     SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, MATTER_PORT, 0, 0));
 
-const ACCEPT_TIMEOUT_MS: u64 = 500;
+const ACCEPT_TIMEOUT_MS: u64 = 1000;
 
 pub struct Packet<const N: usize> {
     pub(crate) peer: Address,
@@ -211,7 +206,7 @@ impl<'a, const N: usize> Drop for PacketBuffer<'a, N> {
 pub struct TransportMgr {
     pub(crate) rx: IfMutex<NoopRawMutex, Packet<MAX_RX_BUF_SIZE>>,
     pub(crate) tx: IfMutex<NoopRawMutex, Packet<MAX_TX_BUF_SIZE>>,
-    pub(crate) orphaned: Notification,
+    pub(crate) dropped: Notification,
     pub session_mgr: RefCell<SessionMgr>, // For testing
 }
 
@@ -221,7 +216,7 @@ impl TransportMgr {
         Self {
             rx: IfMutex::new(Packet::new()),
             tx: IfMutex::new(Packet::new()),
-            orphaned: Notification::new(),
+            dropped: Notification::new(),
             session_mgr: RefCell::new(SessionMgr::new(epoch, rand)),
         }
     }
@@ -233,20 +228,23 @@ impl TransportMgr {
     pub(crate) async fn initiate<'a>(
         &'a self,
         matter: &'a Matter<'a>,
-        session_id: u32,
+        node_id: u64,
+        secure: bool,
     ) -> Result<Exchange<'_>, Error> {
         let mut session_mgr = self.session_mgr.borrow_mut();
 
-        session_mgr.get(session_id).ok_or(ErrorCode::NoSession)?;
+        session_mgr
+            .get_for_node(node_id, secure)
+            .ok_or(ErrorCode::NoSession)?;
 
         let exch_id = session_mgr.get_next_exch_id();
 
-        let session = session_mgr.get(session_id).unwrap();
+        let session = session_mgr.get_for_node(node_id, secure).unwrap();
         let exchange_index = session
-            .add_exchange(exch_id, Role::Initiator)
+            .add_exchange(exch_id, Role::Initiator(Default::default()))
             .ok_or(ErrorCode::NoSpaceExchanges)?;
 
-        let id = ExchangeId::new(session_id, exchange_index);
+        let id = ExchangeId::new(session.id, exchange_index);
 
         info!("Exchange {id}: Initiated");
 
@@ -256,25 +254,36 @@ impl TransportMgr {
     pub(crate) async fn accept<'a>(
         &'a self,
         matter: &'a Matter<'a>,
+        received_timeout_ms: u32,
     ) -> Result<Exchange<'_>, Error> {
         let exchange = self
             .with_locked(&self.rx, |packet| {
                 let mut session_mgr = self.session_mgr.borrow_mut();
-                if let Some(session) = session_mgr.get_for(&packet.peer, &packet.header.plain) {
-                    if let Some(exch_index) = session.get_exchange_index_for(&packet.header.proto) {
+                let epoch = session_mgr.epoch;
+
+                if let Some(session) = session_mgr.get_for_rx(&packet.peer, &packet.header.plain) {
+                    if let Some(exch_index) =
+                        session.get_exchange_index_for_rx(&packet.header.proto)
+                    {
                         let exch = session.exchanges[exch_index].as_mut().unwrap();
 
-                        if matches!(exch.owned_state, OwnedState::NotAccepted) {
-                            exch.owned_state = OwnedState::Owned;
+                        if matches!(exch.role, Role::Responder(ResponderState::AcceptPending)) {
+                            if let Some(ack) = &exch.mrp.ack {
+                                if ack.has_timed_out(received_timeout_ms as _, epoch) {
+                                    exch.role = Role::Responder(ResponderState::Owned);
 
-                            let id = ExchangeId::new(session.id, exch_index);
+                                    let id = ExchangeId::new(session.id, exch_index);
 
-                            info!("Exchange {id}: Accepted");
+                                    info!("Exchange {id}: Accepted");
 
-                            let exchange =
-                                Exchange::new(ExchangeId::new(session.id, exch_index), matter);
+                                    let exchange = Exchange::new(
+                                        ExchangeId::new(session.id, exch_index),
+                                        matter,
+                                    );
 
-                            return Some(exchange);
+                                    return Some(exchange);
+                                }
+                            }
                         }
                     }
                 }
@@ -329,6 +338,8 @@ impl TransportMgr {
         S: NetworkSend,
     {
         loop {
+            debug!("Waiting for outgoing packet");
+
             let mut tx = self.get_if(&self.tx, |packet| !packet.buf.is_empty()).await;
             tx.clear_on_drop(true);
 
@@ -346,7 +357,7 @@ impl TransportMgr {
         S: NetworkSend,
     {
         loop {
-            info!("Waiting for incoming packet");
+            debug!("Waiting for incoming packet");
 
             recv.wait_available().await?;
 
@@ -379,16 +390,16 @@ impl TransportMgr {
     async fn process_orphaned(&self) -> Result<(), Error> {
         let mut rx_accept_timeout = pin!(self.process_accept_timeout_rx());
         let mut rx_orphaned = pin!(self.process_orphaned_rx());
-        let mut exch_orphaned = pin!(self.process_orphaned_exchanges());
+        let mut exch_dropped = pin!(self.process_dropped_exchanges());
 
-        select3(&mut rx_accept_timeout, &mut rx_orphaned, &mut exch_orphaned)
+        select3(&mut rx_accept_timeout, &mut rx_orphaned, &mut exch_dropped)
             .await
             .unwrap()
     }
 
     async fn process_accept_timeout_rx(&self) -> Result<(), Error> {
         loop {
-            //info!("Waiting for accept timeout");
+            trace!("Waiting for accept timeout");
 
             let accept_timeout = self.with_locked(&self.rx, |packet| {
                 self.handle_accept_timeout_rx_packet(packet).then_some(())
@@ -411,14 +422,14 @@ impl TransportMgr {
         }
     }
 
-    async fn process_orphaned_exchanges(&self) -> Result<(), Error> {
+    async fn process_dropped_exchanges(&self) -> Result<(), Error> {
         loop {
-            //info!("Waiting for orphaned exchanges");
+            trace!("Waiting for dropped exchanges");
 
             let mut tx = self.get_if(&self.tx, |packet| packet.buf.is_empty()).await;
             tx.clear_on_drop(true); // In case of error, or if the future is dropped
 
-            let wait = match self.handle_orphaned_exchange(&mut tx) {
+            let wait = match self.handle_dropped_exchange(&mut tx) {
                 Ok(wait) => {
                     tx.clear_on_drop(false);
                     wait
@@ -434,7 +445,7 @@ impl TransportMgr {
             if wait {
                 select(
                     Timer::after(embassy_time::Duration::from_millis(100)),
-                    self.orphaned.wait(),
+                    self.dropped.wait(),
                 )
                 .await;
             }
@@ -458,7 +469,7 @@ impl TransportMgr {
                     let mut session_mgr = self.session_mgr.borrow_mut();
                     let epoch = session_mgr.epoch;
                     let session = session_mgr
-                        .get_for(&packet.peer, &packet.header.plain)
+                        .get_for_rx(&packet.peer, &packet.header.plain)
                         .unwrap();
 
                     let ack = packet.header.plain.ctr;
@@ -476,11 +487,9 @@ impl TransportMgr {
             }
             Err(e) if matches!(e.code(), ErrorCode::NoSpaceSessions) => {
                 if !packet.header.plain.is_encrypted()
-                    && packet.header.proto.proto_id == PROTO_ID_SECURE_CHANNEL
-                    && (packet.header.proto.proto_opcode == OpCode::PBKDFParamRequest as u8
-                        || packet.header.proto.proto_opcode == OpCode::CASESigma1 as u8)
+                    && ExchangeMeta::from(&packet.header.proto).is_new_session()
                 {
-                    error!("\n>>>>> {packet}\n => No space for a new session, sending Busy");
+                    error!("\n>>>>> {packet}\n => No space for a new unencrypted session, sending Busy");
 
                     let ack = packet.header.plain.ctr;
 
@@ -508,7 +517,7 @@ impl TransportMgr {
                         .await?;
                     }
                 } else {
-                    error!("\n>>>>> {packet}\n => No space for a new session, dropping");
+                    error!("\n>>>>> {packet}\n => No space for a new encrypted session, dropping");
                 }
             }
             Err(e) if matches!(e.code(), ErrorCode::NoSpaceExchanges) => {
@@ -523,7 +532,7 @@ impl TransportMgr {
                 {
                     let mut session_mgr = self.session_mgr.borrow_mut();
                     let session_id = session_mgr
-                        .get_for(&packet.peer, &packet.header.plain)
+                        .get_for_rx(&packet.peer, &packet.header.plain)
                         .unwrap()
                         .id;
 
@@ -548,9 +557,7 @@ impl TransportMgr {
                 error!("\n>>>>> {packet}\n => Error ({e:?}), dropping");
             }
             Ok(new_exchange) => {
-                if packet.header.proto.proto_id == PROTO_ID_SECURE_CHANNEL
-                    && packet.header.proto.proto_opcode == OpCode::MRPStandAloneAck as u8
-                {
+                if ExchangeMeta::from(&packet.header.proto).is_standalone_ack() {
                     // No need to propagate this further
                     info!("\n>>>>> {packet}\n => Standalone Ack, dropping");
                 } else {
@@ -579,23 +586,27 @@ impl TransportMgr {
         if !packet.buf.is_empty() {
             let mut session_mgr = self.session_mgr.borrow_mut();
             let epoch = session_mgr.epoch;
-            if let Some(session) = session_mgr.get_for(&packet.peer, &packet.header.plain) {
-                if let Some(exchange_index) = session.get_exchange_index_for(&packet.header.proto) {
+            if let Some(session) = session_mgr.get_for_rx(&packet.peer, &packet.header.plain) {
+                if let Some(exchange_index) =
+                    session.get_exchange_index_for_rx(&packet.header.proto)
+                {
                     let exchange = session.exchanges[exchange_index].as_mut().unwrap();
 
-                    if matches!(exchange.owned_state, OwnedState::NotAccepted)
-                        && exchange
-                            .mrp
-                            .ack
-                            .as_mut()
-                            .map(|ack| ack.has_timed_out(ACCEPT_TIMEOUT_MS, epoch))
-                            .unwrap_or(false)
+                    if matches!(
+                        exchange.role,
+                        Role::Responder(ResponderState::AcceptPending)
+                    ) && exchange
+                        .mrp
+                        .ack
+                        .as_mut()
+                        .map(|ack| ack.has_timed_out(ACCEPT_TIMEOUT_MS, epoch))
+                        .unwrap_or(false)
                     {
-                        warn!("\n----- {packet}\n => Accept timeout, marking as orphaned");
+                        warn!("\n----- {packet}\n => Accept timeout, marking exchange as dropped");
 
-                        exchange.owned_state = OwnedState::Orphaned;
+                        exchange.role = Role::Responder(ResponderState::Dropped);
                         packet.buf.clear();
-                        self.orphaned.signal(());
+                        self.dropped.signal(());
 
                         return true;
                     }
@@ -609,20 +620,17 @@ impl TransportMgr {
     fn handle_orphaned_rx_packet<const N: usize>(&self, packet: &mut Packet<N>) -> bool {
         if !packet.buf.is_empty() {
             let mut session_mgr = self.session_mgr.borrow_mut();
-            if let Some(session) = session_mgr.get_for(&packet.peer, &packet.header.plain) {
-                if let Some(exchange_index) = session.get_exchange_index_for(&packet.header.proto) {
+            if let Some(session) = session_mgr.get_for_rx(&packet.peer, &packet.header.plain) {
+                if let Some(exchange_index) =
+                    session.get_exchange_index_for_rx(&packet.header.proto)
+                {
                     let exchange = session.exchanges[exchange_index].as_mut().unwrap();
 
-                    if matches!(
-                        exchange.owned_state,
-                        OwnedState::Orphaned | OwnedState::OrphanedClosing
-                    ) {
+                    if exchange.role.is_dropped_state() {
                         warn!(
-                            "\n----- {packet}\n => Owned by orphaned exchange {}, dropping",
+                            "\n----- {packet}\n => Owned by orphaned dropped {}, dropping packet",
                             ExchangeId::new(session.id, exchange_index)
                         );
-
-                        exchange.owned_state = OwnedState::Orphaned;
 
                         packet.buf.clear();
                         return true;
@@ -644,24 +652,19 @@ impl TransportMgr {
         false
     }
 
-    fn handle_orphaned_exchange<const N: usize>(
+    fn handle_dropped_exchange<const N: usize>(
         &self,
         packet: &mut Packet<N>,
     ) -> Result<bool, Error> {
         let mut session_mgr = self.session_mgr.borrow_mut();
-        let epoch = session_mgr.epoch;
 
         let exch = session_mgr
-            .get_exch(|_, exch| {
-                matches!(exch.owned_state, OwnedState::Orphaned) && exch.is_retrans()
-            })
+            .get_exch(|_, exch| exch.role.is_dropped_state() && exch.mrp.is_retrans_pending())
             .map(|(sess, exch_index)| (sess.id, exch_index, true))
             .or_else(|| {
                 session_mgr
                     .get_exch(|_, exch| {
-                        matches!(exch.owned_state, OwnedState::Orphaned) && !exch.is_retrans()
-                            || matches!(exch.owned_state, OwnedState::OrphanedClosing)
-                                && exch.is_retrans_due(epoch)
+                        exch.role.is_dropped_state() && !exch.mrp.is_retrans_pending()
                     })
                     .map(|(sess, exch_index)| (sess.id, exch_index, false))
             });
@@ -670,42 +673,30 @@ impl TransportMgr {
             let exchange_id = ExchangeId::new(session_id, exch_index);
 
             if close_session {
-                // Found an orphaned exchange that cannot be completed cleanly
+                // Found a dropped exchange which has an incomplete (re)transmission
                 // Close the whole session
 
                 error!(
-                    "Orphaned exchange {exchange_id}: Closing session because the exchange cannot be closed cleanly"
+                    "Dropped exchange {exchange_id}: Closing session because the exchange cannot be closed cleanly"
                 );
 
                 self.encode_evict_session(packet, &mut session_mgr, session_id)?;
             } else {
-                // Found an orphaned exchange that can be completed cleanly
-                // Figure out the right reply and send it with re-transmission
-
-                warn!("Orphaned exchange {exchange_id}: Closing");
+                // Found a dropped exchange which has no outstanding (re)transmission
+                // Send a standalone ACK if necessary and then close it
 
                 let epoch = session_mgr.epoch;
                 let session = session_mgr.get(session_id).unwrap();
                 let exchange = session.exchanges[exch_index].as_mut().unwrap();
 
-                if matches!(exchange.owned_state, OwnedState::OrphanedClosing)
-                    && !exchange.is_retrans()
-                {
-                    session.exchanges[exch_index] = None;
-                    warn!("Orphaned exchange {exchange_id}: Closed");
-                } else if let Some(meta) = exchange.last_received {
-                    self.encode_orphaned_close_resp(packet, session, exch_index, epoch, meta)?;
-
-                    let exchange = session.exchanges[exch_index].as_mut().unwrap();
-                    if !exchange.is_retrans() {
-                        session.exchanges[exch_index] = None;
-                        warn!("Orphaned exchange {exchange_id}: Closed");
-                    } else {
-                        exchange.owned_state = OwnedState::OrphanedClosing;
-                    }
-                } else {
-                    unreachable!("Orphaned exchange {exchange_id}: Should not happen");
+                if exchange.mrp.is_ack_pending() {
+                    self.encode_packet(packet, Some(session), Some(exch_index), epoch, |_| {
+                        Ok(OpCode::MRPStandAloneAck.into())
+                    })?;
                 }
+
+                session.exchanges[exch_index] = None;
+                warn!("Dropped exchange {exchange_id}: Closed");
             }
         }
 
@@ -737,7 +728,8 @@ impl TransportMgr {
         let mut session_mgr = self.session_mgr.borrow_mut();
         let epoch = session_mgr.epoch;
 
-        let res = if let Some(session) = session_mgr.get_for(&packet.peer, &packet.header.plain) {
+        let res = if let Some(session) = session_mgr.get_for_rx(&packet.peer, &packet.header.plain)
+        {
             session.post_recv(&mut packet.header, &mut pb, epoch)
         } else if !packet.header.plain.is_encrypted() {
             let mut session =
@@ -840,46 +832,46 @@ impl TransportMgr {
         Ok(())
     }
 
-    fn encode_orphaned_close_resp<const N: usize>(
-        &self,
-        packet: &mut Packet<N>,
-        session: &mut Session,
-        exchange_index: usize,
-        epoch: Epoch,
-        meta: ExchangeMeta,
-    ) -> Result<(), Error> {
-        self.encode_packet(packet, Some(session), Some(exchange_index), epoch, |wb| {
-            let meta = if meta.proto_id == PROTO_ID_SECURE_CHANNEL {
-                match meta.opcode()? {
-                    OpCode::PBKDFParamRequest | OpCode::CASESigma1 => {
-                        // Send Busy, as per section 4.10.1.5 of the Matter spec
-                        sc_write(wb, SCStatusCodes::Busy, Some(&[0xF4, 0x01]))?
-                    }
-                    _ => {
-                        // Send InvalidParameter, as there seems to be no other suitable status code
-                        sc_write(wb, SCStatusCodes::InvalidParameter, None)?
-                    }
-                }
-            } else if meta.proto_id == PROTO_ID_INTERACTION_MODEL {
-                // Identical behavior to https://github.com/project-chip/connectedhomeip/pull/11667
-                let status = match meta.opcode()? {
-                    interaction_model::core::OpCode::SubscribeRequest => IMStatusCode::Busy,
-                    interaction_model::core::OpCode::ReadRequest
-                    | interaction_model::core::OpCode::WriteRequest
-                    | interaction_model::core::OpCode::InvokeRequest => IMStatusCode::Busy,
-                    _ => IMStatusCode::Failure,
-                };
+    // fn encode_orphaned_close_resp<const N: usize>(
+    //     &self,
+    //     packet: &mut Packet<N>,
+    //     session: &mut Session,
+    //     exchange_index: usize,
+    //     epoch: Epoch,
+    //     meta: ExchangeMeta,
+    // ) -> Result<(), Error> {
+    //     self.encode_packet(packet, Some(session), Some(exchange_index), epoch, |wb| {
+    //         let meta = if meta.proto_id == PROTO_ID_SECURE_CHANNEL {
+    //             match meta.opcode()? {
+    //                 OpCode::PBKDFParamRequest | OpCode::CASESigma1 => {
+    //                     // Send Busy, as per section 4.10.1.5 of the Matter spec
+    //                     sc_write(wb, SCStatusCodes::Busy, Some(&[0xF4, 0x01]))?
+    //                 }
+    //                 _ => {
+    //                     // Send InvalidParameter, as there seems to be no other suitable status code
+    //                     sc_write(wb, SCStatusCodes::InvalidParameter, None)?
+    //                 }
+    //             }
+    //         } else if meta.proto_id == PROTO_ID_INTERACTION_MODEL {
+    //             // Identical behavior to https://github.com/project-chip/connectedhomeip/pull/11667
+    //             let status = match meta.opcode()? {
+    //                 interaction_model::core::OpCode::SubscribeRequest => IMStatusCode::Busy,
+    //                 interaction_model::core::OpCode::ReadRequest
+    //                 | interaction_model::core::OpCode::WriteRequest
+    //                 | interaction_model::core::OpCode::InvokeRequest => IMStatusCode::Busy,
+    //                 _ => IMStatusCode::Failure,
+    //             };
 
-                StatusResp::write(wb, status)?;
+    //             StatusResp::write(wb, status)?;
 
-                interaction_model::core::OpCode::StatusResponse.meta()
-            } else {
-                Err(ErrorCode::Invalid)? // TODO
-            };
+    //             interaction_model::core::OpCode::StatusResponse.meta()
+    //         } else {
+    //             Err(ErrorCode::Invalid)? // TODO
+    //         };
 
-            Ok(meta)
-        })
-    }
+    //         Ok(meta)
+    //     })
+    // }
 
     fn encode_evict_some_session<const N: usize>(
         &self,

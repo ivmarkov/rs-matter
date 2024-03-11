@@ -20,7 +20,7 @@ use core::fmt::{self, Display};
 use embassy_futures::select::select;
 use embassy_time::Timer;
 
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 
 use crate::acl::Accessor;
 use crate::error::{Error, ErrorCode};
@@ -65,64 +65,53 @@ impl Display for ExchangeId {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
-pub(crate) enum Role {
+pub enum InitiatorState {
     #[default]
-    Initiator = 0,
-    Responder = 1,
+    Owned,
+    Dropped,
 }
 
-impl Role {
-    pub fn complementary(is_initiator: bool) -> Self {
-        if is_initiator {
-            Self::Responder
-        } else {
-            Self::Initiator
-        }
-    }
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
+pub enum ResponderState {
+    #[default]
+    AcceptPending,
+    Owned,
+    Dropped,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub(crate) enum OwnedState {
-    NotAccepted,
-    Owned,
-    Closed,
-    Orphaned,
-    OrphanedClosing,
+pub(crate) enum Role {
+    Initiator(InitiatorState),
+    Responder(ResponderState),
+}
+
+impl Role {
+    pub fn is_dropped_state(&self) -> bool {
+        match self {
+            Self::Initiator(state) => *state == InitiatorState::Dropped,
+            Self::Responder(state) => *state == ResponderState::Dropped,
+        }
+    }
+
+    pub fn set_dropped_state(&mut self) {
+        match self {
+            Self::Initiator(state) => *state = InitiatorState::Dropped,
+            Self::Responder(state) => *state = ResponderState::Dropped,
+        }
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct ExchangeState {
     pub(crate) exch_id: u16,
     pub(crate) role: Role,
-    pub(crate) owned_state: OwnedState,
-    pub(crate) last_received: Option<ExchangeMeta>,
     pub(crate) mrp: ReliableMessage,
 }
 
 impl ExchangeState {
-    pub fn is_for(&self, proto: &ProtoHdr) -> bool {
-        self.exch_id == proto.exch_id && self.role == Role::complementary(proto.is_initiator())
-    }
-
-    pub fn is_closable(&self) -> bool {
-        self.mrp.ack.is_none()
-            && self.mrp.retrans.is_none()
-            && self
-                .last_received
-                .map(|meta| !meta.reliable)
-                .unwrap_or(true)
-    }
-
-    pub fn is_retrans(&self) -> bool {
-        self.mrp.retrans.is_some()
-    }
-
-    pub fn is_retrans_due(&self, epoch: Epoch) -> bool {
-        self.mrp
-            .retrans
-            .as_ref()
-            .map(|retrans| retrans.is_due(epoch))
-            .unwrap_or(true)
+    pub fn is_for_rx(&self, proto: &ProtoHdr) -> bool {
+        self.exch_id == proto.exch_id
+            && proto.is_initiator() == matches!(self.role, Role::Responder(_))
     }
 
     pub fn post_recv(
@@ -132,7 +121,6 @@ impl ExchangeState {
         epoch: Epoch,
     ) -> Result<(), Error> {
         self.mrp.post_recv(plain, proto, epoch)?;
-        self.last_received = Some(ExchangeMeta::from(proto));
 
         Ok(())
     }
@@ -143,7 +131,7 @@ impl ExchangeState {
         proto: &mut ProtoHdr,
         epoch: Epoch,
     ) -> Result<(), Error> {
-        if matches!(self.role, Role::Initiator) {
+        if matches!(self.role, Role::Initiator(_)) {
             proto.set_initiator();
         } else {
             proto.unset_initiator();
@@ -176,7 +164,7 @@ impl ExchangeMeta {
     }
 
     pub fn opcode<T: num::FromPrimitive>(&self) -> Result<T, Error> {
-        num::FromPrimitive::from_u8(self.proto_opcode).ok_or(ErrorCode::Invalid.into())
+        num::FromPrimitive::from_u8(self.proto_opcode).ok_or(ErrorCode::InvalidOpcode.into())
     }
 
     pub fn check_opcode<T: num::FromPrimitive + PartialEq>(&self, opcode: T) -> Result<(), Error> {
@@ -225,6 +213,19 @@ impl ExchangeMeta {
                 .unwrap_or(false),
             _ => false,
         }
+    }
+
+    pub fn is_standalone_ack(&self) -> bool {
+        !self.reliable
+            && self.proto_id == PROTO_ID_SECURE_CHANNEL
+            && self.proto_opcode == secure_channel::common::OpCode::MRPStandAloneAck as u8
+    }
+
+    pub fn is_new_session(&self) -> bool {
+        self.reliable
+            && self.proto_id == PROTO_ID_SECURE_CHANNEL
+            && (self.proto_opcode == secure_channel::common::OpCode::PBKDFParamRequest as u8
+                || self.proto_opcode == secure_channel::common::OpCode::CASESigma1 as u8)
     }
 }
 
@@ -408,16 +409,30 @@ impl<'a> Exchange<'a> {
     }
 
     /// TODO: This signature will change in future
-    pub async fn initiate(matter: &'a Matter<'a>, session_id: u32) -> Result<Self, Error> {
-        matter.transport_mgr.initiate(matter, session_id).await
+    pub async fn initiate(
+        matter: &'a Matter<'a>,
+        node_id: u64,
+        secure: bool,
+    ) -> Result<Self, Error> {
+        matter.transport_mgr.initiate(matter, node_id, secure).await
     }
 
     pub async fn accept(matter: &'a Matter<'a>) -> Result<Self, Error> {
-        matter.transport_mgr.accept(matter).await
+        Self::accept_after(matter, 0).await
+    }
+
+    pub async fn accept_after(
+        matter: &'a Matter<'a>,
+        received_timeout_ms: u32,
+    ) -> Result<Self, Error> {
+        matter
+            .transport_mgr
+            .accept(matter, received_timeout_ms)
+            .await
     }
 
     pub async fn rx(&mut self) -> Result<Rx<'_, 'a>, Error> {
-        self.with_ctx(|_, _| Ok(()))?;
+        self.check_retrans()?;
 
         let transport_mgr = &self.matter.transport_mgr;
 
@@ -430,7 +445,7 @@ impl<'a> Exchange<'a> {
                         if sess.is_for(&packet.peer, &packet.header.plain) {
                             let exchange = sess.exchanges[exch_index].as_ref().unwrap();
 
-                            return Ok(exchange.is_for(&packet.header.proto));
+                            return Ok(exchange.is_for_rx(&packet.header.proto));
                         }
 
                         Ok(false)
@@ -441,7 +456,7 @@ impl<'a> Exchange<'a> {
             })
             .await;
 
-        self.with_ctx(|_, _| Ok(()))?;
+        self.check_retrans()?;
 
         let rx = Rx {
             exchange: self,
@@ -513,6 +528,8 @@ impl<'a> Exchange<'a> {
     where
         F: FnMut(&mut WriteBuf) -> Result<ExchangeMeta, Error>,
     {
+        self.check_retrans()?;
+
         let mut retrans = false;
 
         loop {
@@ -566,23 +583,6 @@ impl<'a> Exchange<'a> {
         .await
     }
 
-    pub async fn close(mut self) -> Result<(), Error> {
-        self.acknowledge().await?;
-
-        self.with_ctx(|sess, exch_index| {
-            let exchange = sess.exchanges[exch_index].as_mut().unwrap();
-
-            if exchange.is_closable() {
-                exchange.owned_state = OwnedState::Closed;
-
-                Ok(())
-            } else {
-                warn!("Exchange {}: Cannot be closed yet", self.id);
-                Err(ErrorCode::InvalidState.into())
-            }
-        })
-    }
-
     pub(crate) fn accessor(&self) -> Result<Accessor<'a>, Error> {
         self.with_session(|sess| Ok(Accessor::for_session(sess, &self.matter.acl_mgr)))
     }
@@ -629,14 +629,27 @@ impl<'a> Exchange<'a> {
             Ok(exchange.retrans_delay_ms())
         })
     }
+
+    fn check_retrans(&self) -> Result<(), Error> {
+        self.with_ctx(|sess, exch_index| {
+            let exchange = sess.exchanges[exch_index].as_mut().unwrap();
+
+            if exchange.mrp.is_retrans_pending() {
+                error!("Exchange {}: Retransmission pending", self.id);
+                Err(ErrorCode::InvalidState)?;
+            }
+
+            Ok(())
+        })
+    }
 }
 
 impl<'a> Drop for Exchange<'a> {
     fn drop(&mut self) {
-        let closed = self.with_ctx(|sess, exch_index| Ok(sess.close_exchange(exch_index)));
+        let closed = self.with_ctx(|sess, exch_index| Ok(sess.remove_exchange(exch_index)));
 
         if !matches!(closed, Ok(true)) {
-            self.matter.transport_mgr.orphaned.signal(());
+            self.matter.transport_mgr.dropped.signal(());
         }
     }
 }

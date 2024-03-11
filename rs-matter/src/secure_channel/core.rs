@@ -20,6 +20,7 @@ use log::error;
 use crate::{
     alloc,
     error::*,
+    respond::ExchangeHandler,
     secure_channel::{common::*, pake::Pake},
     transport::exchange::Exchange,
 };
@@ -41,9 +42,12 @@ impl SecureChannel {
     }
 
     pub async fn handle(&self, mut exchange: Exchange<'_>) -> Result<(), Error> {
-        let opcode = exchange.rx().await?.meta().opcode()?;
+        let meta = exchange.rx().await?.meta();
+        if meta.proto_id != PROTO_ID_SECURE_CHANNEL {
+            Err(ErrorCode::InvalidProto)?;
+        }
 
-        match opcode {
+        match meta.opcode()? {
             OpCode::PBKDFParamRequest => {
                 let mut spake2p = alloc!(Spake2P::new());
                 Pake::new().handle(exchange, &mut spake2p).await
@@ -63,5 +67,11 @@ impl SecureChannel {
 impl Default for SecureChannel {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl ExchangeHandler for SecureChannel {
+    async fn handle(&self, exchange: Exchange<'_>) -> Result<(), Error> {
+        SecureChannel::handle(self, exchange).await
     }
 }

@@ -18,50 +18,91 @@
 use core::fmt::Display;
 
 use embassy_futures::select::select_slice;
+
 use log::{error, info};
 
-use crate::{
-    alloc,
-    data_model::{
-        core::{DataModel, Subscriptions},
-        objects::DataModelHandler,
-    },
-    error::Error,
-    interaction_model::core::PROTO_ID_INTERACTION_MODEL,
-    secure_channel::{common::PROTO_ID_SECURE_CHANNEL, core::SecureChannel},
-    transport::{
-        exchange::Exchange,
-        packet::{PacketHdr, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE},
-    },
-    utils::writebuf::WriteBuf,
-    Matter,
-};
+use crate::error::{Error, ErrorCode};
+use crate::transport::exchange::Exchange;
+use crate::Matter;
 
-pub struct Responder<H>(H, Subscriptions);
+pub trait ExchangeHandler {
+    async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error>;
 
-impl<H> Responder<H>
+    fn compose<T>(self, other: T) -> impl ExchangeHandler
+    where
+        T: ExchangeHandler,
+        Self: Sized,
+    {
+        CompositeExchangeHandler(self, other)
+    }
+}
+
+impl<T> ExchangeHandler for &T
 where
-    H: DataModelHandler,
+    T: ExchangeHandler,
 {
-    pub const fn new(handler: H) -> Self {
-        Self(handler, Subscriptions::new())
+    async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error> {
+        (*self).handle(exchange).await
+    }
+}
+
+struct CompositeExchangeHandler<F, S>(F, S);
+
+impl<F, S> ExchangeHandler for CompositeExchangeHandler<F, S>
+where
+    F: ExchangeHandler,
+    S: ExchangeHandler,
+{
+    async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error> {
+        let result = self.0.handle(exchange).await;
+
+        match result {
+            Err(e) if e.code() == ErrorCode::InvalidProto => self.1.handle(exchange).await,
+            other => other,
+        }
+    }
+}
+
+pub struct Responder<'a, T> {
+    name: &'a str,
+    handler: T,
+    matter: &'a Matter<'a>,
+    respond_after_ms: u32,
+}
+
+impl<'a, T> Responder<'a, T>
+where
+    T: ExchangeHandler,
+{
+    pub const fn new(
+        name: &'a str,
+        handler: T,
+        matter: &'a Matter<'a>,
+        respond_after_ms: u32,
+    ) -> Self {
+        Self {
+            name,
+            handler,
+            matter,
+            respond_after_ms,
+        }
     }
 
-    pub fn subscriptions(&self) -> &Subscriptions {
-        &self.1
-    }
-
-    pub async fn run<const N: usize>(&self, matter: &Matter<'_>) -> Result<(), Error> {
-        info!("Creating {N} handlers");
+    pub async fn run<const N: usize>(&self) -> Result<(), Error> {
+        info!("{}: Creating {N} handlers", self.name);
 
         let mut handlers = heapless::Vec::<_, N>::new();
-        info!("Handlers size: {}", core::mem::size_of_val(&handlers));
+        info!(
+            "{}: Handlers size: {}B",
+            self.name,
+            core::mem::size_of_val(&handlers)
+        );
 
         for index in 0..N {
             let handler_id = (index as u8) + 2;
 
             handlers
-                .push(self.respond(matter, handler_id))
+                .push(self.respond(handler_id))
                 .map_err(|_| ())
                 .unwrap();
         }
@@ -69,44 +110,25 @@ where
         select_slice(&mut handlers).await.0
     }
 
-    async fn respond(&self, matter: &Matter<'_>, handler_id: impl Display) -> Result<(), Error> {
+    async fn respond(&self, handler_id: impl Display) -> Result<(), Error> {
         loop {
-            let exchange = Exchange::accept(matter).await?;
+            let exchange = Exchange::accept_after(self.matter, self.respond_after_ms).await?;
             let exchange_id = exchange.id();
 
-            info!("Handler {handler_id} / exchange {exchange_id}: Starting");
+            info!(
+                "{}: Handler {handler_id} / exchange {exchange_id}: Starting",
+                self.name
+            );
 
-            let result = self.process(exchange).await;
+            let result = self.handler.handle(&mut exchange).await;
 
             if let Err(err) = result {
-                error!("Handler {handler_id} / Exchange {exchange_id}: Abandoned because of error {err:?}");
+                error!("{}: Handler {handler_id} / exchange {exchange_id}: Abandoned because of error {err:?}", self.name);
             } else {
-                info!("Handler {handler_id} / exchange {exchange_id}: Completed");
-            }
-        }
-    }
-
-    pub async fn process(&self, mut exchange: Exchange<'_>) -> Result<(), Error> {
-        let proto_id = exchange.rx().await?.meta().proto_id;
-
-        match proto_id {
-            PROTO_ID_SECURE_CHANNEL => SecureChannel::new().handle(exchange).await,
-            PROTO_ID_INTERACTION_MODEL => {
-                let mut rx = alloc!([0; MAX_RX_BUF_SIZE]);
-                let mut tx =
-                    alloc!([0; MAX_TX_BUF_SIZE - PacketHdr::HDR_RESERVE - PacketHdr::TAIL_RESERVE]);
-
-                let mut rb = WriteBuf::new(&mut *rx);
-                let mut tb = WriteBuf::new(&mut *tx);
-
-                DataModel::new(&self.0, &self.1)
-                    .handle(exchange, &mut rb, &mut tb)
-                    .await
-            }
-            other => {
-                error!("Unknown Proto-ID: {}", other);
-
-                Ok(())
+                info!(
+                    "{}: Handler {handler_id} / exchange {exchange_id}: Completed",
+                    self.name
+                );
             }
         }
     }

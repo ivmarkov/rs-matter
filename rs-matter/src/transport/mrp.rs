@@ -15,10 +15,11 @@
  *    limitations under the License.
  */
 
-use crate::utils::epoch::Epoch;
+use log::error;
 
 use crate::error::*;
-use log::error;
+use crate::secure_channel::common::{OpCode, PROTO_ID_SECURE_CHANNEL};
+use crate::utils::epoch::Epoch;
 
 use super::{plain_hdr::PlainHdr, proto_hdr::ProtoHdr};
 
@@ -79,9 +80,8 @@ impl RetransEntry {
                 Err(ErrorCode::Invalid.into()) // TODO
             }
         } else {
-            // This indicates there was some existing entry for same sess-id/exch-id, which shouldnt happen
-            error!("Previous retrans entry for this exchange already exists");
-            Ok(())
+            // This indicates there was some existing entry for same sess-id/exch-id, which shouldn't happen
+            panic!("Previous retrans entry for this exchange already exists");
         }
     }
 }
@@ -92,6 +92,8 @@ pub struct AckEntry {
     pub(crate) msg_ctr: u32,
     // The time when the message waiting for acknowledgement was received
     pub(crate) received_at_ms: u64,
+    // Whether the message was acknowledged using a standalone ACK
+    pub(crate) standalone_ack_sent: bool,
 }
 
 impl AckEntry {
@@ -99,6 +101,7 @@ impl AckEntry {
         Ok(Self {
             msg_ctr,
             received_at_ms: epoch().as_millis() as u64,
+            standalone_ack_sent: false,
         })
     }
 
@@ -125,6 +128,17 @@ impl ReliableMessage {
         Default::default()
     }
 
+    pub fn is_ack_pending(&self) -> bool {
+        self.ack
+            .as_ref()
+            .map(|ack| !ack.standalone_ack_sent)
+            .unwrap_or(false)
+    }
+
+    pub fn is_retrans_pending(&self) -> bool {
+        self.retrans.is_some()
+    }
+
     pub fn retrans(&self) -> Option<&RetransEntry> {
         self.retrans.as_ref()
     }
@@ -146,22 +160,23 @@ impl ReliableMessage {
         epoch: Epoch,
     ) -> Result<(), Error> {
         // Check if any acknowledgements are pending for this exchange,
-        proto.set_ack(None);
-
-        // if so, piggy back in the encoded header here
-        if let Some(ack_entry) = self.ack.take() {
-            // Ack Entry exists, set ACK bit and remove from table
-            proto.set_ack(Some(ack_entry.get_msg_ctr()));
+        if let Some(ack) = &mut self.ack {
+            // if so, piggy back in the encoded header here
+            proto.set_ack(Some(ack.get_msg_ctr()));
+            ack.standalone_ack_sent = !proto.is_reliable()
+                && proto.proto_id == PROTO_ID_SECURE_CHANNEL
+                && proto.proto_opcode == OpCode::MRPStandAloneAck as u8;
         }
 
-        if !proto.is_reliable() {
-            return Ok(());
-        }
-
-        if let Some(retrans) = &mut self.retrans {
-            retrans.pre_send(plain.ctr)?;
-        } else {
-            self.retrans = Some(RetransEntry::new(plain.ctr, epoch));
+        if proto.is_reliable() {
+            if let Some(retrans) = &mut self.retrans {
+                if retrans.pre_send(plain.ctr).is_err() {
+                    // Too many retransmissions, give up TODO: log
+                    self.retrans = None;
+                }
+            } else {
+                self.retrans = Some(RetransEntry::new(plain.ctr, epoch));
+            }
         }
 
         Ok(())
@@ -183,9 +198,9 @@ impl ReliableMessage {
             if let Some(entry) = &self.retrans {
                 if entry.get_msg_ctr() != ack_msg_ctr {
                     error!("Mismatch in retrans-table's msg counter and received msg counter: received {:x}, expected {:x}.", ack_msg_ctr, entry.msg_ctr);
-                } else {
-                    self.retrans = None;
                 }
+
+                self.retrans = None;
             }
         }
 
@@ -197,7 +212,6 @@ impl ReliableMessage {
                     "Previous ACK entry {:x} for this exchange already exists",
                     ack.get_msg_ctr()
                 );
-                //TODO Err(ErrorCode::Invalid)?;
             }
 
             self.ack = Some(AckEntry::new(plain.ctr, epoch)?);

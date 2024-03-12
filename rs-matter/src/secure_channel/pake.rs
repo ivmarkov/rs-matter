@@ -222,7 +222,7 @@ impl Pake {
             Err(status) => status,
         };
 
-        complete_with_status(exchange, status, None).await
+        complete_with_status(exchange, status, &[]).await
     }
 
     #[allow(non_snake_case)]
@@ -385,7 +385,7 @@ impl Pake {
 
         if let Some(status) = status {
             exchange.recv().await?;
-            complete_with_status(exchange, status, None).await?;
+            complete_with_status(exchange, status, &[]).await?;
 
             Ok(false)
         } else {
@@ -404,7 +404,7 @@ impl Pake {
             drop(rx);
 
             error!("PASE not enabled");
-            complete_with_status(exchange, SCStatusCodes::InvalidParameter, None).await?;
+            complete_with_status(exchange, SCStatusCodes::InvalidParameter, &[]).await?;
 
             Ok(false)
         } else {

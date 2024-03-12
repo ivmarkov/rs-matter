@@ -21,7 +21,7 @@ use crate::error::Error;
 use crate::transport::exchange::{Exchange, ExchangeMeta};
 use crate::utils::writebuf::WriteBuf;
 
-use super::status_report::{write, GeneralCode};
+use super::status_report::{GeneralCode, StatusReport};
 
 /* Interaction Model ID as per the Matter Spec */
 pub const PROTO_ID_SECURE_CHANNEL: u16 = 0x00;
@@ -79,41 +79,49 @@ pub enum SCStatusCodes {
     SessionNotFound = 5,
 }
 
+impl SCStatusCodes {
+    pub fn reliable(&self) -> bool {
+        // CloseSession and Busy are sent without the R flag raised
+        !matches!(self, SCStatusCodes::CloseSession | SCStatusCodes::Busy)
+    }
+
+    pub fn as_report<'a>(&self, payload: &'a [u8]) -> StatusReport<'a> {
+        let general_code = match self {
+            SCStatusCodes::SessionEstablishmentSuccess => GeneralCode::Success,
+            SCStatusCodes::CloseSession => GeneralCode::Success,
+            SCStatusCodes::Busy => GeneralCode::Busy,
+            SCStatusCodes::InvalidParameter
+            | SCStatusCodes::NoSharedTrustRoots
+            | SCStatusCodes::SessionNotFound => GeneralCode::Failure,
+        };
+
+        StatusReport {
+            general_code,
+            proto_id: PROTO_ID_SECURE_CHANNEL as u32,
+            proto_code: *self as u16,
+            proto_data: payload,
+        }
+    }
+}
+
 pub async fn complete_with_status(
     exchange: &mut Exchange<'_>,
     status_code: SCStatusCodes,
-    proto_data: Option<&[u8]>,
+    payload: &[u8],
 ) -> Result<(), Error> {
     exchange
-        .send_with(|_, wb| sc_write(wb, status_code, proto_data))
+        .send_with(|_, wb| sc_write(wb, status_code, payload))
         .await
 }
 
 pub fn sc_write(
     wb: &mut WriteBuf,
     status_code: SCStatusCodes,
-    proto_data: Option<&[u8]>,
+    payload: &[u8],
 ) -> Result<Option<ExchangeMeta>, Error> {
-    let general_code = match status_code {
-        SCStatusCodes::SessionEstablishmentSuccess => GeneralCode::Success,
-        SCStatusCodes::CloseSession => GeneralCode::Success,
-        SCStatusCodes::Busy => GeneralCode::Busy,
-        SCStatusCodes::InvalidParameter
-        | SCStatusCodes::NoSharedTrustRoots
-        | SCStatusCodes::SessionNotFound => GeneralCode::Failure,
-    };
+    status_code.as_report(payload).write(wb)?;
 
-    write(
-        wb,
-        general_code,
-        PROTO_ID_SECURE_CHANNEL as u32,
-        status_code as u16,
-        proto_data,
-    )?;
-
-    // CloseSession and Busy are sent without the R flag raised
-    Ok(Some(OpCode::StatusReport.meta().reliable(!matches!(
-        status_code,
-        SCStatusCodes::CloseSession | SCStatusCodes::Busy
-    ))))
+    Ok(Some(
+        OpCode::StatusReport.meta().reliable(status_code.reliable()),
+    ))
 }

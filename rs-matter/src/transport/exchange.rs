@@ -231,6 +231,13 @@ impl ExchangeMeta {
             && self.proto_opcode == secure_channel::common::OpCode::MRPStandAloneAck as u8
     }
 
+    /// Utility method to check if the protocol is Secure Channel, and the opcode is Status.
+    pub(crate) fn is_sc_status(&self) -> bool {
+        !self.reliable
+            && self.proto_id == PROTO_ID_SECURE_CHANNEL
+            && self.proto_opcode == secure_channel::common::OpCode::StatusReport as u8
+    }
+
     /// Utility method to check if the protocol is Secure Channel, and the opcode is a new session request.
     pub(crate) fn is_new_session(&self) -> bool {
         self.reliable

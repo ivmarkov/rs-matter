@@ -27,7 +27,8 @@ use embassy_time::Timer;
 use log::{debug, error, info, trace, warn};
 
 use crate::error::{Error, ErrorCode};
-use crate::secure_channel::common::{sc_write, OpCode, SCStatusCodes};
+use crate::secure_channel::common::{sc_write, OpCode, SCStatusCodes, PROTO_ID_SECURE_CHANNEL};
+use crate::secure_channel::status_report::StatusReport;
 use crate::tlv::TLVList;
 use crate::utils::{
     epoch::Epoch,
@@ -499,7 +500,7 @@ impl TransportMgr {
                         None,
                         None,
                         self.session_mgr.borrow().epoch,
-                        |wb| sc_write(wb, SCStatusCodes::Busy, Some(&[0xF4, 0x01])),
+                        |wb| sc_write(wb, SCStatusCodes::Busy, &[0xF4, 0x01]),
                     )?;
 
                     Self::netw_send(send, packet.peer, &packet.buf[packet.payload_start..], true)
@@ -544,7 +545,7 @@ impl TransportMgr {
                         Some(&mut session),
                         None,
                         session_mgr.epoch,
-                        |wb| sc_write(wb, SCStatusCodes::CloseSession, None),
+                        |wb| sc_write(wb, SCStatusCodes::CloseSession, &[]),
                     )?;
                 }
 
@@ -555,9 +556,26 @@ impl TransportMgr {
                 error!("\n>>>>> {packet}\n => Error ({e:?}), dropping");
             }
             Ok(new_exchange) => {
-                if ExchangeMeta::from(&packet.header.proto).is_standalone_ack() {
+                let meta = ExchangeMeta::from(&packet.header.proto);
+
+                if meta.is_standalone_ack() {
                     // No need to propagate this further
                     info!("\n>>>>> {packet}\n => Standalone Ack, dropping");
+                } else if meta.is_sc_status()
+                    && matches!(
+                        Self::is_close_session(&mut packet.buf[packet.payload_start..]),
+                        Ok(true)
+                    )
+                {
+                    warn!("\n>>>>> {packet}\n => Close session received, removing this session");
+
+                    let mut session_mgr = self.session_mgr.borrow_mut();
+                    if let Some(session_id) = session_mgr
+                        .get_for_rx(&packet.peer, &packet.header.plain)
+                        .map(|sess| sess.id)
+                    {
+                        session_mgr.remove(session_id);
+                    }
                 } else {
                     info!(
                         "\n>>>>> {packet}\n => Processing{}",
@@ -857,10 +875,20 @@ impl TransportMgr {
         let mut session = session_mgr.remove(id).unwrap();
 
         self.encode_packet(packet, Some(&mut session), None, session_mgr.epoch, |wb| {
-            sc_write(wb, SCStatusCodes::CloseSession, None)
+            sc_write(wb, SCStatusCodes::CloseSession, &[])
         })?;
 
         Ok(())
+    }
+
+    fn is_close_session(payload: &mut [u8]) -> Result<bool, Error> {
+        let mut pb = ParseBuf::new(payload);
+        let report = StatusReport::read(&mut pb)?;
+
+        let close_session = report.proto_id == PROTO_ID_SECURE_CHANNEL as _
+            && report.proto_code == SCStatusCodes::CloseSession as u16;
+
+        Ok(close_session)
     }
 
     async fn netw_recv<R>(mut recv: R, buf: &mut [u8]) -> Result<(usize, Address), Error>

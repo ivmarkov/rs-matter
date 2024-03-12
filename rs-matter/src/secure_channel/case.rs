@@ -187,7 +187,7 @@ impl Case {
 
         drop(rx);
 
-        complete_with_status(exchange, status, None).await
+        complete_with_status(exchange, status, &[]).await
     }
 
     async fn handle_casesigma1(
@@ -210,7 +210,7 @@ impl Case {
         if local_fabric_idx.is_err() {
             error!("Fabric Index mismatch");
             drop(rx);
-            complete_with_status(exchange, SCStatusCodes::NoSharedTrustRoots, None).await?;
+            complete_with_status(exchange, SCStatusCodes::NoSharedTrustRoots, &[]).await?;
 
             return Ok(());
         }
@@ -331,7 +331,7 @@ impl Case {
                 })
                 .await
         } else {
-            complete_with_status(exchange, SCStatusCodes::NoSharedTrustRoots, None).await
+            complete_with_status(exchange, SCStatusCodes::NoSharedTrustRoots, &[]).await
         }
     }
 

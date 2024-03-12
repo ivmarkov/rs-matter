@@ -33,7 +33,7 @@ use crate::interaction_model::messages::msg::{
 use crate::respond::ExchangeHandler;
 use crate::tlv::{get_root_node_struct, FromTLV};
 use crate::transport::exchange::Exchange;
-use crate::transport::packet::{MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE};
+use crate::transport::packet::{PacketHdr, MAX_RX_BUF_SIZE, MAX_TX_BUF_SIZE};
 use crate::utils::writebuf::WriteBuf;
 
 use super::objects::*;
@@ -82,7 +82,9 @@ where
     /// Answer a responding exchange using the `DataModelHandler` instance wrapped by this exchange handler.
     pub async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error> {
         let mut rb = Box::new(MaybeUninit::<[u8; MAX_RX_BUF_SIZE]>::uninit());
-        let mut tb = Box::new(MaybeUninit::<[u8; MAX_TX_BUF_SIZE]>::uninit());
+        let mut tb = Box::new(MaybeUninit::<
+            [u8; MAX_TX_BUF_SIZE - PacketHdr::HDR_RESERVE - PacketHdr::TAIL_RESERVE],
+        >::uninit());
 
         let rb = unsafe { rb.assume_init_mut() };
         let tb = unsafe { tb.assume_init_mut() };

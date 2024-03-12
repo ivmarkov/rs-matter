@@ -28,7 +28,7 @@ use super::{
 ///
 /// Use with e.g.
 ///
-/// ```rust
+/// ```ignore
 /// let matter = Matter::new(...);
 ///
 /// // ...

@@ -27,7 +27,7 @@ use super::common::{sc_write, OpCode, SCStatusCodes, PROTO_ID_SECURE_CHANNEL};
 ///
 /// Use with e.g.
 ///
-/// ```rust
+/// ```ignore
 /// let matter = Matter::new(...);
 ///
 /// // ...

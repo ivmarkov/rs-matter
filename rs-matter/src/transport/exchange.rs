@@ -351,6 +351,7 @@ impl<'a, 'b> Drop for Tx<'a, 'b> {
 }
 
 /// A builder for a TX message payload
+// TODO: Make its payload smaller (occupies 74B on 64 bit machines)
 pub struct TxPayload<'a, 'b> {
     exchange: &'a Exchange<'a>,
     header: &'b mut PacketHdr,
@@ -456,7 +457,7 @@ impl<'a, 'b> Sender<'a, 'b> {
     /// Once the method returns `None`, it will always return `None` on subsequent calls, as the message has been acknowledged by the other side.
     ///
     /// Example:
-    /// ```no_run
+    /// ```ignore
     /// let exchange = ...;
     ///
     /// let sender = exchange.sender()?;
@@ -527,7 +528,7 @@ impl<'a> Exchange<'a> {
     ///
     /// This method will fail if there is no existing session in the provided Matter satack for the provided Node ID.
     ///
-    /// TODO: This signature will change in future
+    // TODO: This signature will change in future
     pub async fn initiate(
         matter: &'a Matter<'a>,
         node_id: u64,
@@ -600,7 +601,7 @@ impl<'a> Exchange<'a> {
     }
 
     /// Get access to the pending RX message on this exchange, and consume it.
-    /// A syntax sugar for calling ```self.rx().await?```, and then ```rx.consume()``
+    /// A syntax sugar for calling ```self.rx().await?```, and then ```rx.consume()```.
     ///
     /// If there is no pending RX message, the method will wait indefinitely until one appears.
     ///

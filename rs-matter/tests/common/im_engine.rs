@@ -50,7 +50,7 @@ use rs_matter::{
     error::{Error, ErrorCode},
     handler_chain_type,
     interaction_model::core::{OpCode, PROTO_ID_INTERACTION_MODEL},
-    respond::Responder,
+    respond::DefaultResponder,
     tlv::{TLVWriter, TagType, ToTLV},
     transport::{
         exchange::{Exchange, ExchangeMeta},
@@ -297,8 +297,7 @@ impl<'a> ImEngine<'a> {
 
         let matter_client = &matter_client;
 
-        let subscriptions = Subscriptions::<3>::new(&self.matter);
-        let responder = Responder::new_default(&subscriptions, HandlerCompat(handler));
+        let responder = DefaultResponder::<3>::new(&self.matter, HandlerCompat(handler));
 
         embassy_futures::block_on(async move {
             select4(

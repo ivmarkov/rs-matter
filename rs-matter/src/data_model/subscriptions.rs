@@ -75,29 +75,35 @@ impl Subscription {
     }
 }
 
-pub struct Subscriptions<'a, const N: usize> {
-    matter: &'a Matter<'a>,
+/// A utility for tracking, handling and reporting on subscriptions accepted by a data model.
+///
+/// The implementation is generic over the concrete data model implementation and needs to be provided with a `DataModelHandler` instance,
+/// so that it can generate IM `ReportData` messages for the data model.
+///
+/// The `N` type parameter specifies the maximum number of subscriptions that can be tracked at the same time.
+/// Additional subscriptions are expected to be rejected by the concrete data model with a "respource exhausted" IM status message.
+pub struct Subscriptions<const N: usize> {
     next_subscription_id: AtomicU32,
     subscriptions: RefCell<[Subscription; N]>,
     notification: Notification,
 }
 
-impl<'a, const N: usize> Subscriptions<'a, N> {
+impl<const N: usize> Subscriptions<N> {
     const INIT: Subscription = Subscription::new();
 
-    pub const fn new(matter: &'a Matter) -> Self {
+    /// Create the instance.
+    pub const fn new() -> Self {
         Self {
-            matter,
             next_subscription_id: AtomicU32::new(1),
             subscriptions: RefCell::new([Self::INIT; N]),
             notification: Notification::new(),
         }
     }
 
-    pub fn matter(&'a self) -> &'a Matter<'a> {
-        self.matter
-    }
-
+    /// Notify the instance that some data in the data model has changed and that it should re-evaluate the subscriptions
+    /// and report on those that concern the changed data.
+    ///
+    /// This method is supposed to be called by the application code whenever it changes the data model.
     pub fn notify_changed(&self) {
         for sub in self
             .subscriptions
@@ -111,7 +117,10 @@ impl<'a, const N: usize> Subscriptions<'a, N> {
         self.notification.signal(());
     }
 
-    pub async fn run<T>(&self, handler: T) -> Result<(), Error>
+    /// Run the subscription handling loop using the provided `DataModelHandler` instance for generating `ReportData` messages.
+    ///
+    /// All exchanges initiated in the run loop for reporting data changes will be created on the provided `Matter` stack.
+    pub async fn run<T>(&self, handler: T, matter: &Matter<'_>) -> Result<(), Error>
     where
         T: DataModelHandler,
     {
@@ -177,7 +186,7 @@ impl<'a, const N: usize> Subscriptions<'a, N> {
                     let req = ReportDataReq::Subscribe(&req);
                     let mut wb = WriteBuf::new(&mut wb);
 
-                    let mut exchange = Exchange::initiate(self.matter, node_id, true).await?;
+                    let mut exchange = Exchange::initiate(matter, node_id, true).await?;
 
                     if DataModel::<0, &T>::report_data(
                         &handler,
@@ -209,7 +218,9 @@ impl<'a, const N: usize> Subscriptions<'a, N> {
         }
     }
 
-    pub(crate) fn add(&self, node_id: u64, req: &[u8], max_int_secs: u16) -> Option<u32> {
+    /// Add a new subscription to the instance for the provided Node ID.
+    /// NOTE: This method is expected to be used **only** by the data model, when processing a subscription request.
+    pub fn add(&self, node_id: u64, req: &[u8], max_int_secs: u16) -> Option<u32> {
         let mut subscriptions = self.subscriptions.borrow_mut();
 
         if let Some(sub) = subscriptions.iter_mut().find(|sub| sub.is_free()) {
@@ -229,7 +240,9 @@ impl<'a, const N: usize> Subscriptions<'a, N> {
         }
     }
 
-    pub(crate) fn remove(&self, node_id: u64, id: Option<u32>) {
+    /// Remove a subscription from the instance for the provided Node ID and, optionally, the subscription ID.
+    /// NOTE: This method is expected to be used **only** by the data model, when processing a subscription request.
+    pub fn remove(&self, node_id: u64, id: Option<u32>) {
         for sub in self.subscriptions.borrow_mut().iter_mut() {
             if sub.node_id == node_id && id.map(|id| id == sub.id).unwrap_or(true) {
                 sub.remove();

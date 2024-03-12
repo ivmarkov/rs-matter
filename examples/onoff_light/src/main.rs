@@ -38,7 +38,7 @@ use rs_matter::mdns::{
     Host, MDNS_IPV4_BROADCAST_ADDR, MDNS_IPV6_BROADCAST_ADDR, MDNS_SOCKET_BIND_ADDR,
 };
 use rs_matter::persist::Psm;
-use rs_matter::respond::Responder;
+use rs_matter::respond::DefaultResponder;
 use rs_matter::secure_channel::spake2p::VerifierData;
 use rs_matter::transport::core::MATTER_SOCKET_BIND_ADDR;
 use rs_matter::transport::network::{Ipv4Addr, Ipv6Addr};
@@ -100,17 +100,25 @@ fn run() -> Result<(), Error> {
 
     let on_off = cluster_on_off::OnOffCluster::new(*matter.borrow());
 
-    let handler = HandlerCompat(handler(&matter, &on_off));
-    let subscriptions = Subscriptions::<3>::new(&matter);
+    // Assemble our Data Model handler by composing the predefined Root Endpoint handler with our custom On/Off clusters
+    let dm_handler = HandlerCompat(dm_handler(&matter, &on_off));
 
-    // This is a sample code that simulates state changes triggered from within the app
-    // Changes will be properly reflected in the Matter controller and its apps (i.e. Google Home), thanks to subscriptions
-    let mut on_off_toggle_runner = pin!(async {
+    // Create a default responder capable of handling up to 3 subscriptions
+    // All other subscription requests will be turned down with "resource exhausted"
+    let responder = DefaultResponder::<3, _>::new(&matter, dm_handler);
+
+    // Run the responder with up to 4 handlers (i.e. 4 exchanges can be handled simultenously)
+    // Clients trying to open more exchanges than the ones currently running will get "I'm busy, please try again later"
+    let mut respond = pin!(responder.run::<4>());
+
+    // This is a sample code that simulates state changes triggered by the HAL
+    // Changes will be properly communicated to the Matter controllers and other Matter apps (i.e. Google Home, Alexa), thanks to subscriptions
+    let mut device = pin!(async {
         loop {
             Timer::after(Duration::from_secs(5)).await;
 
             on_off.toggle();
-            subscriptions.notify_changed();
+            responder.subscriptions().notify_changed();
 
             info!("Lamp toggled");
         }
@@ -132,7 +140,8 @@ fn run() -> Result<(), Error> {
     // The returned socket should be splittable into two halves, where each half implements `UdpSend` and `UdpReceive` respectively
     let socket = async_io::Async::<UdpSocket>::bind(MATTER_SOCKET_BIND_ADDR)?;
 
-    let mut runner = pin!(matter.run(
+    // Run the Matter and mDNS transports
+    let mut transport = pin!(matter.run(
         &socket,
         &socket,
         Some(CommissioningData {
@@ -154,25 +163,19 @@ fn run() -> Result<(), Error> {
     // NOTE:
     // Replace with your own persister for e.g. `no_std` environments
     //let mut psm = Psm::new(matter, std::env::temp_dir().join("rs-matter"))?;
-    //let mut psm_runner = pin!(psm.run());
+    //let mut persist = pin!(psm.run());
 
-    let responder = Responder::new_default(&subscriptions, handler);
-    let mut responder_runner = pin!(responder.run::<4>());
-
-    let busy_responder = Responder::new_busy(&matter);
-    let mut busy_responder_runner = pin!(busy_responder.run::<10>());
-
-    let runner = select4(
-        &mut runner,
-        //&mut psm_runner,
-        &mut responder_runner,
-        &mut busy_responder_runner,
-        &mut on_off_toggle_runner,
+    // Combine all async tasks in a single one
+    let all = select3(
+        &mut transport,
+        //&mut persist,
+        &mut respond,
+        &mut device,
     );
 
     // NOTE:
     // Replace with a different executor for e.g. `no_std` environments
-    futures_lite::future::block_on(runner).unwrap()?;
+    futures_lite::future::block_on(all).unwrap()?;
 
     Ok(())
 }
@@ -189,7 +192,7 @@ const NODE: Node<'static> = Node {
     ],
 };
 
-fn handler<'a>(
+fn dm_handler<'a>(
     matter: &'a Matter<'a>,
     on_off: &'a cluster_on_off::OnOffCluster,
 ) -> impl Metadata + NonBlockingHandler + 'a {

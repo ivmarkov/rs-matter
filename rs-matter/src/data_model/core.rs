@@ -21,7 +21,7 @@ use core::time::Duration;
 
 use log::{info, warn};
 
-use crate::error::*;
+use crate::{error::*, Matter};
 
 use crate::interaction_model::core::{
     IMStatusCode, Interaction, InvStreamingResp, OpCode, ReportDataReq, ReportDataStreamingResp,
@@ -45,22 +45,41 @@ use super::subscriptions::Subscriptions;
 /// write requests per-transaction will be supported.
 const MAX_WRITE_ATTRS_IN_ONE_TRANS: usize = 7;
 
-pub struct DataModel<'a, const N: usize, T> {
+/// An `ExchangeHandler` implementation capable of handling responder exchanges for the Interaction Model protocol.
+/// The implementation needs a `DataModelHandler` instance to interact with the underlying clusters of the data model.
+pub struct DataModel<const N: usize, T> {
     handler: T,
-    subscriptions: &'a Subscriptions<'a, N>,
+    subscriptions: Subscriptions<N>,
 }
 
-impl<'a, const N: usize, T> DataModel<'a, N, T>
+impl<const N: usize, T> DataModel<N, T>
 where
     T: DataModelHandler,
 {
-    pub const fn new(handler: T, subscriptions: &'a Subscriptions<'a, N>) -> Self {
+    /// Create the handler.
+    pub const fn new(handler: T) -> Self {
         Self {
             handler,
-            subscriptions,
+            subscriptions: Subscriptions::new(),
         }
     }
 
+    /// A utility for getting a reference to the subscriptions utility owned by this data model handler.
+    ///
+    /// Necessary so that application code can notify the data model handler of data changes.
+    pub fn subscriptions(&self) -> &Subscriptions<N> {
+        &self.subscriptions
+    }
+
+    /// Run the subscriptions' reporting loop for all subscriptions created by this handler when responding to exchanges.
+    ///
+    /// All exchanges initiated when reporting on subscriptions will be initiated on the provided `Matter` stack.
+    /// Therefore, the provided `Matter` stack should be the **same** one on which the responding exchanges are being handled by this data model.
+    pub async fn run_subscriptions(&self, matter: &Matter<'_>) -> Result<(), Error> {
+        self.subscriptions.run(&self.handler, matter).await
+    }
+
+    /// Answer a responding exchange using the `DataModelHandler` instance wrapped by this exchange handler.
     pub async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error> {
         let mut rb = Box::new(MaybeUninit::<[u8; MAX_RX_BUF_SIZE]>::uninit());
         let mut tb = Box::new(MaybeUninit::<[u8; MAX_TX_BUF_SIZE]>::uninit());
@@ -375,7 +394,7 @@ where
     }
 }
 
-impl<'a, const N: usize, T> ExchangeHandler for DataModel<'a, N, T>
+impl<const N: usize, T> ExchangeHandler for DataModel<N, T>
 where
     T: DataModelHandler,
 {

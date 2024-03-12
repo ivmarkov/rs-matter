@@ -240,11 +240,11 @@ impl TransportMgr {
         let exch_id = session_mgr.get_next_exch_id();
 
         let session = session_mgr.get_for_node(node_id, secure).unwrap();
-        let exchange_index = session
-            .add_exchange(exch_id, Role::Initiator(Default::default()))
+        let exch_index = session
+            .add_exch(exch_id, Role::Initiator(Default::default()))
             .ok_or(ErrorCode::NoSpaceExchanges)?;
 
-        let id = ExchangeId::new(session.id, exchange_index);
+        let id = ExchangeId::new(session.id, exch_index);
 
         info!("Exchange {id}: Initiated");
 
@@ -262,9 +262,7 @@ impl TransportMgr {
                 let epoch = session_mgr.epoch;
 
                 if let Some(session) = session_mgr.get_for_rx(&packet.peer, &packet.header.plain) {
-                    if let Some(exch_index) =
-                        session.get_exchange_index_for_rx(&packet.header.proto)
-                    {
+                    if let Some(exch_index) = session.get_exch_for_rx(&packet.header.proto) {
                         let exch = session.exchanges[exch_index].as_mut().unwrap();
 
                         if matches!(exch.role, Role::Responder(ResponderState::AcceptPending)) {
@@ -587,10 +585,8 @@ impl TransportMgr {
             let mut session_mgr = self.session_mgr.borrow_mut();
             let epoch = session_mgr.epoch;
             if let Some(session) = session_mgr.get_for_rx(&packet.peer, &packet.header.plain) {
-                if let Some(exchange_index) =
-                    session.get_exchange_index_for_rx(&packet.header.proto)
-                {
-                    let exchange = session.exchanges[exchange_index].as_mut().unwrap();
+                if let Some(exch_index) = session.get_exch_for_rx(&packet.header.proto) {
+                    let exchange = session.exchanges[exch_index].as_mut().unwrap();
 
                     if matches!(
                         exchange.role,
@@ -621,15 +617,13 @@ impl TransportMgr {
         if !packet.buf.is_empty() {
             let mut session_mgr = self.session_mgr.borrow_mut();
             if let Some(session) = session_mgr.get_for_rx(&packet.peer, &packet.header.plain) {
-                if let Some(exchange_index) =
-                    session.get_exchange_index_for_rx(&packet.header.proto)
-                {
-                    let exchange = session.exchanges[exchange_index].as_mut().unwrap();
+                if let Some(exch_index) = session.get_exch_for_rx(&packet.header.proto) {
+                    let exchange = session.exchanges[exch_index].as_mut().unwrap();
 
                     if exchange.role.is_dropped_state() {
                         warn!(
                             "\n----- {packet}\n => Owned by orphaned dropped {}, dropping packet",
-                            ExchangeId::new(session.id, exchange_index)
+                            ExchangeId::new(session.id, exch_index)
                         );
 
                         packet.buf.clear();
@@ -831,47 +825,6 @@ impl TransportMgr {
 
         Ok(())
     }
-
-    // fn encode_orphaned_close_resp<const N: usize>(
-    //     &self,
-    //     packet: &mut Packet<N>,
-    //     session: &mut Session,
-    //     exchange_index: usize,
-    //     epoch: Epoch,
-    //     meta: ExchangeMeta,
-    // ) -> Result<(), Error> {
-    //     self.encode_packet(packet, Some(session), Some(exchange_index), epoch, |wb| {
-    //         let meta = if meta.proto_id == PROTO_ID_SECURE_CHANNEL {
-    //             match meta.opcode()? {
-    //                 OpCode::PBKDFParamRequest | OpCode::CASESigma1 => {
-    //                     // Send Busy, as per section 4.10.1.5 of the Matter spec
-    //                     sc_write(wb, SCStatusCodes::Busy, Some(&[0xF4, 0x01]))?
-    //                 }
-    //                 _ => {
-    //                     // Send InvalidParameter, as there seems to be no other suitable status code
-    //                     sc_write(wb, SCStatusCodes::InvalidParameter, None)?
-    //                 }
-    //             }
-    //         } else if meta.proto_id == PROTO_ID_INTERACTION_MODEL {
-    //             // Identical behavior to https://github.com/project-chip/connectedhomeip/pull/11667
-    //             let status = match meta.opcode()? {
-    //                 interaction_model::core::OpCode::SubscribeRequest => IMStatusCode::Busy,
-    //                 interaction_model::core::OpCode::ReadRequest
-    //                 | interaction_model::core::OpCode::WriteRequest
-    //                 | interaction_model::core::OpCode::InvokeRequest => IMStatusCode::Busy,
-    //                 _ => IMStatusCode::Failure,
-    //             };
-
-    //             StatusResp::write(wb, status)?;
-
-    //             interaction_model::core::OpCode::StatusResponse.meta()
-    //         } else {
-    //             Err(ErrorCode::Invalid)? // TODO
-    //         };
-
-    //         Ok(meta)
-    //     })
-    // }
 
     fn encode_evict_some_session<const N: usize>(
         &self,

@@ -109,41 +109,41 @@ pub(crate) struct ExchangeState {
 }
 
 impl ExchangeState {
-    pub fn is_for_rx(&self, proto: &ProtoHdr) -> bool {
-        self.exch_id == proto.exch_id
-            && proto.is_initiator() == matches!(self.role, Role::Responder(_))
+    pub fn is_for_rx(&self, rx_proto: &ProtoHdr) -> bool {
+        self.exch_id == rx_proto.exch_id
+            && rx_proto.is_initiator() == matches!(self.role, Role::Responder(_))
     }
 
     pub fn post_recv(
         &mut self,
-        plain: &PlainHdr,
-        proto: &ProtoHdr,
+        rx_plain: &PlainHdr,
+        rx_proto: &ProtoHdr,
         epoch: Epoch,
     ) -> Result<(), Error> {
-        self.mrp.post_recv(plain, proto, epoch)?;
+        self.mrp.post_recv(rx_plain, rx_proto, epoch)?;
 
         Ok(())
     }
 
     pub fn pre_send(
         &mut self,
-        plain: &PlainHdr,
-        proto: &mut ProtoHdr,
+        tx_plain: &PlainHdr,
+        tx_proto: &mut ProtoHdr,
         epoch: Epoch,
     ) -> Result<(), Error> {
         if matches!(self.role, Role::Initiator(_)) {
-            proto.set_initiator();
+            tx_proto.set_initiator();
         } else {
-            proto.unset_initiator();
+            tx_proto.unset_initiator();
         }
 
-        proto.exch_id = self.exch_id;
+        tx_proto.exch_id = self.exch_id;
 
-        self.mrp.pre_send(plain, proto, epoch)
+        self.mrp.pre_send(tx_plain, tx_proto, epoch)
     }
 
     pub fn retrans_delay_ms(&mut self) -> Option<u64> {
-        self.mrp.retrans().map(RetransEntry::delay_ms)
+        self.mrp.retrans.as_ref().map(RetransEntry::delay_ms)
     }
 }
 
@@ -442,7 +442,7 @@ impl<'a> Exchange<'a> {
                     false
                 } else {
                     let for_us = self.with_ctx(|sess, exch_index| {
-                        if sess.is_for(&packet.peer, &packet.header.plain) {
+                        if sess.is_for_rx(&packet.peer, &packet.header.plain) {
                             let exchange = sess.exchanges[exch_index].as_ref().unwrap();
 
                             return Ok(exchange.is_for_rx(&packet.header.proto));
@@ -646,7 +646,7 @@ impl<'a> Exchange<'a> {
 
 impl<'a> Drop for Exchange<'a> {
     fn drop(&mut self) {
-        let closed = self.with_ctx(|sess, exch_index| Ok(sess.remove_exchange(exch_index)));
+        let closed = self.with_ctx(|sess, exch_index| Ok(sess.remove_exch(exch_index)));
 
         if !matches!(closed, Ok(true)) {
             self.matter.transport_mgr.dropped.signal(());

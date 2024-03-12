@@ -128,6 +128,10 @@ impl ReliableMessage {
         Default::default()
     }
 
+    pub fn is_retrans_pending(&self) -> bool {
+        self.retrans.is_some()
+    }
+
     pub fn is_ack_pending(&self) -> bool {
         self.ack
             .as_ref()
@@ -135,47 +139,38 @@ impl ReliableMessage {
             .unwrap_or(false)
     }
 
-    pub fn is_retrans_pending(&self) -> bool {
-        self.retrans.is_some()
-    }
-
-    pub fn retrans(&self) -> Option<&RetransEntry> {
-        self.retrans.as_ref()
-    }
-
     // Check any pending acknowledgements / retransmissions and take action
-    pub fn is_ack_ready(&self, epoch: Epoch) -> bool {
+    pub fn is_ack_send_ready(&self, epoch: Epoch) -> bool {
         // Acknowledgements
-        if let Some(ack_entry) = &self.ack {
-            ack_entry.has_timed_out(MRP_STANDALONE_ACK_TIMEOUT_MS, epoch)
-        } else {
-            false
-        }
+        self.ack
+            .as_ref()
+            .map(|ack| ack.has_timed_out(MRP_STANDALONE_ACK_TIMEOUT_MS, epoch))
+            .unwrap_or(false)
     }
 
     pub fn pre_send(
         &mut self,
-        plain: &PlainHdr,
-        proto: &mut ProtoHdr,
+        tx_plain: &PlainHdr,
+        tx_proto: &mut ProtoHdr,
         epoch: Epoch,
     ) -> Result<(), Error> {
         // Check if any acknowledgements are pending for this exchange,
         if let Some(ack) = &mut self.ack {
             // if so, piggy back in the encoded header here
-            proto.set_ack(Some(ack.get_msg_ctr()));
-            ack.standalone_ack_sent = !proto.is_reliable()
-                && proto.proto_id == PROTO_ID_SECURE_CHANNEL
-                && proto.proto_opcode == OpCode::MRPStandAloneAck as u8;
+            tx_proto.set_ack(Some(ack.get_msg_ctr()));
+            ack.standalone_ack_sent = !tx_proto.is_reliable()
+                && tx_proto.proto_id == PROTO_ID_SECURE_CHANNEL
+                && tx_proto.proto_opcode == OpCode::MRPStandAloneAck as u8;
         }
 
-        if proto.is_reliable() {
+        if tx_proto.is_reliable() {
             if let Some(retrans) = &mut self.retrans {
-                if retrans.pre_send(plain.ctr).is_err() {
+                if retrans.pre_send(tx_plain.ctr).is_err() {
                     // Too many retransmissions, give up TODO: log
                     self.retrans = None;
                 }
             } else {
-                self.retrans = Some(RetransEntry::new(plain.ctr, epoch));
+                self.retrans = Some(RetransEntry::new(tx_plain.ctr, epoch));
             }
         }
 
@@ -189,11 +184,11 @@ impl ReliableMessage {
      */
     pub fn post_recv(
         &mut self,
-        plain: &PlainHdr,
-        proto: &ProtoHdr,
+        rx_plain: &PlainHdr,
+        rx_proto: &ProtoHdr,
         epoch: Epoch,
     ) -> Result<(), Error> {
-        if let Some(ack_msg_ctr) = proto.get_ack() {
+        if let Some(ack_msg_ctr) = rx_proto.get_ack() {
             // Handle received Acks
             if let Some(entry) = &self.retrans {
                 if entry.get_msg_ctr() != ack_msg_ctr {
@@ -204,7 +199,7 @@ impl ReliableMessage {
             }
         }
 
-        if proto.is_reliable() {
+        if rx_proto.is_reliable() {
             if let Some(ack) = &self.ack {
                 // This indicates there was some existing entry for same sess-id/exch-id, which shouldnt happen
                 // TODO: As per the spec if this happens, we need to send out the previous ACK and note this new ACK
@@ -214,7 +209,7 @@ impl ReliableMessage {
                 );
             }
 
-            self.ack = Some(AckEntry::new(plain.ctr, epoch)?);
+            self.ack = Some(AckEntry::new(rx_plain.ctr, epoch)?);
         }
         Ok(())
     }

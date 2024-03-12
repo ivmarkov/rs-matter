@@ -31,6 +31,7 @@ use rs_matter::data_model::cluster_on_off;
 use rs_matter::data_model::device_types::DEV_TYPE_ON_OFF_LIGHT;
 use rs_matter::data_model::objects::*;
 use rs_matter::data_model::root_endpoint;
+use rs_matter::data_model::subscriptions::Subscriptions;
 use rs_matter::data_model::system_model::descriptor;
 use rs_matter::error::Error;
 use rs_matter::mdns::{
@@ -100,6 +101,20 @@ fn run() -> Result<(), Error> {
     let on_off = cluster_on_off::OnOffCluster::new(*matter.borrow());
 
     let handler = HandlerCompat(handler(&matter, &on_off));
+    let subscriptions = Subscriptions::<3>::new(&matter);
+
+    // This is a sample code that simulates state changes triggered from within the app
+    // Changes will be properly reflected in the Matter controller and its apps (i.e. Google Home), thanks to subscriptions
+    let mut on_off_toggle_runner = pin!(async {
+        loop {
+            Timer::after(Duration::from_secs(5)).await;
+
+            on_off.toggle();
+            subscriptions.notify_changed();
+
+            info!("Lamp toggled");
+        }
+    });
 
     // NOTE:
     // When using a custom UDP stack (e.g. for `no_std` environments), replace with a UDP socket bind + multicast join for your custom UDP stack
@@ -141,26 +156,17 @@ fn run() -> Result<(), Error> {
     //let mut psm = Psm::new(matter, std::env::temp_dir().join("rs-matter"))?;
     //let mut psm_runner = pin!(psm.run());
 
-    let responder = Responder::<4, _>::new(handler, &matter);
+    let responder = Responder::new_default(&subscriptions, handler);
     let mut responder_runner = pin!(responder.run::<4>());
 
-    // This is a sample code that simulates state changed from within the app
-    // It should be properly reflected in the matter controller and its apps (i.e. Google Home), thanks to subscriptions
-    let mut on_off_toggle_runner = pin!(async {
-        loop {
-            Timer::after(Duration::from_secs(5)).await;
+    let busy_responder = Responder::new_busy(&matter);
+    let mut busy_responder_runner = pin!(busy_responder.run::<10>());
 
-            on_off.toggle();
-            responder.subscriptions().notify_changed();
-
-            info!("Lamp toggled");
-        }
-    });
-
-    let runner = select3(
+    let runner = select4(
         &mut runner,
         //&mut psm_runner,
         &mut responder_runner,
+        &mut busy_responder_runner,
         &mut on_off_toggle_runner,
     );
 

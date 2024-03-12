@@ -209,7 +209,7 @@ impl Session {
         self.peer_nodeid == Some(node_id) && self.is_encrypted() == secure && !self.reserved
     }
 
-    pub(crate) fn is_for(&self, rx_peer: &Address, rx_plain: &PlainHdr) -> bool {
+    pub(crate) fn is_for_rx(&self, rx_peer: &Address, rx_plain: &PlainHdr) -> bool {
         let nodeid_matches = self.peer_nodeid.is_none()
             || rx_plain.get_src_nodeid().is_none()
             || self.peer_nodeid == rx_plain.get_src_nodeid();
@@ -223,37 +223,37 @@ impl Session {
 
     pub(crate) fn post_recv(
         &mut self,
-        header: &mut PacketHdr,
+        rx_header: &mut PacketHdr,
         pb: &mut ParseBuf,
         epoch: Epoch,
     ) -> Result<bool, Error> {
-        self.decode_remaining(header, pb)?;
+        self.decode_remaining(rx_header, pb)?;
 
         if !self
             .rx_ctr_state
-            .post_recv(header.plain.ctr, self.is_encrypted())
+            .post_recv(rx_header.plain.ctr, self.is_encrypted())
         {
             Err(ErrorCode::Duplicate)?;
         }
 
-        let exch_index = self.get_exchange_index_for_rx(&header.proto);
+        let exch_index = self.get_exch_for_rx(&rx_header.proto);
         if let Some(exch_index) = exch_index {
             let exch = self.exchanges[exch_index].as_mut().unwrap();
 
-            exch.post_recv(&header.plain, &header.proto, epoch)?;
+            exch.post_recv(&rx_header.plain, &rx_header.proto, epoch)?;
 
             Ok(false)
         } else {
-            if !header.proto.is_initiator() {
+            if !rx_header.proto.is_initiator() {
                 Err(ErrorCode::NoExchange)?;
             }
 
             if let Some(exch_index) =
-                self.add_exchange(header.proto.exch_id, Role::Responder(Default::default()))
+                self.add_exch(rx_header.proto.exch_id, Role::Responder(Default::default()))
             {
                 let exch = self.exchanges[exch_index].as_mut().unwrap();
 
-                exch.post_recv(&header.plain, &header.proto, epoch)?;
+                exch.post_recv(&rx_header.plain, &rx_header.proto, epoch)?;
 
                 Ok(true)
             } else {
@@ -264,32 +264,32 @@ impl Session {
 
     pub(crate) fn pre_send(
         &mut self,
-        exchange_index: Option<usize>,
-        header: &mut PacketHdr,
+        exch_index: Option<usize>,
+        tx_header: &mut PacketHdr,
         epoch: Epoch,
     ) -> Result<(Address, bool), Error> {
-        let ctr = if let Some(exchange_index) = exchange_index {
+        let ctr = if let Some(exchange_index) = exch_index {
             let exchange = self.exchanges[exchange_index].as_mut().unwrap();
-            exchange.mrp.retrans().map(RetransEntry::get_msg_ctr)
+            exchange.mrp.retrans.as_ref().map(RetransEntry::get_msg_ctr)
         } else {
             None
         };
 
         let retransmission = ctr.is_some();
 
-        header.plain.sess_id = self.get_peer_sess_id();
-        header.plain.ctr = ctr.unwrap_or_else(|| self.get_msg_ctr());
-        header.plain.set_src_nodeid(None);
-        header.plain.set_dst_unicast_nodeid(
+        tx_header.plain.sess_id = self.get_peer_sess_id();
+        tx_header.plain.ctr = ctr.unwrap_or_else(|| self.get_msg_ctr());
+        tx_header.plain.set_src_nodeid(None);
+        tx_header.plain.set_dst_unicast_nodeid(
             (self.mode == SessionMode::PlainText)
                 .then_some(self.peer_nodeid)
                 .flatten(),
         );
 
-        if let Some(exchange_index) = exchange_index {
+        if let Some(exchange_index) = exch_index {
             let exchange = self.exchanges[exchange_index].as_mut().unwrap();
 
-            exchange.pre_send(&header.plain, &mut header.proto, epoch)?;
+            exchange.pre_send(&tx_header.plain, &mut tx_header.proto, epoch)?;
         }
 
         Ok((self.peer_addr, retransmission))
@@ -313,20 +313,20 @@ impl Session {
         u32::from_be_bytes(buf) & MATTER_MSG_CTR_RANGE
     }
 
-    pub(crate) fn get_exchange_index_for_rx(&self, proto: &ProtoHdr) -> Option<usize> {
+    pub(crate) fn get_exch_for_rx(&self, rx_proto: &ProtoHdr) -> Option<usize> {
         self.exchanges
             .iter()
             .enumerate()
             .filter(|(_, exch)| {
                 exch.as_ref()
-                    .map(|exch| exch.is_for_rx(proto))
+                    .map(|exch| exch.is_for_rx(rx_proto))
                     .unwrap_or(false)
             })
             .map(|(index, _)| index)
             .next()
     }
 
-    pub(crate) fn add_exchange(&mut self, exch_id: u16, role: Role) -> Option<usize> {
+    pub(crate) fn add_exch(&mut self, exch_id: u16, role: Role) -> Option<usize> {
         let exch_state = Some(ExchangeState {
             exch_id,
             role,
@@ -356,23 +356,23 @@ impl Session {
         }
     }
 
-    pub(crate) fn remove_exchange(&mut self, index: usize) -> bool {
+    pub(crate) fn remove_exch(&mut self, index: usize) -> bool {
         let exchange = self.exchanges[index].as_mut().unwrap();
         let exchange_id = ExchangeId::new(self.id, index);
 
         if exchange.mrp.is_retrans_pending() {
             exchange.role.set_dropped_state();
-            error!("Exchange {exchange_id}: dropped while a packet is still (re)transmitted! Marking as dropped, but session will be closed");
+            error!("Exchange {exchange_id}: A packet is still (re)transmitted! Marking as dropped, but session will be closed");
 
             false
         } else if exchange.mrp.is_ack_pending() {
             exchange.role.set_dropped_state();
-            warn!("Exchange {exchange_id}: dropped with a pending ACK. Marking as dropped");
+            warn!("Exchange {exchange_id}: Pending ACK. Marking as dropped");
 
             false
         } else {
             self.exchanges[index] = None;
-            trace!("Exchange {exchange_id}: dropped cleanly");
+            trace!("Exchange {exchange_id}: Dropped cleanly");
 
             true
         }
@@ -485,7 +485,8 @@ impl<'a> Drop for ReservedSession<'a> {
 }
 
 const MAX_SESSIONS: usize = 16;
-const MAX_EXCHANGES: usize = 6;
+const MAX_EXCHANGES: usize = 5;
+
 const MATTER_MSG_CTR_RANGE: u32 = 0x0fffffff;
 
 pub struct SessionMgr {
@@ -648,7 +649,7 @@ impl SessionMgr {
         let mut session = self
             .sessions
             .iter_mut()
-            .find(|sess| sess.is_for(rx_peer, rx_plain));
+            .find(|sess| sess.is_for_rx(rx_peer, rx_plain));
 
         if let Some(session) = session.as_mut() {
             session.update_last_used(self.epoch);

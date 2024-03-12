@@ -304,10 +304,11 @@ impl<'a> ImEngine<'a> {
             select4(
                 matter_client
                     .transport_mgr
-                    .run(NetworkSend(send_local), NetworkReceive(recv_local)),
-                self.matter
-                    .transport_mgr
-                    .run(NetworkSend(send_remote), NetworkReceive(recv_remote)),
+                    .run(NetworkSendImpl(send_local), NetworkReceiveImpl(recv_local)),
+                self.matter.transport_mgr.run(
+                    NetworkSendImpl(send_remote),
+                    NetworkReceiveImpl(recv_remote),
+                ),
                 responder.run::<4>(),
                 async move {
                     let mut exchange =
@@ -358,10 +359,10 @@ impl<'a> ImEngine<'a> {
 const ADDR: Address = Address::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
 
 type NetworkPipe<'a, const N: usize> = Channel<'a, NoopRawMutex, heapless::Vec<u8, N>>;
-struct NetworkReceive<'a, const N: usize>(Receiver<'a, NoopRawMutex, heapless::Vec<u8, N>>);
-struct NetworkSend<'a, const N: usize>(Sender<'a, NoopRawMutex, heapless::Vec<u8, N>>);
+struct NetworkReceiveImpl<'a, const N: usize>(Receiver<'a, NoopRawMutex, heapless::Vec<u8, N>>);
+struct NetworkSendImpl<'a, const N: usize>(Sender<'a, NoopRawMutex, heapless::Vec<u8, N>>);
 
-impl<'a, const N: usize> NetworkSend for NetworkSend<'a, N> {
+impl<'a, const N: usize> NetworkSend for NetworkSendImpl<'a, N> {
     async fn send_to(&mut self, data: &[u8], _addr: Address) -> Result<(), Error> {
         let vec = self.0.send().await;
 
@@ -374,7 +375,7 @@ impl<'a, const N: usize> NetworkSend for NetworkSend<'a, N> {
     }
 }
 
-impl<'a, const N: usize> NetworkReceive for NetworkReceive<'a, N> {
+impl<'a, const N: usize> NetworkReceive for NetworkReceiveImpl<'a, N> {
     async fn wait_available(&mut self) -> Result<(), Error> {
         self.0.receive().await;
 

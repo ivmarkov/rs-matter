@@ -476,7 +476,7 @@ impl TransportMgr {
                     packet.header.proto.set_ack(Some(ack));
 
                     self.encode_packet(packet, Some(session), None, epoch, |_| {
-                        Ok(OpCode::MRPStandAloneAck.into())
+                        Ok(Some(OpCode::MRPStandAloneAck.into()))
                     })?;
                 }
 
@@ -685,7 +685,7 @@ impl TransportMgr {
 
                 if exchange.mrp.is_ack_pending() {
                     self.encode_packet(packet, Some(session), Some(exch_index), epoch, |_| {
-                        Ok(OpCode::MRPStandAloneAck.into())
+                        Ok(Some(OpCode::MRPStandAloneAck.into()))
                     })?;
                 }
 
@@ -756,72 +756,76 @@ impl TransportMgr {
         payload_writer: F,
     ) -> Result<(), Error>
     where
-        F: FnOnce(&mut WriteBuf) -> Result<ExchangeMeta, Error>,
+        F: FnOnce(&mut WriteBuf) -> Result<Option<ExchangeMeta>, Error>,
     {
         packet.buf.resize_default(N).unwrap();
 
         let mut wb = WriteBuf::new(&mut packet.buf);
         wb.reserve(PacketHdr::HDR_RESERVE)?;
 
-        payload_writer(&mut wb)?.set_into(&mut packet.header.proto);
+        if let Some(meta) = payload_writer(&mut wb)? {
+            meta.set_into(&mut packet.header.proto);
 
-        let retransmission = if let Some(session) = &mut session {
-            packet.header.plain = Default::default();
+            let retransmission = if let Some(session) = &mut session {
+                packet.header.plain = Default::default();
 
-            let (peer, retransmission) =
-                session.pre_send(exchange_index, &mut packet.header, epoch)?;
+                let (peer, retransmission) =
+                    session.pre_send(exchange_index, &mut packet.header, epoch)?;
 
-            packet.peer = peer;
+                packet.peer = peer;
 
-            retransmission
-        } else {
-            if packet.header.plain.is_encrypted()
-                || packet.header.plain.get_src_nodeid().is_none()
-                || packet.header.proto.is_reliable()
-            {
-                // We can encode packets without a session only when they are unencrypted and do not need a retransmission
-                Err(ErrorCode::NoSession)?;
-            }
-
-            let src_nodeid = packet.header.plain.get_src_nodeid();
-
-            packet.header.plain = Default::default();
-
-            packet.header.plain.sess_id = 0;
-            packet.header.plain.ctr = 1;
-            packet.header.plain.set_src_nodeid(None);
-            packet.header.plain.set_dst_unicast_nodeid(src_nodeid);
-
-            packet.header.proto.unset_initiator();
-
-            false
-        };
-
-        info!(
-            "\n<<<<< {}\n => {} (system)",
-            Packet::<0>::display(&packet.peer, &packet.header),
-            if retransmission {
-                "Re-sending"
+                retransmission
             } else {
-                "Sending"
+                if packet.header.plain.is_encrypted()
+                    || packet.header.plain.get_src_nodeid().is_none()
+                    || packet.header.proto.is_reliable()
+                {
+                    // We can encode packets without a session only when they are unencrypted and do not need a retransmission
+                    Err(ErrorCode::NoSession)?;
+                }
+
+                let src_nodeid = packet.header.plain.get_src_nodeid();
+
+                packet.header.plain = Default::default();
+
+                packet.header.plain.sess_id = 0;
+                packet.header.plain.ctr = 1;
+                packet.header.plain.set_src_nodeid(None);
+                packet.header.plain.set_dst_unicast_nodeid(src_nodeid);
+
+                packet.header.proto.unset_initiator();
+
+                false
+            };
+
+            info!(
+                "\n<<<<< {}\n => {} (system)",
+                Packet::<0>::display(&packet.peer, &packet.header),
+                if retransmission {
+                    "Re-sending"
+                } else {
+                    "Sending"
+                }
+            );
+
+            debug!(
+                "{}",
+                Packet::<0>::display_payload(&packet.header.proto, wb.as_slice())
+            );
+
+            if let Some(session) = session {
+                session.encode(&packet.header, &mut wb)?;
+            } else {
+                packet.header.encode(&mut wb, 0, None)?;
             }
-        );
 
-        debug!(
-            "{}",
-            Packet::<0>::display_payload(&packet.header.proto, wb.as_slice())
-        );
+            let range = (wb.get_start(), wb.get_tail());
 
-        if let Some(session) = session {
-            session.encode(&packet.header, &mut wb)?;
+            packet.payload_start = range.0;
+            packet.buf.truncate(range.1);
         } else {
-            packet.header.encode(&mut wb, 0, None)?;
+            packet.buf.clear();
         }
-
-        let range = (wb.get_start(), wb.get_tail());
-
-        packet.payload_start = range.0;
-        packet.buf.truncate(range.1);
 
         Ok(())
     }

@@ -41,7 +41,6 @@ use rs_matter::{
             dev_att::{DataType, DevAttDataFetcher},
             general_commissioning, noc, nw_commissioning,
         },
-        subscriptions::Subscriptions,
         system_model::{
             access_control,
             descriptor::{self, DescriptorCluster},
@@ -297,7 +296,7 @@ impl<'a> ImEngine<'a> {
 
         let matter_client = &matter_client;
 
-        let responder = DefaultResponder::<3>::new(&self.matter, HandlerCompat(handler));
+        let responder = DefaultResponder::<3, _>::new(&self.matter, HandlerCompat(handler));
 
         embassy_futures::block_on(async move {
             select4(
@@ -315,15 +314,15 @@ impl<'a> ImEngine<'a> {
 
                     for ip in input {
                         exchange
-                            .send_with(|wb| {
+                            .send_with(|_, wb| {
                                 ip.data
                                     .to_tlv(&mut TLVWriter::new(wb), TagType::Anonymous)?;
 
-                                Ok(ExchangeMeta {
+                                Ok(Some(ExchangeMeta {
                                     proto_id: PROTO_ID_INTERACTION_MODEL,
                                     proto_opcode: ip.action as _,
                                     reliable: true,
-                                })
+                                }))
                             })
                             .await?;
 

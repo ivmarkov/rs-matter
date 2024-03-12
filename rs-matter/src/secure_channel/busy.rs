@@ -57,7 +57,7 @@ impl BusySecureChannel {
                 exchange.recv().await?;
 
                 exchange
-                    .send_with(|wb| sc_write(wb, SCStatusCodes::Busy, Some(&[0xF4, 0x01])))
+                    .send_with(|_, wb| sc_write(wb, SCStatusCodes::Busy, Some(&[0xF4, 0x01])))
                     .await
             }
             proto_opcode => {

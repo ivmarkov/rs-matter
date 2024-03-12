@@ -85,7 +85,7 @@ pub async fn complete_with_status(
     proto_data: Option<&[u8]>,
 ) -> Result<(), Error> {
     exchange
-        .send_with(|wb| sc_write(wb, status_code, proto_data))
+        .send_with(|_, wb| sc_write(wb, status_code, proto_data))
         .await
 }
 
@@ -93,7 +93,7 @@ pub fn sc_write(
     wb: &mut WriteBuf,
     status_code: SCStatusCodes,
     proto_data: Option<&[u8]>,
-) -> Result<ExchangeMeta, Error> {
+) -> Result<Option<ExchangeMeta>, Error> {
     let general_code = match status_code {
         SCStatusCodes::SessionEstablishmentSuccess => GeneralCode::Success,
         SCStatusCodes::CloseSession => GeneralCode::Success,
@@ -112,8 +112,8 @@ pub fn sc_write(
     )?;
 
     // CloseSession and Busy are sent without the R flag raised
-    Ok(OpCode::StatusReport.meta().reliable(!matches!(
+    Ok(Some(OpCode::StatusReport.meta().reliable(!matches!(
         status_code,
         SCStatusCodes::CloseSession | SCStatusCodes::Busy
-    )))
+    ))))
 }

@@ -309,7 +309,7 @@ impl Case {
             let encrypted = &encrypted[0..encrypted_len];
 
             exchange
-                .send_with(|wb| {
+                .send_with(|_, wb| {
                     let mut tw = TLVWriter::new(wb);
                     tw.start_struct(TagType::Anonymous)?;
                     tw.str8(TagType::Context(1), &our_random)?;
@@ -327,7 +327,7 @@ impl Case {
                         hash_updated = true;
                     }
 
-                    Ok(OpCode::CASESigma2.into())
+                    Ok(Some(OpCode::CASESigma2.into()))
                 })
                 .await
         } else {

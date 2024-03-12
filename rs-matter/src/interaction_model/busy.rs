@@ -64,10 +64,10 @@ impl BusyInteractionModel {
         };
 
         exchange
-            .send_with(|wb| {
+            .send_with(|_, wb| {
                 StatusResp::write(wb, status)?;
 
-                Ok(OpCode::StatusResponse.meta())
+                Ok(Some(OpCode::StatusResponse.meta()))
             })
             .await
     }

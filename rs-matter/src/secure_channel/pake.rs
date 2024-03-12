@@ -253,14 +253,14 @@ impl Pake {
         drop(rx);
 
         exchange
-            .send_with(|wb| {
+            .send_with(|_, wb| {
                 let resp = Pake1Resp {
                     pb: OctetStr(&pB),
                     cb: OctetStr(&cB),
                 };
                 resp.to_tlv(&mut TLVWriter::new(wb), TagType::Anonymous)?;
 
-                Ok(OpCode::PASEPake2.into())
+                Ok(Some(OpCode::PASEPake2.into()))
             })
             .await
     }
@@ -334,7 +334,7 @@ impl Pake {
 
         let mut context_set = false;
         exchange
-            .send_with(|wb| {
+            .send_with(|_, wb| {
                 resp.to_tlv(&mut TLVWriter::new(wb), TagType::Anonymous)?;
 
                 if !context_set {
@@ -342,7 +342,7 @@ impl Pake {
                     context_set = true;
                 }
 
-                Ok(OpCode::PBKDFParamResponse.into())
+                Ok(Some(OpCode::PBKDFParamResponse.into()))
             })
             .await
     }

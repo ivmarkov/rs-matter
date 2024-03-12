@@ -328,9 +328,9 @@ where
             .await?
             {
                 exchange
-                    .send_with(|wb| {
+                    .send_with(|_, wb| {
                         SubscribeResp::write(wb, id, max_int_secs)?;
-                        Ok(OpCode::SubscribeResponse.into())
+                        Ok(Some(OpCode::SubscribeResponse.into()))
                     })
                     .await?;
 
@@ -341,10 +341,10 @@ where
         } else {
             // No place for this subscription, return resource exhausted
             exchange
-                .send_with(|wb| {
+                .send_with(|_, wb| {
                     StatusResp::write(wb, IMStatusCode::ResourceExhausted)?;
 
-                    Ok(OpCode::StatusResponse.into())
+                    Ok(Some(OpCode::StatusResponse.into()))
                 })
                 .await?;
         }

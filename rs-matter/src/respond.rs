@@ -95,6 +95,7 @@ where
     /// This is useful when utilizing multiple responders on a single `Matter` instance, where e.g. the first (main) responder is the actual one,
     /// responsible for handling the incoming exchanges, while e.g. another one - with a non-zero `respond_after_ms` - is answerring all exchanges
     /// not accepted in time by the main responder with a simple "I'm busy, try again later" handling.
+    #[inline(always)]
     pub const fn new(
         name: &'a str,
         handler: T,
@@ -171,6 +172,7 @@ impl<'a, const N: usize, H>
 {
     /// Creates a "default" responder. This is a responder that composes and uses the `rs-matter`-provided `ExchangeHandler` implementations
     /// (`SecureChannel` and `DataModel`) for handling the Secure Channel protocol and the Interaction Model protocol.
+    #[inline(always)]
     pub const fn new_default(matter: &'a Matter<'a>, dm_handler: H) -> Self
     where
         H: DataModelHandler,
@@ -191,6 +193,7 @@ impl<'a> Responder<'a, CompositeExchangeHandler<BusyInteractionModel, BusySecure
     ///
     /// Exchanges which are not accepted after 200ms are answered by this responder, as the assumption is that the main responder is
     /// busy and cannot answer these right now.
+    #[inline(always)]
     pub const fn new_busy(matter: &'a Matter<'a>) -> Self {
         Self::new(
             "Busy Responder",
@@ -213,6 +216,7 @@ where
     H: DataModelHandler,
 {
     /// Creates the responder composition.
+    #[inline(always)]
     pub const fn new(matter: &'a Matter<'a>, dm_handler: H) -> Self {
         Self {
             responder: Responder::new_default(matter, dm_handler),

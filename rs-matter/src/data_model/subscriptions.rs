@@ -27,15 +27,14 @@ use super::{core::DataModel, objects::*};
 use crate::error::*;
 use crate::interaction_model::{core::ReportDataReq, messages::msg::SubscribeReq};
 use crate::tlv::{self, FromTLV};
-use crate::transport::exchange::Exchange;
-use crate::transport::packet::MAX_RX_BUF_SIZE;
+use crate::transport::exchange::{Exchange, MAX_EXCHANGE_RX_BUF_SIZE, MAX_EXCHANGE_TX_BUF_SIZE};
 use crate::utils::{select::Notification, writebuf::WriteBuf};
 use crate::Matter;
 
 struct Subscription {
     node_id: u64,
     id: u32,
-    subscribe_req: heapless::Vec<u8, MAX_RX_BUF_SIZE>,
+    subscribe_req: heapless::Vec<u8, MAX_EXCHANGE_RX_BUF_SIZE>,
     min_int_secs: u16,
     max_int_secs: u16,
     reported_at: Instant,
@@ -92,6 +91,7 @@ impl<const N: usize> Subscriptions<N> {
     const INIT: Subscription = Subscription::new();
 
     /// Create the instance.
+    #[inline(always)]
     pub const fn new() -> Self {
         Self {
             next_subscription_id: AtomicU32::new(1),
@@ -124,10 +124,11 @@ impl<const N: usize> Subscriptions<N> {
     where
         T: DataModelHandler,
     {
-        let mut data = heapless::Vec::<_, 1480>::new(); // TODO: Will take too much space
-        let mut wb = heapless::Vec::<_, 1280>::new(); // TODO: Will take too much space
+        // TODO: Don't allocate on stack, will take too much space
+        let mut rx_buf = heapless::Vec::<_, MAX_EXCHANGE_RX_BUF_SIZE>::new();
+        let mut tx_buf = heapless::Vec::<_, MAX_EXCHANGE_TX_BUF_SIZE>::new();
 
-        wb.resize_default(1280).unwrap(); // TODO
+        tx_buf.resize_default(MAX_EXCHANGE_TX_BUF_SIZE).unwrap();
 
         loop {
             let timer = Timer::after(embassy_time::Duration::from_secs(4));
@@ -156,8 +157,8 @@ impl<const N: usize> Subscriptions<N> {
                         .iter()
                         .find(|sub| sub.report_due(now))
                     {
-                        data.clear();
-                        data.extend_from_slice(&sub.subscribe_req).unwrap();
+                        rx_buf.clear();
+                        rx_buf.extend_from_slice(&sub.subscribe_req).unwrap();
 
                         Some((sub.id, sub.node_id))
                     } else {
@@ -177,14 +178,15 @@ impl<const N: usize> Subscriptions<N> {
                     // TODO: Do a more sophisticated check whether something had actually changed w.r.t. this subscription
 
                     let mut req =
-                        SubscribeReq::from_tlv(&tlv::get_root_node_struct(&data).unwrap()).unwrap();
+                        SubscribeReq::from_tlv(&tlv::get_root_node_struct(&rx_buf).unwrap())
+                            .unwrap();
 
                     // Only used when priming the subscription
                     req.event_filters = None;
                     req.dataver_filters = None;
 
                     let req = ReportDataReq::Subscribe(&req);
-                    let mut wb = WriteBuf::new(&mut wb);
+                    let mut wb = WriteBuf::new(&mut tx_buf);
 
                     let mut exchange = Exchange::initiate(matter, node_id, true).await?;
 

@@ -30,7 +30,10 @@ use super::{
     proto_hdr::{self, ProtoHdr},
 };
 
+// Maximum UDP RX message size per Matter spec
 pub const MAX_RX_BUF_SIZE: usize = 1583;
+
+// Maximum UDP TX message size per Matter spec
 pub const MAX_TX_BUF_SIZE: usize = 1280 - 40/*IPV6 header size*/ - 8/*UDP header size*/;
 
 #[derive(Debug, Default, Clone)]

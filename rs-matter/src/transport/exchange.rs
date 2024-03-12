@@ -37,6 +37,13 @@ use super::plain_hdr::PlainHdr;
 use super::proto_hdr::ProtoHdr;
 use super::session::Session;
 
+/// Minimum buffer which should be allocated by user code that wants to pull RX messages via `Exchange::recv_into`
+pub const MAX_EXCHANGE_RX_BUF_SIZE: usize = MAX_RX_BUF_SIZE;
+
+/// Maximum buffer which should be allocated and used by user code that wants to send messages via `Exchange::send`
+pub const MAX_EXCHANGE_TX_BUF_SIZE: usize =
+    MAX_TX_BUF_SIZE - PacketHdr::HDR_RESERVE - PacketHdr::TAIL_RESERVE;
+
 /// An exchange identifier, uniquely identifying a session and an exchange within that session for a given Matter stack.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ExchangeId(u32);

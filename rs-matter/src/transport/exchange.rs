@@ -37,11 +37,12 @@ use super::plain_hdr::PlainHdr;
 use super::proto_hdr::ProtoHdr;
 use super::session::Session;
 
+/// An exchange identifier, uniquely identifying a session and an exchange within that session for a given Matter stack.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ExchangeId(u32);
 
 impl ExchangeId {
-    pub fn new(session_id: u32, exchange_index: usize) -> Self {
+    pub(crate) fn new(session_id: u32, exchange_index: usize) -> Self {
         if exchange_index >= 16 {
             panic!("Exchange index out of range");
         }
@@ -49,11 +50,11 @@ impl ExchangeId {
         Self((exchange_index as u32) << 28 | session_id)
     }
 
-    pub fn session_id(&self) -> u32 {
+    pub(crate) fn session_id(&self) -> u32 {
         self.0 & 0x0fff_ffff
     }
 
-    pub fn exchange_index(&self) -> usize {
+    pub(crate) fn exchange_index(&self) -> usize {
         (self.0 >> 28) as _
     }
 }
@@ -65,14 +66,14 @@ impl Display for ExchangeId {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
-pub enum InitiatorState {
+pub(crate) enum InitiatorState {
     #[default]
     Owned,
     Dropped,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
-pub enum ResponderState {
+pub(crate) enum ResponderState {
     #[default]
     AcceptPending,
     Owned,
@@ -147,6 +148,8 @@ impl ExchangeState {
     }
 }
 
+/// Meta-data when sending/receving messages via an Exchange.
+/// Basically, the protocol ID and the protocol opcode.
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct ExchangeMeta {
     pub proto_id: u16,
@@ -155,6 +158,7 @@ pub struct ExchangeMeta {
 }
 
 impl ExchangeMeta {
+    // Create a new ExchangeMeta instance
     pub const fn new(proto_id: u16, proto_opcode: u8, reliable: bool) -> Self {
         Self {
             proto_id,
@@ -163,10 +167,12 @@ impl ExchangeMeta {
         }
     }
 
+    /// Try to cast the protocol opcode to a specific type
     pub fn opcode<T: num::FromPrimitive>(&self) -> Result<T, Error> {
         num::FromPrimitive::from_u8(self.proto_opcode).ok_or(ErrorCode::InvalidOpcode.into())
     }
 
+    /// Check if the protocol opcode is equal to a specific value
     pub fn check_opcode<T: num::FromPrimitive + PartialEq>(&self, opcode: T) -> Result<(), Error> {
         if self.opcode::<T>()? == opcode {
             Ok(())
@@ -175,6 +181,7 @@ impl ExchangeMeta {
         }
     }
 
+    /// Create an ExchangeMeta instance from a ProtoHdr instance
     pub fn from(proto: &ProtoHdr) -> Self {
         Self {
             proto_id: proto.proto_id,
@@ -183,6 +190,7 @@ impl ExchangeMeta {
         }
     }
 
+    /// Set the protocol ID and opcode into a ProtoHdr instance
     pub fn set_into(&self, proto: &mut ProtoHdr) {
         proto.proto_id = self.proto_id;
         proto.proto_opcode = self.proto_opcode;
@@ -199,7 +207,8 @@ impl ExchangeMeta {
         Self { reliable, ..self }
     }
 
-    pub fn is_tlv(&self) -> bool {
+    /// Utility method to check if the specific proto opcode in the instance is expecting a TLV payload.
+    pub(crate) fn is_tlv(&self) -> bool {
         match self.proto_id {
             PROTO_ID_SECURE_CHANNEL => self
                 .opcode::<secure_channel::common::OpCode>()
@@ -215,13 +224,15 @@ impl ExchangeMeta {
         }
     }
 
-    pub fn is_standalone_ack(&self) -> bool {
+    /// Utility method to check if the protocol is Secure Channel, and the opcode is a standalone ACK (`MrpStandaloneAck`).
+    pub(crate) fn is_standalone_ack(&self) -> bool {
         !self.reliable
             && self.proto_id == PROTO_ID_SECURE_CHANNEL
             && self.proto_opcode == secure_channel::common::OpCode::MRPStandAloneAck as u8
     }
 
-    pub fn is_new_session(&self) -> bool {
+    /// Utility method to check if the protocol is Secure Channel, and the opcode is a new session request.
+    pub(crate) fn is_new_session(&self) -> bool {
         self.reliable
             && self.proto_id == PROTO_ID_SECURE_CHANNEL
             && (self.proto_opcode == secure_channel::common::OpCode::PBKDFParamRequest as u8
@@ -251,6 +262,7 @@ impl Display for ExchangeMeta {
     }
 }
 
+/// Accessor for an RX message pending on an `Exchange` instance.
 pub struct Rx<'a, 'b> {
     exchange: &'a Exchange<'a>,
     packet: PacketAccess<'b, MAX_RX_BUF_SIZE>,
@@ -258,19 +270,23 @@ pub struct Rx<'a, 'b> {
 }
 
 impl<'a, 'b> Rx<'a, 'b> {
+    /// Get the meta-data of the pending message
     pub fn meta(&self) -> ExchangeMeta {
         ExchangeMeta::from(&self.packet.header.proto)
     }
 
+    /// Get the payload of the pending message
     pub fn payload(&self) -> &[u8] {
         &self.packet.buf[self.packet.payload_start..]
     }
 
+    /// Consume the message, marking it as processed
     pub fn consume(&mut self) -> &mut Self {
         self.consumed = true;
         self
     }
 
+    /// Get the `Exchange` instance associated with this accessor
     pub fn exchange(&self) -> &Exchange<'a> {
         self.exchange
     }
@@ -284,6 +300,7 @@ impl<'a, 'b> Drop for Rx<'a, 'b> {
     }
 }
 
+/// Accessor to the TX buffer of the underlying Mattewr stack.
 pub struct Tx<'a, 'b> {
     exchange: &'a Exchange<'a>,
     packet: PacketAccess<'b, MAX_TX_BUF_SIZE>,
@@ -291,6 +308,12 @@ pub struct Tx<'a, 'b> {
 }
 
 impl<'a, 'b> Tx<'a, 'b> {
+    /// Get the exchange instance associated with this accessor
+    pub fn exchange(&self) -> &Exchange<'a> {
+        self.exchange
+    }
+
+    /// Start the TX message builder
     pub fn payload(&mut self) -> Result<TxPayload<'a, '_>, Error> {
         self.completed = None;
 
@@ -321,6 +344,7 @@ impl<'a, 'b> Drop for Tx<'a, 'b> {
     }
 }
 
+/// A builder for a TX message
 pub struct TxPayload<'a, 'b> {
     exchange: &'a Exchange<'a>,
     header: &'b mut PacketHdr,
@@ -330,10 +354,18 @@ pub struct TxPayload<'a, 'b> {
 }
 
 impl<'a, 'b> TxPayload<'a, 'b> {
+    /// Get the `Exchange` instance associated with this builder
+    pub fn exchange(&self) -> &Exchange<'a> {
+        self.exchange
+    }
+
+    /// Get the `WriteBuf` instance for the TX message being built
     pub fn writebuf(&mut self) -> &mut WriteBuf<'b> {
         &mut self.writebuf
     }
 
+    /// Consume the builder and complete the TX message with the given meta-data
+    /// The message will be send by the underlying Matter stack
     pub fn complete(mut self, meta: impl Into<ExchangeMeta>) -> Result<bool, Error> {
         let meta: ExchangeMeta = meta.into();
 
@@ -355,13 +387,9 @@ impl<'a, 'b> TxPayload<'a, 'b> {
 
         *self.peer = peer;
 
-        let standalone_ack = self.header.proto.proto_id == PROTO_ID_SECURE_CHANNEL
-            && self.header.proto.proto_opcode
-                == secure_channel::common::OpCode::MRPStandAloneAck as u8
-            && !self.header.proto.is_reliable();
         let ack = self.header.proto.get_ack().is_some();
 
-        if standalone_ack && !ack {
+        if meta.is_standalone_ack() && !ack {
             // No need to send a standalone ACK when there is nothing to acknowledge
             *self.completed = None;
             Ok(false)
@@ -390,6 +418,26 @@ impl<'a, 'b> TxPayload<'a, 'b> {
     }
 }
 
+/// Outcome from calling `Exchange::wait_ack`
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TxOutcome {
+    /// The other side has acknowledged the last message or the last message was not using the MRP protocol
+    /// Stop re-sending.
+    Done,
+    /// Need to re-send the last message.
+    Retransmit,
+}
+
+impl TxOutcome {
+    pub const fn is_done(&self) -> bool {
+        matches!(self, Self::Done)
+    }
+}
+
+/// An exchange within a Matter stack, representing a session and an exchange within that session.
+///
+/// This is the main API for sending and receiving messages within the Matter stack.
+/// Used by upper-level layers like the Secure Channel and Interaction Model.
 pub struct Exchange<'a> {
     id: ExchangeId,
     matter: &'a Matter<'a>,
@@ -400,14 +448,20 @@ impl<'a> Exchange<'a> {
         Self { id, matter }
     }
 
+    /// Get the Id of the exchange
     pub fn id(&self) -> ExchangeId {
         self.id
     }
 
+    /// Get the Matter stack instance associated with this exchange
     pub fn matter(&self) -> &'a Matter<'a> {
         self.matter
     }
 
+    /// Create a new initiator exchange on the provided Matter stack for the provided Node ID
+    ///
+    /// This method will fail if there is no existing session in the provided Matter satack for the provided Node ID.
+    ///
     /// TODO: This signature will change in future
     pub async fn initiate(
         matter: &'a Matter<'a>,
@@ -417,10 +471,17 @@ impl<'a> Exchange<'a> {
         matter.transport_mgr.initiate(matter, node_id, secure).await
     }
 
+    /// Accepts a new responder exchange pending on the provided Matter stack.
+    ///
+    /// If there is no new pending responder exchange, the method will wait indefinitely until one appears.
     pub async fn accept(matter: &'a Matter<'a>) -> Result<Self, Error> {
         Self::accept_after(matter, 0).await
     }
 
+    /// Accepts a new responder exchange pending on the provided Matter stack, but only if the
+    /// pending exchange was pending for longer than `received_timeout_ms`.
+    ///
+    /// If there is no new pending responder exchange, the method will wait indefinitely until one appears.
     pub async fn accept_after(
         matter: &'a Matter<'a>,
         received_timeout_ms: u32,
@@ -431,6 +492,12 @@ impl<'a> Exchange<'a> {
             .await
     }
 
+    /// Gets access to the pending RX message on this exchange.
+    ///
+    /// If there is no pending RX message, the method will wait indefinitely until one appears.
+    ///
+    /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
+    /// (say, because of lack of resources or a hard networking error), the method will return an error.
     pub async fn rx(&mut self) -> Result<Rx<'_, 'a>, Error> {
         self.check_retrans()?;
 
@@ -467,6 +534,13 @@ impl<'a> Exchange<'a> {
         Ok(rx)
     }
 
+    /// Gets access to the pending RX message on this exchange, and consumes it.
+    /// A syntax sugar for calling ```self.rx().await?```, and then ```rx.consume()``
+    ///
+    /// If there is no pending RX message, the method will wait indefinitely until one appears.
+    ///
+    /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
+    /// (say, because of lack of resources or a hard networking error), the method will return an error.
     pub async fn recv(&mut self) -> Result<Rx<'_, 'a>, Error> {
         let mut rx = self.rx().await?;
 
@@ -475,6 +549,15 @@ impl<'a> Exchange<'a> {
         Ok(rx)
     }
 
+    /// Gets access to the pending RX message on this exchange, and consumes it by copying the payload into the provided WriteBuf instance.
+    /// A syntax sugar for calling ```self.rx().await?```, and then ```rx.consume()``
+    ///
+    /// Returns the exchange message meta-data.
+    ///
+    /// If there is no pending RX message, the method will wait indefinitely until one appears.
+    ///
+    /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
+    /// (say, because of lack of resources or a hard networking error), the method will return an error.
     pub async fn recv_into(&mut self, wb: &mut WriteBuf<'_>) -> Result<ExchangeMeta, Error> {
         let rx = self.recv().await?;
 
@@ -484,6 +567,15 @@ impl<'a> Exchange<'a> {
         Ok(rx.meta())
     }
 
+    /// Gets access to the TX buffer of the Matter stack for constructing a new TX message.
+    /// Note that all re-transmission logic is left to the user, so prefer using `Exchange::send` or `Exchange::send_with` instead.
+    ///
+    /// If the TX buffer is not available, the method will wait indefinitely until it becomes available.
+    ///
+    /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
+    /// (say, because of lack of resources or a hard networking error), the method will return an error.
+    ///
+    /// TODO: Implement a simple `Retrans` structure to help the user in handling re-transmissions.
     pub async fn tx(&mut self) -> Result<Tx<'_, 'a>, Error> {
         self.with_ctx(|_, _| Ok(()))?;
 
@@ -506,68 +598,116 @@ impl<'a> Exchange<'a> {
         Ok(tx)
     }
 
-    pub async fn wait_ack(&mut self) -> Result<bool, Error> {
+    /// Waits until the other side acknowledges the last message sent on this exchange,
+    /// or until time for a re-transmission had come.
+    ///
+    /// If the last sent message was not using the MRP protocol, the method will return immediately with `TxOutcome::Done`.
+    ///
+    /// This is a low-level method that leaves the re-transmission logic on the shoulders of the user.
+    /// Thereofe, using instead `Exchange::send`, `Exchange::send_with` or `TxBuilder` is strongly advised.
+    ///
+    /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
+    /// (say, because of lack of resources or a hard networking error), the method will return an error.
+    pub async fn wait_tx(&mut self) -> Result<TxOutcome, Error> {
         if let Some(delay) = self.retrans_delay_ms()? {
             let notification = self.internal_wait_ack();
             let timer = Timer::after(embassy_time::Duration::from_millis(delay));
 
             select(notification, timer).await;
 
-            Ok(self.retrans_delay_ms()?.is_none())
+            if self.retrans_delay_ms()?.is_some() {
+                Ok(TxOutcome::Retransmit)
+            } else {
+                Ok(TxOutcome::Done)
+            }
         } else {
-            Ok(true)
+            Ok(TxOutcome::Done)
         }
     }
 
+    /// Returns `true` if there is a pending message re-transmission.
+    /// A re-transmission will be pending if the last sent message was using the MRP protocol, and
+    /// an acknowledgement for the other side is still pending.
+    ///
+    /// This is a low-level method that leaves the re-transmission logic on the shoulders of the user.
+    /// Thereofe, using instead `Exchange::send`, `Exchange::send_with` or `TxBuilder` is strongly advised.
+    ///
+    /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
+    /// (say, because of lack of resources or a hard networking error), the method will return an error.
+    pub fn is_retrans_pending(&self) -> Result<bool, Error> {
+        self.check_retrans()?;
+
+        Ok(self.retrans_delay_ms()?.is_some())
+    }
+
+    /// Acknowledge the last message received on this exchange (by sending a `MrpStandaloneAck`).
+    ///
+    /// If the last message was already acknowledged
+    /// (either by a previous call to this method, by piggy-backing on a reliable message, or by the Matter stack itself),
+    /// this method does nothing.
+    ///
+    /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
+    /// (say, because of lack of resources or a hard networking error), the method will return an error.
     pub async fn acknowledge(&mut self) -> Result<(), Error> {
         self.send_with(|_| Ok(secure_channel::common::OpCode::MRPStandAloneAck.into()))
             .await
     }
 
+    /// Utility for sending a message on this exchange that automatically handles all re-transmission logic
+    /// in case the constructed message needs to be send reliably.
+    ///
+    /// The message is constructed by the provided closure, which is given a `WriteBuf` instance to write the message payload into.
+    ///
+    /// Note that the closure is expected to construct the exact same message when called multiple times.
+    ///
+    /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
+    /// (say, because of lack of resources or a hard networking error), the method will return an error.
     pub async fn send_with<F>(&mut self, mut f: F) -> Result<(), Error>
     where
         F: FnMut(&mut WriteBuf) -> Result<ExchangeMeta, Error>,
     {
         self.check_retrans()?;
 
-        let mut retrans = false;
+        let mut initial = true;
 
         loop {
             {
                 let mut tx = self.tx().await?;
 
-                if retrans && tx.exchange.retrans_delay_ms()?.is_none() {
-                    // The other side has acknowledged the message
-                    break;
-                }
+                if initial || tx.exchange().is_retrans_pending()? {
+                    let mut payload = tx.payload()?;
 
-                let mut payload = tx.payload()?;
+                    let meta = f(payload.writebuf())?;
 
-                let meta = f(payload.writebuf())?;
+                    if !payload.complete(meta)? {
+                        // Nothing was sent
+                        break;
+                    }
 
-                if !payload.complete(meta)? {
-                    // Nothing was sent
-                    break;
-                }
-
-                if !meta.reliable {
-                    // No need to re-transmit
-                    break;
+                    if !meta.reliable {
+                        // No need to re-transmit
+                        break;
+                    }
                 }
             }
 
-            if self.wait_ack().await? {
-                // The other side has acknowledged the message
+            if self.wait_tx().await?.is_done() {
+                // No need to re-transmit
                 break;
             }
 
-            // Mark for re-transmission and try again
-            retrans = true;
+            initial = false;
         }
 
         Ok(())
     }
 
+    /// Send the provided exchange meta-data and payload as part of this exchange.
+    /// If the provided exchange meta-data indicates a reliable message, the message will be automatically re-transmitted until
+    /// the other side acknowledges it.
+    ///
+    /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
+    /// (say, because of lack of resources or a hard networking error), the method will return an error.
     pub async fn send(
         &mut self,
         meta: impl Into<ExchangeMeta>,

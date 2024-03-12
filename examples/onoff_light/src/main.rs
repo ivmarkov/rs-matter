@@ -31,7 +31,6 @@ use rs_matter::data_model::cluster_on_off;
 use rs_matter::data_model::device_types::DEV_TYPE_ON_OFF_LIGHT;
 use rs_matter::data_model::objects::*;
 use rs_matter::data_model::root_endpoint;
-use rs_matter::data_model::subscriptions::Subscriptions;
 use rs_matter::data_model::system_model::descriptor;
 use rs_matter::error::Error;
 use rs_matter::mdns::{

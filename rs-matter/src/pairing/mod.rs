@@ -34,6 +34,7 @@ use self::{
     qr::{compute_qr_code_text, print_qr_code},
 };
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveryCapabilities {
     on_ip_network: bool,
     ble: bool,

@@ -18,6 +18,7 @@
 use core::borrow::Borrow;
 use core::pin::pin;
 use std::net::UdpSocket;
+use std::sync::Arc;
 
 use embassy_futures::select::{select, select4};
 
@@ -36,15 +37,23 @@ use rs_matter::data_model::subscriptions::Subscriptions;
 use rs_matter::data_model::system_model::descriptor;
 use rs_matter::error::Error;
 use rs_matter::mdns::MdnsService;
+use rs_matter::pairing::DiscoveryCapabilities;
 use rs_matter::persist::Psm;
 use rs_matter::respond::DefaultResponder;
 use rs_matter::secure_channel::spake2p::VerifierData;
 use rs_matter::transport::core::MATTER_SOCKET_BIND_ADDR;
+use rs_matter::transport::network::{
+    btp::{Btp, BtpContext},
+    Address, ChainedNetwork,
+};
 use rs_matter::utils::buf::PooledBuffers;
 use rs_matter::utils::select::Coalesce;
+use rs_matter::utils::std_mutex::StdRawMutex;
 use rs_matter::MATTER_PORT;
 
 mod dev_att;
+
+static BTP_CONTEXT: BtpContext<StdRawMutex> = BtpContext::<StdRawMutex>::new();
 
 fn main() -> Result<(), Error> {
     let thread = std::thread::Builder::new()
@@ -55,7 +64,7 @@ fn main() -> Result<(), Error> {
         // e.g., an opt-level of "0" will require a several times' larger stack.
         //
         // Optimizing/lowering `rs-matter` memory consumption is an ongoing topic.
-        .stack_size(95 * 1024)
+        .stack_size(950 * 1024)
         .spawn(run)
         .unwrap();
 
@@ -97,6 +106,15 @@ fn run() -> Result<(), Error> {
         rs_matter::utils::rand::sys_rand,
         MATTER_PORT,
     );
+
+    let dev_comm = CommissioningData {
+        // TODO: Hard-coded for now
+        verifier: VerifierData::new_with_pw(123456, *matter.borrow()),
+        discriminator: 250,
+    };
+
+    //let discovery_caps = DiscoveryCapabilities::new(true, false, false);
+    let discovery_caps = DiscoveryCapabilities::new(false, true, false);
 
     matter.initialize_transport_buffers()?;
 
@@ -141,20 +159,30 @@ fn run() -> Result<(), Error> {
         }
     });
 
+    //let btp = Btp::new_builtin(Arc::new(BtpContext::<StdRawMutex>::new()));
+    let btp = Btp::new_builtin(&BTP_CONTEXT);
+
+    let mut bluetooth = pin!(btp.run("MT", &dev_det, &dev_comm));
+
     // NOTE:
     // When using a custom UDP stack (e.g. for `no_std` environments), replace with a UDP socket bind for your custom UDP stack
     // The returned socket should be splittable into two halves, where each half implements `UdpSend` and `UdpReceive` respectively
-    let socket = async_io::Async::<UdpSocket>::bind(MATTER_SOCKET_BIND_ADDR)?;
+    //let udp = async_io::Async::<UdpSocket>::bind(MATTER_SOCKET_BIND_ADDR)?;
 
-    // Run the Matter and mDNS transports
+    // let network = ChainedNetwork::new(
+    //     Address::is_btp,
+    //     &btp,
+    //     &udp);
+
+    // Run the Matter transport
     let mut transport = pin!(matter.run(
-        &socket,
-        &socket,
-        Some(CommissioningData {
-            // TODO: Hard-coded for now
-            verifier: VerifierData::new_with_pw(123456, *matter.borrow()),
-            discriminator: 250,
-        }),
+        // network.clone(),
+        // network,
+        &btp,
+        &btp,
+        // &udp,
+        // &udp,
+        Some((dev_comm, discovery_caps)),
     ));
 
     // NOTE:
@@ -165,14 +193,15 @@ fn run() -> Result<(), Error> {
     // Combine all async tasks in a single one
     let all = select4(
         &mut transport,
-        &mut mdns,
+        &mut bluetooth,
+        //&mut mdns,
         &mut persist,
         select(&mut respond, &mut device).coalesce(),
     );
 
     // NOTE:
     // Replace with a different executor for e.g. `no_std` environments
-    futures_lite::future::block_on(all.coalesce())
+    futures_lite::future::block_on(async_compat::Compat::new(all.coalesce()))
 }
 
 const NODE: Node<'static> = Node {

@@ -35,6 +35,7 @@ pub enum ErrorCode {
     DataVersionMismatch,
     Crypto,
     TLSStack,
+    BtpError,
     MdnsError,
     NoCommand,
     NoEndpoint,
@@ -200,6 +201,13 @@ impl From<mbedtls::Error> for Error {
 impl From<ccm::aead::Error> for Error {
     fn from(_e: ccm::aead::Error) -> Self {
         Self::new(ErrorCode::Crypto)
+    }
+}
+
+#[cfg(all(feature = "std", target_os = "linux"))]
+impl From<bluer::Error> for Error {
+    fn from(_e: bluer::Error) -> Self {
+        Self::new(ErrorCode::BtpError)
     }
 }
 

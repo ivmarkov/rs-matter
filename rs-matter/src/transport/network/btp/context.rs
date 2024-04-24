@@ -37,7 +37,7 @@ pub const MAX_BTP_SESSIONS: usize = 2;
 
 /// Represents an error that occurred while trying to lock a session for sending.
 #[derive(Debug)]
-pub struct LockError(());
+pub(crate) struct LockError(());
 
 /// An internal utility for representing a session which is locked for sending.
 ///

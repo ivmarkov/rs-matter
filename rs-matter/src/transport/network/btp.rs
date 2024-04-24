@@ -33,7 +33,7 @@ use crate::utils::ifmutex::IfMutex;
 use crate::utils::select::Coalesce;
 use crate::CommissioningData;
 
-pub use context::BtpContext;
+pub use context::{BtpContext, MAX_BTP_SESSIONS};
 pub use gatt::*;
 
 use self::context::SessionSendLock;

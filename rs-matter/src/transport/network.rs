@@ -134,7 +134,7 @@ impl Debug for Address {
 
 /// A trait for sending data to a network address.
 ///
-/// All network communication in the Matter transport is packetized (including via TCP and Bkuetooth), hence
+/// All network communication in the Matter transport is packetized (including via TCP and Bluetooth), hence
 /// this trait models the sending of a single Matter packet of data to a network address.
 ///
 /// Data packetization is expected to be handled by the implementation of this trait, and is trivial
@@ -157,7 +157,7 @@ where
 
 /// A trait for receiving data from a network address.
 ///
-/// All network communication in the Matter transport is packetized (including via TCP and Bkuetooth), hence
+/// All network communication in the Matter transport is packetized (including via TCP and Bluetooth), hence
 /// this trait models the receiving of a single Matter packet of data from a network address.
 ///
 /// Data packetization is expected to be handled by the implementation of this trait, and is trivial
@@ -167,12 +167,12 @@ pub trait NetworkReceive {
     ///
     /// Allows the Matter transport layer to re-use a single RX buffer accross all network protocol implementatiins.
     ///
-    /// Might return an if there is a general error on the network interface.
+    /// Might return an error if there is a general error on the network interface.
     async fn wait_available(&mut self) -> Result<(), Error>;
 
     /// Receive a single data packet from the network.
     ///
-    /// Might return an if there is a general error on the network interface.
+    /// Might return an error if there is a general error on the network interface.
     async fn recv_from(&mut self, buffer: &mut [u8]) -> Result<(usize, Address), Error>;
 }
 

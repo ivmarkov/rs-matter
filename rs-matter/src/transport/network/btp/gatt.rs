@@ -53,6 +53,7 @@ pub const C3_MAX_LEN: usize = 512;
 /// Encapsulates the advertising data for the Matter BTP protocol.
 ///
 /// See section "5.4.2.5.6. Advertising Data" in the Core Matter spec
+#[derive(Clone)]
 pub struct AdvData {
     vid: u16,
     pid: u16,
@@ -188,8 +189,9 @@ pub trait GattPeripheral {
     ///   - Handle incoming GATT events, and call the provided `callback` function for each event.
     ///     See `GattPeripheralEvent` for the possible events and their semantics.
     ///
-    /// The callback is constraned to be `Send`, `Sync` and `'static` on purpose, as it might be
-    /// the case that the GATT implementation needs to invoke the callback from a different thread than the Matter thread.
+    /// The callback is constraned to be `Send`, `Sync`, `Clone` and `'static` on purpose, as it might be
+    /// the case that the GATT implementation needs to invoke the callback from a different thread than the Matter thread,
+    /// as well as it might need multiple instances of it.
     /// Therefore, this constraint is not a problem but an advantage for `GattPeripheral` trait implementors (it is a deliberate design decision).
     async fn run<F>(
         &self,
@@ -198,7 +200,7 @@ pub trait GattPeripheral {
         callback: F,
     ) -> Result<(), Error>
     where
-        F: Fn(GattPeripheralEvent) + Send + Sync + 'static;
+        F: Fn(GattPeripheralEvent) + Send + Sync + Clone + 'static;
 
     /// Indicate data changes in characteristics `C2` to to a GATT central.
     /// In other words, send a BTP packet to a GATT central.

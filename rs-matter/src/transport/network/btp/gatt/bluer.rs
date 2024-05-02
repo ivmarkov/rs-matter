@@ -170,7 +170,11 @@ impl BluerGattPeripheral {
                                     trace!("Got write request from {address}: {data:02x?}");
 
                                     // Notify the BTP protocol implementation for the write
-                                    callback_w(GattPeripheralEvent::Write { address, data });
+                                    callback_w(GattPeripheralEvent::Write {
+                                        gatt_mtu: Some(req.mtu),
+                                        address,
+                                        data,
+                                    });
 
                                     // We don't need a future because the callback is synchronous
                                     Box::pin(core::future::ready(Ok(())))

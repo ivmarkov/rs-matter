@@ -44,8 +44,13 @@ mod session;
 
 /// The maximum size of a BTP segment.
 pub(crate) const MAX_BTP_SEGMENT_SIZE: usize = 244;
-/// The size of the GATT header. `MAX_PDU_SIZE` + `GATT_HEADER_SIZE` is 247 bytes, which is the maximum ATT MTU size supported by the BTP protocol.
+/// The size of the GATT header. `MAX_BTP_SEGMENT_SIZE` + `GATT_HEADER_SIZE` is 247 bytes, which is the maximum ATT MTU size supported by the BTP protocol.
 pub(crate) const GATT_HEADER_SIZE: usize = 3;
+
+/// The minimum MTU that can be used as per specification.
+pub(crate) const MIN_MTU: u16 = (20 + GATT_HEADER_SIZE) as u16;
+/// The maximum MTU that can be used as per specification.
+pub(crate) const MAX_MTU: u16 = (MAX_BTP_SEGMENT_SIZE + GATT_HEADER_SIZE) as u16;
 
 /// An implementation of the Matter BTP protocol.
 /// This is a low-level protocol that is used to send and receive Matter messages over BLE.

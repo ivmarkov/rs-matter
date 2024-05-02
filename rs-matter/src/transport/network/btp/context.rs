@@ -211,7 +211,11 @@ where
         let result = match event {
             GattPeripheralEvent::NotifySubscribed(address) => self.on_subscribe(address),
             GattPeripheralEvent::NotifyUnsubscribed(address) => self.on_unsubscribe(address),
-            GattPeripheralEvent::Write { address, data } => self.on_write(address, data),
+            GattPeripheralEvent::Write {
+                address,
+                data,
+                gatt_mtu,
+            } => self.on_write(address, data, gatt_mtu),
         };
 
         if let Err(e) = result {
@@ -220,7 +224,7 @@ where
     }
 
     /// Handles a write event to characteristic `C1` from the GATT peripheral.
-    fn on_write(&self, address: BtAddr, data: &[u8]) -> Result<(), Error> {
+    fn on_write(&self, address: BtAddr, data: &[u8], gatt_mtu: Option<u16>) -> Result<(), Error> {
         trace!("Received {data:02x?} bytes from {address}");
 
         self.sessions.lock(|sessions| {
@@ -232,7 +236,7 @@ where
                 } else {
                     // Unwrap is safe because we checked the length above
                     sessions
-                        .push(Session::process_rx_handshake(address, data)?)
+                        .push(Session::process_rx_handshake(address, data, gatt_mtu)?)
                         .unwrap();
                 }
 

@@ -161,7 +161,17 @@ pub enum GattPeripheralEvent<'a> {
     /// In other words, the GATT central had sent a BTP packet.
     ///
     /// See the Matter Core spec w.r.t. details on characteristic `C1`.
-    Write { address: BtAddr, data: &'a [u8] },
+    ///
+    /// `gatt_mtu` is the ATT MTU (contains +3 bytes for the GATT header)
+    /// as negotiated between the GATT central and the GATT peripheral.
+    /// Might be `None` if a concrete GATT peripheral implementation does
+    /// not provide access to this value. In that case, the minimum MTU
+    /// will be used (23 bytes, including the GATT header).
+    Write {
+        address: BtAddr,
+        data: &'a [u8],
+        gatt_mtu: Option<u16>,
+    },
 }
 
 /// A minimal GATT peripheral trait.

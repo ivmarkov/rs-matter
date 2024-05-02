@@ -23,7 +23,7 @@ use log::{info, warn};
 
 use crate::error::{Error, ErrorCode};
 use crate::transport::network::btp::session::packet::{HandshakeReq, HandshakeResp};
-use crate::transport::network::btp::MAX_BTP_SEGMENT_SIZE;
+use crate::transport::network::btp::{GATT_HEADER_SIZE, MAX_MTU, MIN_MTU};
 use crate::transport::network::{BtAddr, MAX_RX_PACKET_SIZE};
 use crate::utils::{ringbuf::RingBuf, writebuf::WriteBuf};
 
@@ -463,7 +463,11 @@ impl Session {
     }
 
     /// Process an incoming BTP segment of type Handshake Request, updating the state of the session accordingly.
-    pub fn process_rx_handshake(address: BtAddr, data: &[u8]) -> Result<Self, Error> {
+    pub fn process_rx_handshake(
+        address: BtAddr,
+        data: &[u8],
+        gatt_mtu: Option<u16>,
+    ) -> Result<Self, Error> {
         let mut iter = data.iter();
 
         let hdr = BtpHdr::from((&mut iter).copied())?;
@@ -475,7 +479,19 @@ impl Session {
         let req = HandshakeReq::from(payload.iter().copied())?;
 
         let version = req.versions().min().unwrap_or(4);
-        let mtu = min(req.mtu, MAX_BTP_SEGMENT_SIZE as _);
+
+        let mtu = if gatt_mtu.map(|gatt_mtu| gatt_mtu != req.mtu).unwrap_or(true) {
+            // We don't know our MTU or what we know is not what the other peer reports
+            // => use the minimum MTU
+            MIN_MTU
+        } else {
+            // Used MTU should not be bigger than the maximum allowed
+            min(req.mtu, MAX_MTU)
+        };
+
+        // Remove the header as we need to report back the payload MTU
+        // and we'll use the payload MTU anyway for all operations
+        let mtu = mtu - GATT_HEADER_SIZE as u16;
 
         // Make sure we are using a window size that would allow us to receive at least one full BTP SDU
         // TODO: Revisit the mtu and window_size computations

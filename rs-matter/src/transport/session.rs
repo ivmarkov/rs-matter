@@ -59,11 +59,21 @@ impl CaseDetails {
     }
 }
 
+#[derive(Debug, Eq, PartialEq, Copy, Clone, Default)]
+pub enum CaseRearm {
+    #[default]
+    NotExpected,
+    // As per Section 5.5 "Commissioning Flows" / non-concurrent connection flow
+    // we'll get a re-arm request with a CASE session even if the fail-safe is currently armed
+    // with a PASE one
+    Expected,
+}
+
 #[derive(Debug, PartialEq, Clone, Default)]
 pub enum SessionMode {
     // The Case session will capture the local fabric index
     Case(CaseDetails),
-    Pase,
+    Pase(CaseRearm),
     #[default]
     PlainText,
 }
@@ -154,7 +164,7 @@ impl Session {
 
     pub fn is_encrypted(&self) -> bool {
         match self.mode {
-            SessionMode::Case(_) | SessionMode::Pase => true,
+            SessionMode::Case(_) | SessionMode::Pase(_) => true,
             SessionMode::PlainText => false,
         }
     }
@@ -189,14 +199,14 @@ impl Session {
 
     pub fn get_dec_key(&self) -> Option<&[u8]> {
         match self.mode {
-            SessionMode::Case(_) | SessionMode::Pase => Some(&self.dec_key),
+            SessionMode::Case(_) | SessionMode::Pase(_) => Some(&self.dec_key),
             SessionMode::PlainText => None,
         }
     }
 
     pub fn get_enc_key(&self) -> Option<&[u8]> {
         match self.mode {
-            SessionMode::Case(_) | SessionMode::Pase => Some(&self.enc_key),
+            SessionMode::Case(_) | SessionMode::Pase(_) => Some(&self.enc_key),
             SessionMode::PlainText => None,
         }
     }

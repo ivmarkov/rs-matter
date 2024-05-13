@@ -180,7 +180,7 @@ impl<'a> Accessor<'a> {
                 }
                 Accessor::new(c.fab_idx, subject, AuthMode::Case, acl_mgr)
             }
-            SessionMode::Pase => {
+            SessionMode::Pase(_) => {
                 Accessor::new(0, AccessorSubjects::new(1), AuthMode::Pase, acl_mgr)
             }
 

@@ -41,6 +41,7 @@ use crate::{
 pub const MATTER_PORT: u16 = 5540;
 
 /// Device Commissioning Data
+#[derive(Debug, Clone)]
 pub struct CommissioningData {
     /// The data like password or verifier that is required to authenticate
     pub verifier: VerifierData,

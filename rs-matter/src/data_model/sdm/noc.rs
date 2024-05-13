@@ -634,7 +634,7 @@ impl<'a> NocCluster<'a> {
                 // TODO - Updating the Trusted RCA of an existing Fabric
                 Self::add_rca_to_session_noc_data(exchange, data)?;
             }
-            SessionMode::Pase => {
+            SessionMode::Pase(_) => {
                 Self::add_rca_to_session_noc_data(exchange, data)?;
             }
             _ => (),

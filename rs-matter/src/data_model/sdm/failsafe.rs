@@ -17,8 +17,9 @@
 
 use crate::{
     error::{Error, ErrorCode},
-    transport::session::SessionMode,
+    transport::session::{CaseRearm, SessionMode},
 };
+
 use log::error;
 
 #[derive(PartialEq)]
@@ -54,6 +55,20 @@ impl FailSafe {
         Self { state: State::Idle }
     }
 
+    pub fn expect_case_rearm(&mut self) -> Result<(), Error> {
+        if let State::Armed(ArmedCtx {
+            session_mode: SessionMode::Pase(case_rearm),
+            ..
+        }) = &mut self.state
+        {
+            *case_rearm = CaseRearm::Expected;
+
+            Ok(())
+        } else {
+            Err(ErrorCode::Invalid.into())
+        }
+    }
+
     pub fn arm(&mut self, timeout: u16, session_mode: SessionMode) -> Result<(), Error> {
         match &mut self.state {
             State::Idle => {
@@ -61,17 +76,26 @@ impl FailSafe {
                     session_mode,
                     timeout,
                     noc_state: NocState::NocNotRecvd,
-                })
+                });
             }
             State::Armed(c) => {
-                if c.session_mode != session_mode {
+                if matches!(c.session_mode, SessionMode::Pase(CaseRearm::Expected)) {
+                    if matches!(session_mode, SessionMode::Case(_)) {
+                        c.session_mode = session_mode;
+                    } else {
+                        error!("Expecting a CASE re-arm but received {:?}", session_mode);
+                        Err(ErrorCode::Invalid)?;
+                    }
+                } else if c.session_mode == session_mode {
+                    // re-arm
+                    c.timeout = timeout;
+                } else {
                     error!("Received Fail-Safe Arm with different session modes; current {:?}, incoming {:?}", c.session_mode, session_mode);
                     Err(ErrorCode::Invalid)?;
                 }
-                // re-arm
-                c.timeout = timeout;
             }
         }
+
         Ok(())
     }
 

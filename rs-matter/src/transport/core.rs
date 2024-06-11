@@ -80,6 +80,7 @@ pub struct TransportMgr<'m> {
     pub(crate) session_removed: Notification<NoopRawMutex>,
     pub session_mgr: RefCell<SessionMgr>, // For testing
     pub(crate) mdns: MdnsImpl<'m>,
+    rand: Rand,
 }
 
 impl<'m> TransportMgr<'m> {
@@ -92,6 +93,7 @@ impl<'m> TransportMgr<'m> {
             session_removed: Notification::new(),
             session_mgr: RefCell::new(SessionMgr::new(epoch, rand)),
             mdns,
+            rand,
         }
     }
 
@@ -275,6 +277,7 @@ impl<'m> TransportMgr<'m> {
                 PacketBufferExternalAccess(&self.rx),
                 host,
                 interface,
+                self.rand,
             )
             .await
         } else {

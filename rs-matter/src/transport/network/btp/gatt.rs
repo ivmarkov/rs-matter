@@ -219,3 +219,45 @@ pub trait GattPeripheral {
     /// See the Matter Core spec w.r.t. details on characteristic C2.
     async fn indicate(&self, data: &[u8], address: BtAddr) -> Result<(), Error>;
 }
+
+impl<T> GattPeripheral for &T
+where
+    T: GattPeripheral,
+{
+    fn run<F>(
+        &self,
+        service_name: &str,
+        adv_data: &AdvData,
+        callback: F,
+    ) -> impl core::future::Future<Output = Result<(), Error>>
+    where
+        F: Fn(GattPeripheralEvent) + Send + Sync + Clone + 'static,
+    {
+        (*self).run(service_name, adv_data, callback)
+    }
+
+    async fn indicate(&self, data: &[u8], address: BtAddr) -> Result<(), Error> {
+        (*self).indicate(data, address).await
+    }
+}
+
+impl<T> GattPeripheral for &mut T
+where
+    T: GattPeripheral,
+{
+    fn run<F>(
+        &self,
+        service_name: &str,
+        adv_data: &AdvData,
+        callback: F,
+    ) -> impl core::future::Future<Output = Result<(), Error>>
+    where
+        F: Fn(GattPeripheralEvent) + Send + Sync + Clone + 'static,
+    {
+        (**self).run(service_name, adv_data, callback)
+    }
+
+    async fn indicate(&self, data: &[u8], address: BtAddr) -> Result<(), Error> {
+        (**self).indicate(data, address).await
+    }
+}

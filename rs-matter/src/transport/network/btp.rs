@@ -336,7 +336,8 @@ mod test {
     use alloc::sync::Arc;
 
     use async_channel::{Receiver, Sender};
-    use embassy_futures::{block_on, select::select};
+    use embassy_futures::block_on;
+    use embassy_futures::select::select;
 
     use crate::secure_channel::spake2p::VerifierData;
     use crate::utils::{rand::sys_rand, std_mutex::StdRawMutex};
@@ -472,8 +473,8 @@ mod test {
                             peer_receiver,
                         },
                         IoMock {
-                            send: io_sender,
-                            recv: io_receiver,
+                            send: io_sender.clone(),
+                            recv: io_receiver.clone(),
                             context,
                         },
                     ),
@@ -547,6 +548,10 @@ mod test {
                     })
                     .await;
 
+                // io.context.sessions.lock(|sessions| {
+                //     assert!(sessions.borrow().len() == 1);
+                // });
+
                 driver
                     .send(GattPeripheralEventMock::Subscribed(PEER_ADDR))
                     .await;
@@ -563,6 +568,91 @@ mod test {
                     .await;
 
                 Timer::after(Duration::from_secs(1)).await;
+
+                io.context.sessions.lock(|sessions| {
+                    assert!(sessions.borrow().is_empty());
+                });
+
+                /////////////////////////////////
+
+                driver
+                    .send(GattPeripheralEventMock::Write {
+                        address: PEER_ADDR,
+                        data: vec![0x65, 0x6c, 0x54, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x05],
+                        gatt_mtu: None,
+                    })
+                    .await;
+
+                // io.context.sessions.lock(|sessions| {
+                //     assert!(sessions.borrow().len() == 1);
+                // });
+
+                driver
+                    .send(GattPeripheralEventMock::Subscribed(PEER_ADDR))
+                    .await;
+
+                driver
+                    .expect(GattIndicateMock {
+                        data: vec![0x65, 0x6c, 0x05, 0x14, 0x00, 0x05],
+                        address: PEER_ADDR,
+                    })
+                    .await;
+
+                io.send
+                    .send(Packet {
+                        data: vec![0, 1, 2, 3],
+                        address: PEER_ADDR,
+                    })
+                    .await
+                    .unwrap();
+
+                driver
+                    .expect(GattIndicateMock {
+                        data: vec![5, 1, 4, 0, 0, 1, 2, 3],
+                        address: PEER_ADDR,
+                    })
+                    .await;
+
+                io.send
+                    .send(Packet {
+                        data: vec![0; 40],
+                        address: PEER_ADDR,
+                    })
+                    .await
+                    .unwrap();
+
+                driver
+                    .expect(GattIndicateMock {
+                        data: vec![1, 2, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                        address: PEER_ADDR,
+                    })
+                    .await;
+
+                driver
+                    .expect(GattIndicateMock {
+                        data: vec![2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                        address: PEER_ADDR,
+                    })
+                    .await;
+
+                driver
+                    .expect(GattIndicateMock {
+                        data: vec![2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                        address: PEER_ADDR,
+                    })
+                    .await;
+
+                // ----------------------
+
+                driver
+                    .send(GattPeripheralEventMock::Unsubscribed(PEER_ADDR))
+                    .await;
+
+                Timer::after(Duration::from_secs(1)).await;
+
+                io.context.sessions.lock(|sessions| {
+                    assert!(sessions.borrow().is_empty());
+                });
 
                 Ok(())
             })

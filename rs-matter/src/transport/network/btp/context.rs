@@ -173,7 +173,7 @@ pub struct BtpContext<M>
 where
     M: RawMutex,
 {
-    sessions: Mutex<M, RefCell<heapless::Vec<Session, MAX_BTP_SESSIONS>>>,
+    pub(crate) sessions: Mutex<M, RefCell<heapless::Vec<Session, MAX_BTP_SESSIONS>>>,
     pub(crate) handshake_notif: Notification<M>,
     pub(crate) available_notif: Notification<M>,
     pub(crate) recv_notif: Notification<M>,

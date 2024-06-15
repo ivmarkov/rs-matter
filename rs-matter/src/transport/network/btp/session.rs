@@ -33,11 +33,11 @@ mod packet;
 
 /// Matter Core spec constant:
 /// The maximum amount of time after receipt of a segment before a stand-alone ACK must be sent.
-const BTP_ACK_TIMEOUT_SECS: usize = BTP_CONN_IDLE_TIMEOUT_SECS / 2;
+pub(crate) const BTP_ACK_TIMEOUT_SECS: u16 = BTP_CONN_IDLE_TIMEOUT_SECS / 2;
 /// Matter Core spec constant:
 /// The maximum amount of time no unique data has been sent over a BTP session before the
 /// Central Device must close the BTP session.
-const BTP_CONN_IDLE_TIMEOUT_SECS: usize = 30;
+pub(crate) const BTP_CONN_IDLE_TIMEOUT_SECS: u16 = 30;
 
 /// Represents the three possible states of each BTP session
 #[derive(Debug)]
@@ -375,24 +375,24 @@ impl Session {
 
     /// Return true if this session is in a state where an ACK is available and needs to be sent immediately.
     /// I.e. the inactivity timeout had expired, or the window is full.
-    pub fn is_ack_due(&self, now: Instant) -> bool {
+    pub fn is_ack_due(&self, now: Instant, ack_timeout_secs: u16) -> bool {
         matches!(self.state, SessionState::Running)
             && self.recv_window.pending_ack().is_some()
             && (self.recv_window.level <= 1
                 || self
                     .recv_window
                     .received_at
-                    .checked_add(Duration::from_secs(BTP_ACK_TIMEOUT_SECS as _))
+                    .checked_add(Duration::from_secs(ack_timeout_secs as _))
                     .map(|expires| expires <= now)
                     .unwrap_or(false))
     }
 
     /// Return true if this session needs to be removed due to inactivity.
     /// (I.e. the remote peer did not sent an ACK in due time.)
-    pub fn is_timed_out(&self, now: Instant) -> bool {
+    pub fn is_timed_out(&self, now: Instant, conn_idle_timeout_secs: u16) -> bool {
         self.send_window
             .sent_at
-            .checked_add(Duration::from_secs(BTP_CONN_IDLE_TIMEOUT_SECS as _))
+            .checked_add(Duration::from_secs(conn_idle_timeout_secs as _))
             .map(|expires| expires < now)
             .unwrap_or(false)
     }

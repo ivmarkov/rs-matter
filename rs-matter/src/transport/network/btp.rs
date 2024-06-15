@@ -25,6 +25,7 @@ use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 use embassy_time::{Duration, Instant, Timer};
 
 use log::trace;
+use session::{BTP_ACK_TIMEOUT_SECS, BTP_CONN_IDLE_TIMEOUT_SECS};
 
 use crate::data_model::cluster_basic_information::BasicInfoConfig;
 use crate::error::{Error, ErrorCode};
@@ -63,6 +64,8 @@ pub struct Btp<C, M, T> {
     gatt: T,
     context: C,
     send_buf: IfMutex<NoopRawMutex, heapless::Vec<u8, MAX_BTP_SEGMENT_SIZE>>,
+    ack_timeout_secs: u16,
+    conn_idle_timeout_secs: u16,
     _mutex: PhantomData<M>,
 }
 
@@ -88,10 +91,27 @@ where
     /// provided BTP `context`.
     #[inline(always)]
     pub const fn new(gatt: T, context: C) -> Self {
+        Self::new_internal(
+            gatt,
+            context,
+            BTP_ACK_TIMEOUT_SECS,
+            BTP_CONN_IDLE_TIMEOUT_SECS,
+        )
+    }
+
+    #[inline(always)]
+    const fn new_internal(
+        gatt: T,
+        context: C,
+        ack_timeout_secs: u16,
+        conn_idle_timeout_secs: u16,
+    ) -> Self {
         Self {
             gatt,
             context,
             send_buf: IfMutex::new(heapless::Vec::new()),
+            ack_timeout_secs,
+            conn_idle_timeout_secs,
             _mutex: PhantomData,
         }
     }
@@ -213,7 +233,12 @@ where
             Timer::after(Duration::from_secs(1)).await;
 
             // Remove all timed-out sessions
-            context.remove(|session| session.is_timed_out(Instant::now()))?;
+            context.remove(|session| {
+                session.is_timed_out(Instant::now(), self.conn_idle_timeout_secs)
+            })?;
+
+            // Notify ack() below that maybe it is time to send an ACK packet
+            context.ack_notif.notify();
         }
     }
 
@@ -223,9 +248,9 @@ where
         let context = self.context.borrow();
 
         loop {
-            while let Some(session_lock) =
-                SessionSendLock::lock(context, |session| session.is_ack_due(Instant::now()))
-            {
+            while let Some(session_lock) = SessionSendLock::lock(context, |session| {
+                session.is_ack_due(Instant::now(), self.ack_timeout_secs)
+            }) {
                 self.do_send(&session_lock, &[]).await?;
             }
 

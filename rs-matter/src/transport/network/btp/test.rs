@@ -1,5 +1,3 @@
-use core::pin::Pin;
-
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -141,14 +139,26 @@ impl GattPeriheralMock {
     ///
     /// The test closure may use the provided `Io` instance to send
     /// and receive data on behalf of "us" (i.e. the BTP protocol).
-    fn run<T>(test: T)
+    fn run<T, F>(test: T)
     where
-        T: FnOnce(
-            Peripheral,
-            Io,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>,
+        T: FnOnce(Peripheral, Io) -> F,
+        F: Future<Output = ()> + Send + 'static,
     {
-        init_env_logger();
+        Self::run_with_custom_timeouts(BTP_ACK_TIMEOUT_SECS, BTP_CONN_IDLE_TIMEOUT_SECS, test)
+    }
+
+    /// Same as run but provides the opportunity for custom ACK timeout.
+    fn run_with_custom_timeouts<T, F>(ack_timeout_secs: u16, conn_idle_timeout_secs: u16, test: T)
+    where
+        T: FnOnce(Peripheral, Io) -> F,
+        F: Future<Output = ()> + Send + 'static,
+    {
+        #[cfg(all(feature = "std", not(target_os = "espidf")))]
+        {
+            let _ = env_logger::try_init_from_env(
+                env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
+            );
+        }
 
         // Pipe send/receive data between the mocked peripheral and the BTP protocol using channels.
 
@@ -158,10 +168,27 @@ impl GattPeriheralMock {
         let mock = GattPeriheralMock { sender, receiver };
 
         let context = Arc::new(BtpContext::<StdRawMutex>::new());
-        let btp = Arc::new(Btp::new(mock, context.clone()));
+        let btp = Arc::new(Btp::new_internal(
+            mock,
+            context.clone(),
+            ack_timeout_secs,
+            conn_idle_timeout_secs,
+        ));
 
         let (io_sender, io_btp_receiver) = async_channel::unbounded();
         let (io_btp_sender, io_receiver) = async_channel::unbounded();
+
+        let test_fut = Box::pin(test(
+            Peripheral {
+                peer_sender,
+                peer_receiver,
+            },
+            Io {
+                send: io_sender.clone(),
+                recv: io_receiver.clone(),
+                context,
+            },
+        ));
 
         block_on(
             select4(
@@ -202,17 +229,11 @@ impl GattPeriheralMock {
 
                     Ok(())
                 },
-                test(
-                    Peripheral {
-                        peer_sender,
-                        peer_receiver,
-                    },
-                    Io {
-                        send: io_sender.clone(),
-                        recv: io_receiver.clone(),
-                        context,
-                    },
-                ),
+                async {
+                    test_fut.await;
+
+                    Ok(())
+                },
             )
             .coalesce(),
         )
@@ -270,58 +291,54 @@ impl GattPeripheral for GattPeriheralMock {
 
 #[test]
 fn test_mtu() {
-    GattPeriheralMock::run(|peripheral, io| {
-        Box::pin(async move {
-            peripheral
-                .send(
-                    &[0x65, 0x6c, 0x54, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x05],
-                    PEER_ADDR,
-                    Some(0xc8),
-                )
-                .await;
+    GattPeriheralMock::run(|peripheral, io| async move {
+        peripheral
+            .send(
+                &[0x65, 0x6c, 0x54, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x05],
+                PEER_ADDR,
+                Some(0xc8),
+            )
+            .await;
 
-            peripheral.subscribe(PEER_ADDR).await;
+        peripheral.subscribe(PEER_ADDR).await;
 
-            // io.context.sessions.lock(|sessions| {
-            //     assert!(sessions.borrow().len() == 1);
-            // });
+        // io.context.sessions.lock(|sessions| {
+        //     assert!(sessions.borrow().len() == 1);
+        // });
 
-            // Expected MTU in response is 0xc8 - 3 = 0xc5
-            peripheral
-                .expect(&[0x65, 0x6c, 0x05, 0xc5, 0x00, 0x05], PEER_ADDR)
-                .await;
+        // Expected MTU in response is 0xc8 - 3 = 0xc5
+        peripheral
+            .expect(&[0x65, 0x6c, 0x05, 0xc5, 0x00, 0x05], PEER_ADDR)
+            .await;
 
-            peripheral.unsubscribe(PEER_ADDR).await;
+        peripheral.unsubscribe(PEER_ADDR).await;
 
-            Timer::after(Duration::from_secs(1)).await;
+        Timer::after(Duration::from_secs(1)).await;
 
-            io.context.sessions.lock(|sessions| {
-                assert!(sessions.borrow().is_empty());
-            });
+        io.context.sessions.lock(|sessions| {
+            assert!(sessions.borrow().is_empty());
+        });
 
-            /////////////////////////////////
+        /////////////////////////////////
 
-            peripheral
-                .send(
-                    &[0x65, 0x6c, 0x54, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x05],
-                    PEER_ADDR,
-                    None, // GATT MTU is unknown
-                )
-                .await;
+        peripheral
+            .send(
+                &[0x65, 0x6c, 0x54, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x05],
+                PEER_ADDR,
+                None, // GATT MTU is unknown
+            )
+            .await;
 
-            peripheral.subscribe(PEER_ADDR).await;
+        peripheral.subscribe(PEER_ADDR).await;
 
-            // io.context.sessions.lock(|sessions| {
-            //     assert!(sessions.borrow().len() == 1);
-            // });
+        // io.context.sessions.lock(|sessions| {
+        //     assert!(sessions.borrow().len() == 1);
+        // });
 
-            // Expected MTU is the minimum one (0x14)
-            peripheral
-                .expect(&[0x65, 0x6c, 0x05, 0x14, 0x00, 0x05], PEER_ADDR)
-                .await;
-
-            Ok(())
-        })
+        // Expected MTU is the minimum one (0x14)
+        peripheral
+            .expect(&[0x65, 0x6c, 0x05, 0x14, 0x00, 0x05], PEER_ADDR)
+            .await;
     });
 }
 
@@ -349,96 +366,233 @@ async fn nego_min_mtu(peripheral: &Peripheral) {
 
 #[test]
 fn test_short_read() {
-    GattPeriheralMock::run(|peripheral, io| {
-        Box::pin(async move {
-            nego_min_mtu(&peripheral).await;
+    GattPeriheralMock::run(|peripheral, io| async move {
+        nego_min_mtu(&peripheral).await;
 
-            io.send(&[0, 1, 2, 3], PEER_ADDR).await;
+        io.send(&[0, 1, 2, 3], PEER_ADDR).await;
 
-            peripheral
-                .expect(&[5, 1, 4, 0, 0, 1, 2, 3], PEER_ADDR)
-                .await;
-
-            Ok(())
-        })
+        peripheral
+            .expect(&[5, 1, 4, 0, 0, 1, 2, 3], PEER_ADDR)
+            .await;
     });
 }
 
 #[test]
 fn test_short_write() {
-    GattPeriheralMock::run(|peripheral, io| {
-        Box::pin(async move {
-            nego_min_mtu(&peripheral).await;
+    GattPeriheralMock::run(|peripheral, io| async move {
+        nego_min_mtu(&peripheral).await;
 
-            peripheral.send(&[0, 1, 2, 3], PEER_ADDR, None).await;
+        peripheral
+            .send(&[5, 0, 3, 0, 1, 2, 3], PEER_ADDR, None)
+            .await;
 
-            io.expect(&[5, 1, 4, 0, 0, 1, 2, 3], PEER_ADDR).await;
-
-            Ok(())
-        })
+        io.expect(&[1, 2, 3], PEER_ADDR).await;
     });
 }
 
 #[test]
 fn test_long_read() {
-    GattPeriheralMock::run(|peripheral, io| {
-        Box::pin(async move {
-            nego_min_mtu(&peripheral).await;
+    GattPeriheralMock::run(|peripheral, io| async move {
+        nego_min_mtu(&peripheral).await;
 
-            io.send(&[0, 1, 2, 3], PEER_ADDR).await;
+        io.send(&[0; 52], PEER_ADDR).await;
 
-            // Peer window = 2
-            peripheral
-                .expect(&[5, 1, 4, 0, 0, 1, 2, 3], PEER_ADDR)
-                .await;
+        // Long msg beginning
+        peripheral
+            .expect(
+                &[1, 1, 52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                PEER_ADDR,
+            )
+            .await;
 
-            io.send(&[0; 100], PEER_ADDR).await;
+        // Long msg continue
+        peripheral
+            .expect(
+                &[2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                PEER_ADDR,
+            )
+            .await;
 
-            // Peer window = 3
-            peripheral
-                .expect(
-                    &[1, 2, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    PEER_ADDR,
-                )
-                .await;
+        // Long msg end
+        peripheral
+            .expect(
+                &[6, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                PEER_ADDR,
+            )
+            .await;
 
-            // Peer window = 4
-            peripheral
-                .expect(
-                    &[2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    PEER_ADDR,
-                )
-                .await;
+        peripheral.unsubscribe(PEER_ADDR).await;
 
-            // Send ACK from the peer as its window is full by now (5 - 1) = 4
-            peripheral.send(&[8, 3, 0], PEER_ADDR, None).await;
+        Timer::after(Duration::from_secs(1)).await;
 
-            // Peer window = 0, final packet
-            peripheral
-                .expect(
-                    &[10, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    PEER_ADDR,
-                )
-                .await;
-
-            peripheral.unsubscribe(PEER_ADDR).await;
-
-            Timer::after(Duration::from_secs(1)).await;
-
-            io.context.sessions.lock(|sessions| {
-                assert!(sessions.borrow().is_empty());
-            });
-
-            Ok(())
-        })
+        io.context.sessions.lock(|sessions| {
+            assert!(sessions.borrow().is_empty());
+        });
     });
 }
 
-fn init_env_logger() {
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
-    {
-        let _ = env_logger::try_init_from_env(
-            env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
-        );
-    }
+#[test]
+fn test_long_write() {
+    GattPeriheralMock::run(|peripheral, io| async move {
+        nego_min_mtu(&peripheral).await;
+
+        // Beginning
+        peripheral
+            .send(
+                &[
+                    1, 0, 30, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                ],
+                PEER_ADDR,
+                None,
+            )
+            .await;
+
+        // End
+        peripheral
+            .send(
+                &[4, 1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
+                PEER_ADDR,
+                None,
+            )
+            .await;
+
+        io.expect(
+            &[
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24, 25, 26, 27, 28, 29, 30,
+            ],
+            PEER_ADDR,
+        )
+        .await;
+    });
+}
+
+#[test]
+fn test_long_read_ack() {
+    GattPeriheralMock::run(|peripheral, io| async move {
+        nego_min_mtu(&peripheral).await;
+
+        // A short message, to pump up the ack window
+        io.send(&[0, 1, 2, 3], PEER_ADDR).await;
+
+        // Peer window = 2
+        peripheral
+            .expect(&[5, 1, 4, 0, 0, 1, 2, 3], PEER_ADDR)
+            .await;
+
+        io.send(&[0; 100], PEER_ADDR).await;
+
+        // Long msg beginning
+        // Peer window = 3
+        peripheral
+            .expect(
+                &[1, 2, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                PEER_ADDR,
+            )
+            .await;
+
+        // Long msg continue
+        // Peer window = 4
+        peripheral
+            .expect(
+                &[2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                PEER_ADDR,
+            )
+            .await;
+
+        // Send ACK from the peer as its window is full by now (5 - 1) = 4
+        peripheral.send(&[8, 3, 0], PEER_ADDR, None).await;
+
+        // Long msg end + ACK
+        // Peer window = 0, final packet
+        peripheral
+            .expect(
+                &[10, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                PEER_ADDR,
+            )
+            .await;
+
+        peripheral.unsubscribe(PEER_ADDR).await;
+
+        Timer::after(Duration::from_secs(1)).await;
+
+        io.context.sessions.lock(|sessions| {
+            assert!(sessions.borrow().is_empty());
+        });
+    });
+}
+
+#[test]
+fn test_long_write_ack() {
+    GattPeriheralMock::run(|peripheral, io| async move {
+        nego_min_mtu(&peripheral).await;
+
+        // Beginning
+        peripheral
+            .send(
+                &[1, 0, 44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                PEER_ADDR,
+                None,
+            )
+            .await;
+
+        // Continue
+        peripheral
+            .send(
+                &[2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                PEER_ADDR,
+                None,
+            )
+            .await;
+
+        // End
+        peripheral
+            .send(&[4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], PEER_ADDR, None)
+            .await;
+
+        io.expect(&[0; 44], PEER_ADDR).await;
+    });
+}
+
+#[test]
+fn test_idle_ping_pong() {
+    GattPeriheralMock::run_with_custom_timeouts(
+        0,
+        BTP_CONN_IDLE_TIMEOUT_SECS,
+        |peripheral, _io| async move {
+            nego_min_mtu(&peripheral).await;
+
+            // The peripheral should send the first ACK for the handshake response
+            peripheral.send(&[8, 0, 0], PEER_ADDR, None).await;
+
+            // BTP should - in X seconds - ACK our message so that the session does not timeout
+            peripheral.expect(&[8, 0, 1], PEER_ADDR).await;
+
+            // The peripheral should ACK it
+            peripheral.send(&[8, 1, 1], PEER_ADDR, None).await;
+
+            // BTP should - in X seconds - ACK again
+            peripheral.expect(&[8, 1, 2], PEER_ADDR).await;
+
+            // ... and so on. Stop here.
+        },
+    );
+}
+
+#[test]
+fn test_idle_timeout() {
+    GattPeriheralMock::run_with_custom_timeouts(
+        BTP_ACK_TIMEOUT_SECS,
+        1,
+        |peripheral, io| async move {
+            nego_min_mtu(&peripheral).await;
+
+            Timer::after(Duration::from_secs(3)).await;
+
+            // Session should be closed by now
+            io.context.sessions.lock(|sessions| {
+                assert!(sessions.borrow().is_empty());
+            });
+        },
+    );
 }

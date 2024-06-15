@@ -148,6 +148,8 @@ impl GattPeriheralMock {
             Io,
         ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>,
     {
+        init_env_logger();
+
         // Pipe send/receive data between the mocked peripheral and the BTP protocol using channels.
 
         let (sender, peer_receiver) = async_channel::unbounded();
@@ -267,10 +269,7 @@ impl GattPeripheral for GattPeriheralMock {
 }
 
 #[test]
-fn mytest() {
-    init_env_logger();
-
-    // MTUs match
+fn test_mtu() {
     GattPeriheralMock::run(|peripheral, io| {
         Box::pin(async move {
             peripheral
@@ -287,6 +286,7 @@ fn mytest() {
             //     assert!(sessions.borrow().len() == 1);
             // });
 
+            // Expected MTU in response is 0xc8 - 3 = 0xc5
             peripheral
                 .expect(&[0x65, 0x6c, 0x05, 0xc5, 0x00, 0x05], PEER_ADDR)
                 .await;
@@ -305,7 +305,7 @@ fn mytest() {
                 .send(
                     &[0x65, 0x6c, 0x54, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x05],
                     PEER_ADDR,
-                    None,
+                    None, // GATT MTU is unknown
                 )
                 .await;
 
@@ -315,10 +315,75 @@ fn mytest() {
             //     assert!(sessions.borrow().len() == 1);
             // });
 
-            // Peer window = 1 because of this handshake resp
+            // Expected MTU is the minimum one (0x14)
             peripheral
                 .expect(&[0x65, 0x6c, 0x05, 0x14, 0x00, 0x05], PEER_ADDR)
                 .await;
+
+            Ok(())
+        })
+    });
+}
+
+// Utility to do the negotiation phase with a minumum MTU
+async fn nego_min_mtu(peripheral: &Peripheral) {
+    peripheral
+        .send(
+            &[0x65, 0x6c, 0x54, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x05],
+            PEER_ADDR,
+            None,
+        )
+        .await;
+
+    peripheral.subscribe(PEER_ADDR).await;
+
+    // io.context.sessions.lock(|sessions| {
+    //     assert!(sessions.borrow().len() == 1);
+    // });
+
+    // Peer window = 1 because of this handshake resp
+    peripheral
+        .expect(&[0x65, 0x6c, 0x05, 0x14, 0x00, 0x05], PEER_ADDR)
+        .await;
+}
+
+#[test]
+fn test_short_read() {
+    GattPeriheralMock::run(|peripheral, io| {
+        Box::pin(async move {
+            nego_min_mtu(&peripheral).await;
+
+            io.send(&[0, 1, 2, 3], PEER_ADDR).await;
+
+            peripheral
+                .expect(&[5, 1, 4, 0, 0, 1, 2, 3], PEER_ADDR)
+                .await;
+
+            Ok(())
+        })
+    });
+}
+
+#[test]
+fn test_short_write() {
+    GattPeriheralMock::run(|peripheral, io| {
+        Box::pin(async move {
+            nego_min_mtu(&peripheral).await;
+
+            peripheral.send(&[0, 1, 2, 3], PEER_ADDR, None).await;
+
+            io.expect(&[5, 1, 4, 0, 0, 1, 2, 3], PEER_ADDR).await;
+
+            Ok(())
+        })
+    });
+}
+
+#[test]
+fn test_long_read() {
+    GattPeriheralMock::run(|peripheral, io| {
+        Box::pin(async move {
+            nego_min_mtu(&peripheral).await;
 
             io.send(&[0, 1, 2, 3], PEER_ADDR).await;
 
@@ -356,8 +421,6 @@ fn mytest() {
                 )
                 .await;
 
-            // ----------------------
-
             peripheral.unsubscribe(PEER_ADDR).await;
 
             Timer::after(Duration::from_secs(1)).await;
@@ -371,7 +434,7 @@ fn mytest() {
     });
 }
 
-pub fn init_env_logger() {
+fn init_env_logger() {
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
     {
         let _ = env_logger::try_init_from_env(

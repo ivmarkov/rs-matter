@@ -27,7 +27,7 @@ const BASIC_INFO: BasicInfoConfig<'static> = BasicInfoConfig {
 };
 
 #[derive(Debug, Clone)]
-enum GattPeripheralEventMock {
+enum PeripheralIncoming {
     Subscribed(BtAddr),
     Unsubscribed(BtAddr),
     Write {
@@ -38,34 +38,38 @@ enum GattPeripheralEventMock {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct GattIndicateMock {
+struct PeripheralOutgoing {
     data: Vec<u8>,
     address: BtAddr,
 }
 
-struct GattPeripheralDriver {
-    peer_sender: async_channel::Sender<GattPeripheralEventMock>,
-    peer_receiver: async_channel::Receiver<GattIndicateMock>,
+/// A utlity struct to send and receive data on behalf of the peer (the "peripheral").
+struct Peripheral {
+    peer_sender: async_channel::Sender<PeripheralIncoming>,
+    peer_receiver: async_channel::Receiver<PeripheralOutgoing>,
 }
 
-impl GattPeripheralDriver {
+impl Peripheral {
+    /// Generate `GattPeripheralEvent::NotifySubscribed` event for the peer
     async fn subscribe(&self, addr: BtAddr) {
         self.peer_sender
-            .send(GattPeripheralEventMock::Subscribed(addr))
+            .send(PeripheralIncoming::Subscribed(addr))
             .await
             .unwrap();
     }
 
+    /// Generate `GattPeripheralEvent::NotifyUnsubscribed` event for the peer
     async fn unsubscribe(&self, addr: BtAddr) {
         self.peer_sender
-            .send(GattPeripheralEventMock::Unsubscribed(addr))
+            .send(PeripheralIncoming::Unsubscribed(addr))
             .await
             .unwrap();
     }
 
+    /// Generate `GattPeripheralEvent::Write` event for the peer
     async fn send(&self, data: &[u8], addr: BtAddr, gatt_mtu: Option<u16>) {
         self.peer_sender
-            .send(GattPeripheralEventMock::Write {
+            .send(PeripheralIncoming::Write {
                 address: addr,
                 data: data.to_vec(),
                 gatt_mtu,
@@ -74,6 +78,8 @@ impl GattPeripheralDriver {
             .unwrap();
     }
 
+    /// Expect to receive the provided data from the peer as if the BTP protocol
+    /// did call `indicate`
     async fn expect(&self, data: &[u8], addr: BtAddr) {
         let received = self.peer_receiver.recv().await.unwrap();
 
@@ -83,20 +89,22 @@ impl GattPeripheralDriver {
 }
 
 #[derive(Debug)]
-struct Packet {
+struct IoPacket {
     data: Vec<u8>,
     address: BtAddr,
 }
 
-struct IoMock {
-    send: async_channel::Sender<Packet>,
-    recv: async_channel::Receiver<Packet>,
+/// A utility struct so that we can send and receive data on behalf of the BTP protocol.
+struct Io {
+    send: async_channel::Sender<IoPacket>,
+    recv: async_channel::Receiver<IoPacket>,
     context: Arc<BtpContext<StdRawMutex>>,
 }
 
-impl IoMock {
+impl Io {
+    /// Drive the BTP protocol by sending the provided data to the peer
     async fn send(&self, data: &[u8], addr: BtAddr) {
-        let packet = Packet {
+        let packet = IoPacket {
             data: data.to_vec(),
             address: addr,
         };
@@ -104,6 +112,7 @@ impl IoMock {
         self.send.send(packet).await.unwrap();
     }
 
+    /// Drive the BTP protocol by expecting to receive the provided data from the peer
     async fn expect(&self, data: &[u8], addr: BtAddr) {
         let packet = self.recv.recv().await.unwrap();
 
@@ -112,19 +121,35 @@ impl IoMock {
     }
 }
 
+/// A mocked peripheral that can be used to test the BTP protocol
+///
+/// It provides facilities to send data as if it is the peer (the "peripheral") which is sending it,
+/// as well as facilities to assert what data is expected to be received by the peer.
+///
+/// Sending/receiving data on behalf of the peer (the "peripheral") is done using the `Peripheral` struct,
+/// while sending/receiving data on behalf of us (the BTP protocol) is done using the `Io` struct.
 struct GattPeriheralMock {
-    sender: async_channel::Sender<GattIndicateMock>,
-    receiver: async_channel::Receiver<GattPeripheralEventMock>,
+    sender: async_channel::Sender<PeripheralOutgoing>,
+    receiver: async_channel::Receiver<PeripheralIncoming>,
 }
 
 impl GattPeriheralMock {
+    /// Run the provided test closure using the mock peripheral
+    ///
+    /// The test closure may use the provided `Peripheral` instance
+    /// to send and receive data on behalf of the peer ("peripheral").
+    ///
+    /// The test closure may use the provided `Io` instance to send
+    /// and receive data on behalf of "us" (i.e. the BTP protocol).
     fn run<T>(test: T)
     where
         T: FnOnce(
-            GattPeripheralDriver,
-            IoMock,
+            Peripheral,
+            Io,
         ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>,
     {
+        // Pipe send/receive data between the mocked peripheral and the BTP protocol using channels.
+
         let (sender, peer_receiver) = async_channel::unbounded();
         let (peer_sender, receiver) = async_channel::unbounded();
 
@@ -158,7 +183,7 @@ impl GattPeriheralMock {
                         buf.truncate(len);
 
                         io_btp_sender
-                            .send(Packet {
+                            .send(IoPacket {
                                 data: buf,
                                 address: addr,
                             })
@@ -169,18 +194,18 @@ impl GattPeriheralMock {
                     Ok(())
                 },
                 async {
-                    while let Ok::<Packet, _>(packet) = io_btp_receiver.recv().await {
+                    while let Ok::<IoPacket, _>(packet) = io_btp_receiver.recv().await {
                         btp.send(&packet.data, packet.address).await.unwrap();
                     }
 
                     Ok(())
                 },
                 test(
-                    GattPeripheralDriver {
+                    Peripheral {
                         peer_sender,
                         peer_receiver,
                     },
-                    IoMock {
+                    Io {
                         send: io_sender.clone(),
                         recv: io_receiver.clone(),
                         context,
@@ -196,7 +221,7 @@ impl GattPeriheralMock {
 impl GattPeripheral for GattPeriheralMock {
     async fn indicate(&self, data: &[u8], address: BtAddr) -> Result<(), Error> {
         self.sender
-            .send(GattIndicateMock {
+            .send(PeripheralOutgoing {
                 data: data.to_vec(),
                 address,
             })
@@ -217,13 +242,13 @@ impl GattPeripheral for GattPeriheralMock {
     {
         while let Ok(msg) = self.receiver.recv().await {
             match msg {
-                GattPeripheralEventMock::Subscribed(addr) => {
+                PeripheralIncoming::Subscribed(addr) => {
                     callback(GattPeripheralEvent::NotifySubscribed(addr));
                 }
-                GattPeripheralEventMock::Unsubscribed(addr) => {
+                PeripheralIncoming::Unsubscribed(addr) => {
                     callback(GattPeripheralEvent::NotifyUnsubscribed(addr));
                 }
-                GattPeripheralEventMock::Write {
+                PeripheralIncoming::Write {
                     address,
                     data,
                     gatt_mtu,
@@ -246,9 +271,9 @@ fn mytest() {
     init_env_logger();
 
     // MTUs match
-    GattPeriheralMock::run(|driver, io| {
+    GattPeriheralMock::run(|peripheral, io| {
         Box::pin(async move {
-            driver
+            peripheral
                 .send(
                     &[0x65, 0x6c, 0x54, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x05],
                     PEER_ADDR,
@@ -256,17 +281,17 @@ fn mytest() {
                 )
                 .await;
 
-            driver.subscribe(PEER_ADDR).await;
+            peripheral.subscribe(PEER_ADDR).await;
 
             // io.context.sessions.lock(|sessions| {
             //     assert!(sessions.borrow().len() == 1);
             // });
 
-            driver
+            peripheral
                 .expect(&[0x65, 0x6c, 0x05, 0xc5, 0x00, 0x05], PEER_ADDR)
                 .await;
 
-            driver.unsubscribe(PEER_ADDR).await;
+            peripheral.unsubscribe(PEER_ADDR).await;
 
             Timer::after(Duration::from_secs(1)).await;
 
@@ -276,7 +301,7 @@ fn mytest() {
 
             /////////////////////////////////
 
-            driver
+            peripheral
                 .send(
                     &[0x65, 0x6c, 0x54, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x05],
                     PEER_ADDR,
@@ -284,48 +309,56 @@ fn mytest() {
                 )
                 .await;
 
-            driver.subscribe(PEER_ADDR).await;
+            peripheral.subscribe(PEER_ADDR).await;
 
             // io.context.sessions.lock(|sessions| {
             //     assert!(sessions.borrow().len() == 1);
             // });
 
-            driver
+            // Peer window = 1 because of this handshake resp
+            peripheral
                 .expect(&[0x65, 0x6c, 0x05, 0x14, 0x00, 0x05], PEER_ADDR)
                 .await;
 
             io.send(&[0, 1, 2, 3], PEER_ADDR).await;
 
-            driver.expect(&[5, 1, 4, 0, 0, 1, 2, 3], PEER_ADDR).await;
+            // Peer window = 2
+            peripheral
+                .expect(&[5, 1, 4, 0, 0, 1, 2, 3], PEER_ADDR)
+                .await;
 
             io.send(&[0; 100], PEER_ADDR).await;
 
-            driver
+            // Peer window = 3
+            peripheral
                 .expect(
                     &[1, 2, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     PEER_ADDR,
                 )
                 .await;
 
-            driver
+            // Peer window = 4
+            peripheral
                 .expect(
                     &[2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     PEER_ADDR,
                 )
                 .await;
 
-            driver.send(&[1, 2, 3, 4], PEER_ADDR, None).await;
+            // Send ACK from the peer as its window is full by now (5 - 1) = 4
+            peripheral.send(&[8, 3, 0], PEER_ADDR, None).await;
 
-            driver
+            // Peer window = 0, final packet
+            peripheral
                 .expect(
-                    &[2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    &[10, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     PEER_ADDR,
                 )
                 .await;
 
             // ----------------------
 
-            driver.unsubscribe(PEER_ADDR).await;
+            peripheral.unsubscribe(PEER_ADDR).await;
 
             Timer::after(Duration::from_secs(1)).await;
 

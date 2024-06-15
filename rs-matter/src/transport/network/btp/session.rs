@@ -169,7 +169,7 @@ impl RecvWindow {
 
         if let Some(msg_len) = hdr.get_msg_len() {
             if msg_len <= mtu && !hdr.is_final() {
-                // Additional packet integrity: an SDU that fits in a single BTP segment must be final
+                warn!("RX data integrity failure: An SDU that fits in a single BTP segment must be final");
                 Err(ErrorCode::InvalidData)?;
             }
 
@@ -186,12 +186,12 @@ impl RecvWindow {
         }
 
         if self.rem_msg_len < payload.len() as u16 {
-            // Additional packet integrity: the packet contains more data than the message length
+            warn!("RX data integrity failure: Packet contains more data than the message length");
             Err(ErrorCode::InvalidData)?;
         } else {
             self.rem_msg_len -= payload.len() as u16;
             if hdr.is_final() && self.rem_msg_len > 0 {
-                // Additional packet integrity: the packet is final but the message length is not reached
+                warn!("RX data integrity failure: Packet is final but the message length is not reached");
                 Err(ErrorCode::InvalidData)?;
             }
         }
@@ -219,28 +219,28 @@ impl RecvWindow {
         if hdr.is_handshake() // Handshake packets are not allowed here
             || hdr.get_opcode().is_some()
         {
-            // Data and standalone ACK packets must not have an opcode
+            warn!("RX data integrity failure: Data and standalone ACK packets must not have an opcode");
             return Err(ErrorCode::InvalidData.into());
         }
 
         if hdr.is_standalone_ack() {
             if !payload.is_empty() {
-                // Standalone ACKs don't have a payload
+                warn!("RX data integrity failure: Standalone ACKs don't have a payload");
                 return Err(ErrorCode::InvalidData.into());
             }
         } else {
             if hdr.get_msg_len().is_none() && !hdr.is_continue() && !hdr.is_final() {
-                // Should have at least one of the three flags raised
+                warn!("RX data integrity failure: Should have at least one of BEGINNING_SEGMENT/CONTINUE/ENDING_SEGMENT raised");
                 return Err(ErrorCode::InvalidData.into());
             }
 
             if hdr.get_msg_len().is_some() && hdr.is_continue() {
-                // Cannot be a beginning and a continuation
+                warn!("RX data integrity failure: Cannot have both BEGINNING_SEGMENT and CONTINUE raised");
                 return Err(ErrorCode::InvalidData.into());
             }
 
             if !hdr.is_final() && payload.len() + hdr.len() != mtu as _ {
-                // Non-final packets should have a size equal to the MTU size
+                warn!("RX data integrity failure: Non-final packets should have a size equal to the MTU size");
                 return Err(ErrorCode::InvalidData.into());
             }
         }
@@ -250,7 +250,10 @@ impl RecvWindow {
             .map(|seq| self.ack_seq.wrapping_add(1) != seq)
             .unwrap_or(true)
         {
-            // Data packets must have a sequence number which is equal to the last one received + 1
+            warn!(
+                "RX data integrity failure: Data packets must have a sequence number which is equal to the last one received + 1; expected={}, actual={:?}", 
+                self.ack_seq.wrapping_add(1),
+                hdr.get_seq());
             return Err(ErrorCode::InvalidData.into());
         }
 
@@ -267,6 +270,7 @@ impl RecvWindow {
             || hdr.get_ack().is_some()
         // Handshake packets must not have an ACK
         {
+            warn!("RX handshake integrity failure");
             return Err(ErrorCode::InvalidData.into());
         }
 

@@ -15,9 +15,14 @@
  *    limitations under the License.
  */
 
+use core::cell::RefCell;
 use core::fmt::Write;
 
-use crate::{data_model::cluster_basic_information::BasicInfoConfig, error::Error};
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+
+use crate::data_model::cluster_basic_information::BasicInfoConfig;
+use crate::error::{Error, ErrorCode};
+use crate::utils::notification::Notification;
 
 #[cfg(all(feature = "std", target_os = "macos"))]
 #[path = "mdns/astro.rs"]
@@ -87,14 +92,19 @@ where
 
 /// Models the mDNS implementation to be used by the Matter stack
 pub enum MdnsService<'a> {
-    /// Don't use any mDNS implementation. Useful for unit and integration tests
-    Disabled,
+    /// Use the built-in mDNS registry, but don't start an mDNS responder
+    /// It is up to the user to listen to changes in the registry and manage
+    /// their own mDNS responder.
+    /// Also useful for unit and integration tests.
+    Registry,
     /// Use the built-in mDNS implementation, which is based on:
-    /// - Bonjour on macOS
-    /// - Avahi on Linux (if feature `zeroconf` is enabled)
-    /// - Our own pure-Rust implementation, in all other cases
+    /// - Bonjour on macOS;
+    /// - Avahi on Linux (if feature `zeroconf` is enabled);
+    /// - Our own pure-Rust implementation in all other cases, where
+    ///   the built-in implementation is implemented as a decoration of the
+    ///   built-registry.
     Builtin,
-    /// Use an mDNS implementation provided by the user
+    /// Use an mDNS implementation provided by the user.
     Provided(&'a dyn Mdns),
 }
 
@@ -102,26 +112,26 @@ impl<'a> MdnsService<'a> {
     pub(crate) const fn new_impl(
         &self,
         dev_det: &'a BasicInfoConfig<'a>,
-        matter_port: u16,
+        port: u16,
     ) -> MdnsImpl<'a> {
         match self {
-            Self::Disabled => MdnsImpl::Disabled,
-            Self::Builtin => MdnsImpl::Builtin(builtin::MdnsImpl::new(dev_det, matter_port)),
+            Self::Registry => MdnsImpl::Registry(MdnsRegistry::new(dev_det, port)),
+            Self::Builtin => MdnsImpl::Builtin(MdnsRegistry::new(dev_det, port)),
             Self::Provided(mdns) => MdnsImpl::Provided(*mdns),
         }
     }
 }
 
 pub(crate) enum MdnsImpl<'a> {
-    Disabled,
-    Builtin(builtin::MdnsImpl<'a>),
+    Registry(MdnsRegistry<'a>),
+    Builtin(MdnsRegistry<'a>),
     Provided(&'a dyn Mdns),
 }
 
 impl<'a> Mdns for MdnsImpl<'a> {
     fn reset(&self) {
         match self {
-            Self::Disabled => {}
+            Self::Registry(mdns) => mdns.reset(),
             Self::Builtin(mdns) => mdns.reset(),
             Self::Provided(mdns) => mdns.reset(),
         }
@@ -129,7 +139,7 @@ impl<'a> Mdns for MdnsImpl<'a> {
 
     fn add(&self, service: &str, mode: ServiceMode) -> Result<(), Error> {
         match self {
-            Self::Disabled => Ok(()),
+            Self::Registry(mdns) => mdns.add(service, mode),
             Self::Builtin(mdns) => mdns.add(service, mode),
             Self::Provided(mdns) => mdns.add(service, mode),
         }
@@ -137,23 +147,15 @@ impl<'a> Mdns for MdnsImpl<'a> {
 
     fn remove(&self, service: &str) -> Result<(), Error> {
         match self {
-            Self::Disabled => Ok(()),
+            Self::Registry(mdns) => mdns.remove(service),
             Self::Builtin(mdns) => mdns.remove(service),
             Self::Provided(mdns) => mdns.remove(service),
         }
     }
 }
 
-pub struct Service<'a> {
-    pub name: &'a str,
-    pub service: &'a str,
-    pub protocol: &'a str,
-    pub port: u16,
-    pub service_subtypes: &'a [&'a str],
-    pub txt_kvs: &'a [(&'a str, &'a str)],
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
+/// Status of a service registered in the mDNS responder
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ServiceMode {
     /// The commissioned state
     Commissioned,
@@ -161,31 +163,142 @@ pub enum ServiceMode {
     Commissionable(u16),
 }
 
-impl ServiceMode {
-    pub fn service<R, F: for<'a> FnOnce(&Service<'a>) -> Result<R, Error>>(
-        &self,
-        dev_att: &BasicInfoConfig,
-        matter_port: u16,
+const MAX_MATTER_SERVICES: usize = 4;
+const MAX_MATTER_SERVICE_NAME_LEN: usize = 40;
+
+/// A registry of Matter-specific services to be reported by the mDNS responder.
+pub struct MdnsRegistry<'a> {
+    dev_det: &'a BasicInfoConfig<'a>,
+    matter_port: u16,
+    services: RefCell<
+        heapless::Vec<
+            (heapless::String<MAX_MATTER_SERVICE_NAME_LEN>, ServiceMode),
+            MAX_MATTER_SERVICES,
+        >,
+    >,
+    notification: Notification<NoopRawMutex>,
+}
+
+impl<'a> MdnsRegistry<'a> {
+    /// Create a new mDNS registry
+    #[inline(always)]
+    pub const fn new(dev_det: &'a BasicInfoConfig<'a>, matter_port: u16) -> Self {
+        Self {
+            dev_det,
+            matter_port,
+            services: RefCell::new(heapless::Vec::new()),
+            notification: Notification::new(),
+        }
+    }
+
+    /// Get the device details
+    pub const fn dev_det(&self) -> &BasicInfoConfig {
+        self.dev_det
+    }
+
+    /// Get the port number
+    pub const fn matter_port(&self) -> u16 {
+        self.matter_port
+    }
+
+    /// Get the notification object which is notified when the registry changes
+    pub fn notification(&self) -> &Notification<NoopRawMutex> {
+        &self.notification
+    }
+
+    /// Reset the registry by removing all reigstered services
+    pub fn reset(&self) {
+        self.services.borrow_mut().clear();
+        self.notification.notify();
+    }
+
+    /// Add a new service to the registry
+    /// Will remove any existing service with the same name before
+    /// registering the new one.
+    pub fn add(&self, service: &str, mode: ServiceMode) -> Result<(), Error> {
+        let mut services = self.services.borrow_mut();
+
+        services.retain(|(name, _)| name != service);
+        services
+            .push((service.try_into().unwrap(), mode))
+            .map_err(|_| ErrorCode::NoSpace)?;
+
+        self.notification.notify();
+
+        Ok(())
+    }
+
+    /// Remove a service from the registry
+    pub fn remove(&self, service: &str) -> Result<(), Error> {
+        let mut services = self.services.borrow_mut();
+
+        services.retain(|(name, _)| name != service);
+
+        self.notification.notify();
+
+        Ok(())
+    }
+
+    /// Visit all services in the registry
+    pub fn visit<F>(&self, mut visitor: F) -> Result<(), Error>
+    where
+        F: FnMut(&str, ServiceMode) -> Result<(), Error>,
+    {
+        let services = self.services.borrow();
+
+        for (service, mode) in &*services {
+            visitor(service, *mode)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// A convenience struct converting the (name, service-mode) pairs to
+/// `Service` instances which are easier to report by a generic mDNS responder.
+pub struct Service<'a> {
+    pub name: &'a str,
+    pub service: &'a str,
+    pub protocol: &'a str,
+    pub priority: u16,
+    pub weight: u16,
+    pub port: u16,
+    pub service_subtypes: &'a [&'a str],
+    pub txt_kvs: &'a [(&'a str, &'a str)],
+}
+
+impl<'a> Service<'a> {
+    /// Converts a (name, service-mode) pair to a `Service` instance
+    /// and calls the supplied visitor with it.
+    ///
+    /// The visitor pattern is chosen deliberately, as it allows allocating
+    /// any temporary buffers necessary during the conversion on the stack.
+    pub fn visit<R, F: FnOnce(&Service) -> Result<R, Error>>(
         name: &str,
+        mode: ServiceMode,
+        dev_det: &BasicInfoConfig,
+        port: u16,
         f: F,
     ) -> Result<R, Error> {
-        match self {
-            Self::Commissioned => f(&Service {
+        match mode {
+            ServiceMode::Commissioned => f(&Service {
                 name,
                 service: "_matter",
                 protocol: "_tcp",
-                port: matter_port,
+                priority: 0,
+                weight: 0,
+                port,
                 service_subtypes: &[],
                 txt_kvs: &[("", "")],
             }),
             ServiceMode::Commissionable(discriminator) => {
-                let discriminator_str = Self::get_discriminator_str(*discriminator);
-                let vp = Self::get_vp(dev_att.vid, dev_att.pid);
+                let discriminator_str = Self::get_discriminator_str(discriminator);
+                let vp = Self::get_vp(dev_det.vid, dev_det.pid);
 
                 let txt_kvs = &[
                     ("D", discriminator_str.as_str()),
                     ("CM", "1"),
-                    ("DN", dev_att.device_name),
+                    ("DN", dev_det.device_name),
                     ("VP", &vp),
                     ("SII", "5000"), /* Sleepy Idle Interval */
                     ("SAI", "300"),  /* Sleepy Active Interval */
@@ -197,10 +310,12 @@ impl ServiceMode {
                     name,
                     service: "_matterc",
                     protocol: "_udp",
-                    port: matter_port,
+                    priority: 0,
+                    weight: 0,
+                    port,
                     service_subtypes: &[
-                        &Self::get_long_service_subtype(*discriminator),
-                        &Self::get_short_service_type(*discriminator),
+                        &Self::get_long_service_subtype(discriminator),
+                        &Self::get_short_service_type(discriminator),
                     ],
                     txt_kvs,
                 })
@@ -251,11 +366,11 @@ mod tests {
     #[test]
     fn can_compute_short_discriminator() {
         let discriminator: u16 = 0b0000_1111_0000_0000;
-        let short = ServiceMode::compute_short_discriminator(discriminator);
+        let short = Service::compute_short_discriminator(discriminator);
         assert_eq!(short, 0b1111);
 
         let discriminator: u16 = 840;
-        let short = ServiceMode::compute_short_discriminator(discriminator);
+        let short = Service::compute_short_discriminator(discriminator);
         assert_eq!(short, 3);
     }
 }

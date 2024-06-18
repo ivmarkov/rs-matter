@@ -27,7 +27,7 @@ use embassy_time::Timer;
 use log::{debug, error, info, trace, warn};
 
 use crate::error::{Error, ErrorCode};
-use crate::mdns::MdnsImpl;
+use crate::mdns::{MdnsImpl, MdnsRegistry};
 use crate::secure_channel::common::{sc_write, OpCode, SCStatusCodes, PROTO_ID_SECURE_CHANNEL};
 use crate::secure_channel::status_report::StatusReport;
 use crate::tlv::TLVList;
@@ -112,6 +112,14 @@ impl<'m> TransportMgr<'m> {
         }
 
         Ok(())
+    }
+
+    pub fn mdns_registry(&self) -> Option<&MdnsRegistry<'m>> {
+        if let MdnsImpl::Registry(mdns) = &self.mdns {
+            Some(mdns)
+        } else {
+            None
+        }
     }
 
     #[cfg(not(all(feature = "large-buffers", feature = "alloc")))]

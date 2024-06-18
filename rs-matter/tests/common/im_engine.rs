@@ -249,7 +249,7 @@ impl<'a> ImEngine<'a> {
         let matter = Matter::new(
             &BASIC_INFO,
             &DummyDevAtt,
-            MdnsService::Disabled,
+            MdnsService::Registry,
             epoch,
             rand,
             MATTER_PORT,

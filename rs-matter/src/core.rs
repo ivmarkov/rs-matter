@@ -27,7 +27,7 @@ use crate::{
     },
     error::*,
     fabric::FabricMgr,
-    mdns::{Mdns, MdnsService},
+    mdns::{Mdns, MdnsRegistry, MdnsService},
     pairing::{print_pairing_code_and_qr, DiscoveryCapabilities},
     secure_channel::{pake::PaseMgr, spake2p::VerifierData},
     transport::{
@@ -123,6 +123,10 @@ impl<'a> Matter<'a> {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    pub fn mdns_registry(&self) -> Option<&MdnsRegistry<'a>> {
+        self.transport_mgr.mdns_registry()
     }
 
     pub fn load_fabrics(&self, data: &[u8]) -> Result<(), Error> {

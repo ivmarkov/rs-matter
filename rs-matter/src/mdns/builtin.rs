@@ -1,4 +1,3 @@
-use core::cell::RefCell;
 use core::net::IpAddr;
 use core::pin::pin;
 
@@ -8,16 +7,15 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use log::{info, warn};
 
-use crate::data_model::cluster_basic_information::BasicInfoConfig;
 use crate::error::{Error, ErrorCode};
 use crate::transport::network::{
     Address, Ipv4Addr, Ipv6Addr, NetworkReceive, NetworkSend, SocketAddr, SocketAddrV4,
     SocketAddrV6,
 };
 use crate::utils::rand::Rand;
-use crate::utils::{buf::BufferAccess, notification::Notification, select::Coalesce};
+use crate::utils::{buf::BufferAccess, select::Coalesce};
 
-use super::{Service, ServiceMode};
+use super::{MdnsRegistry, Service};
 
 use self::proto::Services;
 
@@ -34,66 +32,7 @@ pub const MDNS_IPV4_BROADCAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 
 pub const MDNS_PORT: u16 = 5353;
 
-pub struct MdnsImpl<'a> {
-    dev_det: &'a BasicInfoConfig<'a>,
-    matter_port: u16,
-    services: RefCell<heapless::Vec<(heapless::String<40>, ServiceMode), 4>>,
-    notification: Notification<NoopRawMutex>,
-}
-
-impl<'a> MdnsImpl<'a> {
-    #[inline(always)]
-    pub const fn new(dev_det: &'a BasicInfoConfig<'a>, matter_port: u16) -> Self {
-        Self {
-            dev_det,
-            matter_port,
-            services: RefCell::new(heapless::Vec::new()),
-            notification: Notification::new(),
-        }
-    }
-
-    pub fn reset(&self) {
-        self.services.borrow_mut().clear();
-    }
-
-    pub fn add(&self, service: &str, mode: ServiceMode) -> Result<(), Error> {
-        let mut services = self.services.borrow_mut();
-
-        services.retain(|(name, _)| name != service);
-        services
-            .push((service.try_into().unwrap(), mode))
-            .map_err(|_| ErrorCode::NoSpace)?;
-
-        self.notification.notify();
-
-        Ok(())
-    }
-
-    pub fn remove(&self, service: &str) -> Result<(), Error> {
-        let mut services = self.services.borrow_mut();
-
-        services.retain(|(name, _)| name != service);
-
-        self.notification.notify();
-
-        Ok(())
-    }
-
-    pub fn for_each<F>(&self, mut callback: F) -> Result<(), Error>
-    where
-        F: FnMut(&Service) -> Result<(), Error>,
-    {
-        let services = self.services.borrow();
-
-        for (service, mode) in &*services {
-            mode.service(self.dev_det, self.matter_port, service, |service| {
-                callback(service)
-            })?;
-        }
-
-        Ok(())
-    }
-
+impl<'a> MdnsRegistry<'a> {
     #[allow(clippy::too_many_arguments)]
     pub async fn run<S, R, SB, RB>(
         &self,
@@ -246,11 +185,15 @@ impl<'a> MdnsImpl<'a> {
     }
 }
 
-impl<'a> Services for MdnsImpl<'a> {
-    fn for_each<F>(&self, callback: F) -> Result<(), Error>
+impl<'a> Services for MdnsRegistry<'a> {
+    fn for_each<F>(&self, mut callback: F) -> Result<(), Error>
     where
         F: FnMut(&Service) -> Result<(), Error>,
     {
-        MdnsImpl::for_each(self, callback)
+        MdnsRegistry::visit(self, move |name, mode| {
+            Service::visit(name, mode, self.dev_det(), self.matter_port(), |service| {
+                callback(service)
+            })
+        })
     }
 }

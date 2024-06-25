@@ -483,7 +483,7 @@ impl TextImage {
                                 if white {
                                     "\u{2588}"
                                 } else {
-                                    " "
+                                    "\u{a0}"
                                 }
                             } else if white {
                                 "\u{2580}"
@@ -494,14 +494,14 @@ impl TextImage {
                     }
                 } else {
                     match console_type {
-                        TextImage::Ascii => {
+                        TextImage::Ascii | TextImage::Unicode => {
                             if nl {
                                 "\n"
                             } else {
                                 ""
                             }
                         }
-                        TextImage::Ansi | TextImage::Unicode => {
+                        TextImage::Ansi => {
                             if nl {
                                 "\x1b[0m\n"
                             } else {

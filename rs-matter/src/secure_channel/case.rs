@@ -106,7 +106,7 @@ impl Case {
             let fabric_mgr = exchange.matter().fabric_mgr.borrow();
 
             let fabric = NonZeroU8::new(case_session.local_fabric_idx)
-                .and_then(|fabric_idx| fabric_mgr.get_fabric(fabric_idx));
+                .and_then(|fabric_idx| fabric_mgr.get(fabric_idx).ok());
             if let Some(fabric) = fabric {
                 let root = get_root_node_struct(exchange.rx()?.payload())?;
                 let encrypted = root.find_tag(1)?.slice()?;
@@ -171,7 +171,7 @@ impl Case {
                     let peer_addr = exchange.with_session(|sess| Ok(sess.get_peer_addr()))?;
 
                     session.update(
-                        fabric.get_node_id(),
+                        fabric.node_id(),
                         initiator_noc.get_node_id()?,
                         case_session.peer_sessid,
                         case_session.local_sessid,
@@ -219,7 +219,8 @@ impl Case {
             .matter()
             .fabric_mgr
             .borrow_mut()
-            .match_dest_id(r.initiator_random.0, r.dest_id.0);
+            .get_by_dest_id(r.initiator_random.0, r.dest_id.0)
+            .map(|fabric| fabric.idx());
         if local_fabric_idx.is_err() {
             error!("Fabric Index mismatch");
             complete_with_status(exchange, SCStatusCodes::NoSharedTrustRoots, &[]).await?;
@@ -277,7 +278,7 @@ impl Case {
             let fabric_mgr = exchange.matter().fabric_mgr.borrow();
 
             let fabric = NonZeroU8::new(case_session.local_fabric_idx)
-                .and_then(|fabric_idx| fabric_mgr.get_fabric(fabric_idx));
+                .and_then(|fabric_idx| fabric_mgr.get(fabric_idx).ok());
             if let Some(fabric) = fabric {
                 #[cfg(feature = "alloc")]
                 let signature_mut = &mut *signature;
@@ -373,14 +374,14 @@ impl Case {
     fn validate_certs(fabric: &Fabric, noc: &Cert, icac: Option<&Cert>) -> Result<(), Error> {
         let mut verifier = noc.verify_chain_start();
 
-        if fabric.get_fabric_id() != noc.get_fabric_id()? {
+        if fabric.fabric_id() != noc.get_fabric_id()? {
             Err(ErrorCode::Invalid)?;
         }
 
         if let Some(icac) = icac {
             // If ICAC is present handle it
             if let Ok(fid) = icac.get_fabric_id() {
-                if fid != fabric.get_fabric_id() {
+                if fid != fabric.fabric_id() {
                     Err(ErrorCode::Invalid)?;
                 }
             }
@@ -522,8 +523,8 @@ impl Case {
         let mut tw = TLVWriter::new(&mut write_buf);
         tw.start_struct(TagType::Anonymous)?;
         tw.str16(TagType::Context(1), &fabric.noc)?;
-        if let Some(icac_cert) = fabric.icac.as_ref() {
-            tw.str16(TagType::Context(2), icac_cert)?
+        if !fabric.icac.is_empty() {
+            tw.str16(TagType::Context(2), &fabric.icac)?
         };
 
         tw.str8(TagType::Context(3), signature)?;
@@ -564,8 +565,8 @@ impl Case {
         let mut tw = TLVWriter::new(&mut write_buf);
         tw.start_struct(TagType::Anonymous)?;
         tw.str16(TagType::Context(1), &fabric.noc)?;
-        if let Some(icac_cert) = fabric.icac.as_deref() {
-            tw.str16(TagType::Context(2), icac_cert)?;
+        if !fabric.icac.is_empty() {
+            tw.str16(TagType::Context(2), &fabric.icac)?;
         }
         tw.str8(TagType::Context(3), our_pub_key)?;
         tw.str8(TagType::Context(4), peer_pub_key)?;

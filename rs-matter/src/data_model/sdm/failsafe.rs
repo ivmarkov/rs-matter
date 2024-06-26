@@ -15,7 +15,7 @@
  *    limitations under the License.
  */
 
-use core::num::NonZeroU8;
+use core::{num::NonZeroU8, time::Duration};
 
 use crate::{
     error::{Error, ErrorCode},
@@ -35,7 +35,7 @@ enum NocState {
 
 #[derive(PartialEq)]
 pub struct ArmedCtx {
-    timeout: u16,
+    timeout: Duration,
     noc_state: NocState,
 }
 
@@ -43,6 +43,15 @@ pub struct ArmedCtx {
 pub enum State {
     Idle,
     Armed(ArmedCtx),
+}
+
+impl State {
+    pub fn is_expired(&self, now: Duration) -> bool {
+        match self {
+            State::Idle => false,
+            State::Armed(c) => c.timeout <= now,
+        }
+    }
 }
 
 pub struct FailSafe {
@@ -55,7 +64,16 @@ impl FailSafe {
         Self { state: State::Idle }
     }
 
-    pub fn arm(&mut self, timeout: u16, session_mode: SessionMode) -> Result<(), Error> {
+    pub fn is_expired(&self, now: Duration) -> bool {
+        self.state.is_expired(now)
+    }
+
+    pub fn arm(&mut self, timeout: Duration, now: Duration, session_mode: SessionMode) -> Result<(), Error> {
+        if self.is_expired(now) {
+            error!("Fail-Safe expired");
+            Err(ErrorCode::Invalid)?;
+        }
+
         match &mut self.state {
             State::Idle => {
                 self.state = State::Armed(ArmedCtx {
@@ -86,7 +104,12 @@ impl FailSafe {
         Ok(())
     }
 
-    pub fn disarm(&mut self, session_mode: SessionMode) -> Result<(), Error> {
+    pub fn disarm(&mut self, now: Duration, session_mode: SessionMode) -> Result<(), Error> {
+        if self.is_expired(now) {
+            error!("Fail-Safe expired");
+            Err(ErrorCode::Invalid)?;
+        }
+
         match &mut self.state {
             State::Idle => {
                 error!("Received Fail-Safe Disarm without it being armed");

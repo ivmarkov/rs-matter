@@ -26,15 +26,22 @@ pub struct Dataver {
 }
 
 impl Dataver {
-    pub fn new(rand: Rand) -> Self {
-        let mut buf = [0; 4];
-        rand(&mut buf);
-
+    pub const fn new(initial: u32) -> Self {
         Self {
-            ver: Cell::new(u32::from_be_bytes(buf)),
+            ver: Cell::new(initial),
             changed: Cell::new(false),
         }
     }
+
+    // pub const fn new(initial: u32) -> Self {
+    //     let mut buf = [0; 4];
+    //     rand(&mut buf);
+
+    //     Self {
+    //         ver: Cell::new(u32::from_be_bytes(buf)),
+    //         changed: Cell::new(false),
+    //     }
+    // }
 
     pub fn get(&self) -> u32 {
         self.ver.get()

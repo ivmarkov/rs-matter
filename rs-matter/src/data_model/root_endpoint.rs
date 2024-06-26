@@ -231,8 +231,10 @@ fn wrap<'a, NWCOMM, NWDIAG>(
             general_commissioning::ID,
             HandlerCompat(GenCommCluster::new(
                 failsafe,
+                fabric,
                 supports_concurrent_connection,
                 rand,
+                epoch,
             )),
         )
         .chain(

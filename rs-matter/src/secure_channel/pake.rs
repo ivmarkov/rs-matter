@@ -58,16 +58,24 @@ impl PaseMgr {
         }
     }
 
+    /// Return `true` if the PASE session is enabled.
     pub fn is_pase_session_enabled(&self) -> bool {
         self.session.is_some()
     }
 
+    /// Enable the PASE session.
+    /// 
+    /// Return an error if the PASE session is already enabled.
     pub fn enable_pase_session(
         &mut self,
         verifier: VerifierData,
         discriminator: u16,
         mdns: &dyn Mdns,
     ) -> Result<(), Error> {
+        if self.is_pase_session_enabled() {
+            Err(ErrorCode::InvalidState)?;
+        }
+
         let mut buf = [0; 8];
         (self.rand)(&mut buf);
         let num = u64::from_be_bytes(buf);
@@ -88,18 +96,19 @@ impl PaseMgr {
         Ok(())
     }
 
-    pub fn disable_pase_session(&mut self, mdns: &dyn Mdns) -> Result<bool, Error> {
-        let disabled = if let Some(session) = self.session.as_ref() {
-            mdns.remove(&session.mdns_service_name)?;
-
-            true
-        } else {
-            false
+    /// Disable the PASE session.
+    /// 
+    /// Return an error if the PASE session is not enabled.
+    pub fn disable_pase_session(&mut self, mdns: &dyn Mdns) -> Result<(), Error> {
+        let Some(session) = self.session.as_ref() else {
+            return Err(ErrorCode::InvalidState.into());
         };
+
+        mdns.remove(&session.mdns_service_name)?;
 
         self.session = None;
 
-        Ok(disabled)
+        Ok(())
     }
 }
 

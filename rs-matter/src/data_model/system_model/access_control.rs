@@ -15,18 +15,18 @@
  *    limitations under the License.
  */
 
-use core::cell::RefCell;
 use core::num::NonZeroU8;
 
 use strum::{EnumDiscriminants, FromRepr};
 
-use crate::acl::{self, AclEntry, AclMgr};
+use log::{error, info};
+
+use crate::acl::{self, AclEntry};
 use crate::data_model::objects::*;
 use crate::interaction_model::messages::ib::{attr_list_write, ListOperation};
 use crate::tlv::{FromTLV, TLVElement, TagType, ToTLV};
 use crate::utils::rand::Rand;
-use crate::{attribute_enum, error::*};
-use log::{error, info};
+use crate::{attribute_enum, error::*, Matter};
 
 pub const ID: u32 = 0x001F;
 
@@ -80,14 +80,14 @@ pub const CLUSTER: Cluster<'static> = Cluster {
 #[derive(Clone)]
 pub struct AccessControlCluster<'a> {
     data_ver: Dataver,
-    acl_mgr: &'a RefCell<AclMgr>,
+    matter: &'a Matter<'a>,
 }
 
 impl<'a> AccessControlCluster<'a> {
-    pub fn new(acl_mgr: &'a RefCell<AclMgr>, rand: Rand) -> Self {
+    pub const fn new(init_ver: u32, matter: &'a Matter<'a>) -> Self {
         Self {
-            data_ver: Dataver::new(rand),
-            acl_mgr,
+            data_ver: Dataver::new(init_ver),
+            matter,
         }
     }
 
@@ -99,13 +99,16 @@ impl<'a> AccessControlCluster<'a> {
                 match attr.attr_id.try_into()? {
                     Attributes::Acl(_) => {
                         writer.start_array(AttrDataWriter::TAG)?;
-                        self.acl_mgr.borrow().for_each_acl(|entry| {
-                            if !attr.fab_filter || attr.fab_idx == entry.fab_idx.get() {
-                                entry.to_tlv(&mut writer, TagType::Anonymous)?;
-                            }
 
-                            Ok(())
-                        })?;
+                        let fabric_mgr = self.matter.fabric_mgr.borrow();
+                        for fabric in fabric_mgr.iter() {
+                            if !attr.fab_filter || attr.fab_idx == fabric.idx().get() {
+                                for entry in fabric.acl_iter() {
+                                    entry.to_tlv(&mut writer, TagType::Anonymous)?;
+                                }
+                            }
+                        }
+
                         writer.end_container()?;
 
                         writer.complete()
@@ -162,6 +165,10 @@ impl<'a> AccessControlCluster<'a> {
         fab_idx: NonZeroU8,
     ) -> Result<(), Error> {
         info!("Performing ACL operation {:?}", op);
+
+        let mut fabric_mgr = self.matter.fabric_mgr.borrow_mut();
+        let fabric = fabric_mgr.get_mut(fab_idx)?; // TODO
+
         match op {
             ListOperation::AddItem | ListOperation::EditItem(_) => {
                 let mut acl_entry = AclEntry::from_tlv(data)?;
@@ -170,20 +177,16 @@ impl<'a> AccessControlCluster<'a> {
                 acl_entry.fab_idx = fab_idx;
 
                 if let ListOperation::EditItem(index) = op {
-                    self.acl_mgr
-                        .borrow_mut()
-                        .edit(*index as u8, fab_idx, acl_entry)?;
+                    fabric.edit_acl_entry(*index as u8, acl_entry)?;
                 } else {
-                    self.acl_mgr.borrow_mut().add(acl_entry)?;
+                    fabric.add_acl_entry(acl_entry)?;
                 }
-
-                Ok(())
             }
-            ListOperation::DeleteItem(index) => {
-                self.acl_mgr.borrow_mut().delete(*index as u8, fab_idx)
-            }
-            ListOperation::DeleteList => self.acl_mgr.borrow_mut().delete_for_fabric(fab_idx),
+            ListOperation::DeleteItem(index) => fabric.delete_acl_entry(*index as u8)?,
+            ListOperation::DeleteList => fabric.clear_acl(),
         }
+
+        Ok(())
     }
 }
 

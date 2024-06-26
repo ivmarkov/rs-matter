@@ -30,11 +30,8 @@ use crate::{
     mdns::{Mdns, MdnsService},
     pairing::{print_pairing_code_and_qr, DiscoveryCapabilities},
     secure_channel::{pake::PaseMgr, spake2p::VerifierData},
-    transport::{
-        core::{PacketBufferExternalAccess, TransportMgr},
-        network::{NetworkReceive, NetworkSend},
-    },
-    utils::{buf::BufferAccess, epoch::Epoch, notification::Notification, rand::Rand},
+    transport::{core::TransportMgr, network::{NetworkReceive, NetworkSend}},
+    utils::{epoch::Epoch, notification::Notification, rand::Rand},
 };
 
 /* The Matter Port */
@@ -172,26 +169,29 @@ impl<'a> Matter<'a> {
         self.acl_mgr.borrow().is_changed() || self.fabric_mgr.borrow().is_changed()
     }
 
-    fn start_comissioning(
-        &self,
+    pub fn start_comissioning(
+        &self, 
         dev_comm: CommissioningData,
-        discovery_capabilities: DiscoveryCapabilities,
-        buf: &mut [u8],
-    ) -> Result<bool, Error> {
-        if !self.pase_mgr.borrow().is_pase_session_enabled() && self.fabric_mgr.borrow().is_empty()
-        {
-            print_pairing_code_and_qr(self.dev_det, &dev_comm, discovery_capabilities, buf)?;
+        qr_data: Option<(DiscoveryCapabilities, &mut [u8])>,
+    ) -> Result<(), Error> {
+        let mut pase_mgr = self.pase_mgr.borrow_mut();
 
-            self.pase_mgr.borrow_mut().enable_pase_session(
-                dev_comm.verifier,
-                dev_comm.discriminator,
-                &self.transport_mgr.mdns,
-            )?;
-
-            Ok(true)
-        } else {
-            Ok(false)
+        if let Some((discovery_capabilities, qr_buf)) = qr_data {
+            if !pase_mgr.is_pase_session_enabled() {
+                print_pairing_code_and_qr(self.dev_det, &dev_comm, discovery_capabilities, qr_buf)?;
+            }
         }
+
+        pase_mgr.enable_pase_session(
+            dev_comm.verifier,
+            dev_comm.discriminator,
+            &self.transport_mgr.mdns,
+        )
+    }
+
+    pub fn stop_comissioning(&self) -> Result<(), Error> {
+        // TODO: Consider what else to do here
+        self.pase_mgr.borrow_mut().disable_pase_session(&self.transport_mgr.mdns)
     }
 
     /// Resets the transport layer by clearing all sessions, exchanges, the RX buffer and the TX buffer
@@ -200,23 +200,11 @@ impl<'a> Matter<'a> {
         self.transport_mgr.reset()
     }
 
-    pub async fn run<S, R>(
-        &self,
-        send: S,
-        recv: R,
-        dev_comm: Option<(CommissioningData, DiscoveryCapabilities)>,
-    ) -> Result<(), Error>
+    pub async fn run_transport<S, R>(&self, send: S, recv: R) -> Result<(), Error>
     where
         S: NetworkSend,
         R: NetworkReceive,
     {
-        if let Some((dev_comm, discovery_caps)) = dev_comm {
-            let buf_access = PacketBufferExternalAccess(&self.transport_mgr.rx);
-            let mut buf = buf_access.get().await.ok_or(ErrorCode::NoSpace)?;
-
-            self.start_comissioning(dev_comm, discovery_caps, &mut buf)?;
-        }
-
         self.transport_mgr.run(send, recv).await
     }
 

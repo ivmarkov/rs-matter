@@ -283,48 +283,31 @@ impl Target {
     }
 }
 
-type Subjects = [Option<u64>; SUBJECTS_PER_ENTRY];
-
-type Targets = Nullable<[Option<Target>; TARGETS_PER_ENTRY]>;
-impl Targets {
-    fn init_notnull() -> Self {
-        const INIT_TARGETS: Option<Target> = None;
-        Nullable::NotNull([INIT_TARGETS; TARGETS_PER_ENTRY])
-    }
-}
-
 #[derive(ToTLV, FromTLV, Clone, Debug, PartialEq)]
 #[tlvargs(start = 1)]
 pub struct AclEntry {
     privilege: Privilege,
     auth_mode: AuthMode,
-    subjects: Subjects,
-    targets: Targets,
+    subjects: heapless::Vec<u64, SUBJECTS_PER_ENTRY>,
+    targets: heapless::Vec<Target, TARGETS_PER_ENTRY>,
     // TODO: Instead of the direct value, we should consider GlobalElements::FabricIndex
     #[tagval(0xFE)]
     pub fab_idx: NonZeroU8,
 }
 
 impl AclEntry {
-    pub fn new(fab_idx: NonZeroU8, privilege: Privilege, auth_mode: AuthMode) -> Self {
-        const INIT_SUBJECTS: Option<u64> = None;
+    pub const fn new(fab_idx: NonZeroU8, privilege: Privilege, auth_mode: AuthMode) -> Self {
         Self {
             fab_idx,
             privilege,
             auth_mode,
-            subjects: [INIT_SUBJECTS; SUBJECTS_PER_ENTRY],
-            targets: Targets::init_notnull(),
+            subjects: heapless::Vec::new(),
+            targets: heapless::Vec::new(),
         }
     }
 
     pub fn add_subject(&mut self, subject: u64) -> Result<(), Error> {
-        let index = self
-            .subjects
-            .iter()
-            .position(|s| s.is_none())
-            .ok_or(ErrorCode::NoSpace)?;
-        self.subjects[index] = Some(subject);
-        Ok(())
+        self.subjects.push(subject).map_err(|_| ErrorCode::NoSpace.into())
     }
 
     pub fn add_subject_catid(&mut self, cat_id: u32) -> Result<(), Error> {
@@ -332,21 +315,7 @@ impl AclEntry {
     }
 
     pub fn add_target(&mut self, target: Target) -> Result<(), Error> {
-        if self.targets.is_null() {
-            self.targets = Targets::init_notnull();
-        }
-        let index = self
-            .targets
-            .as_ref()
-            .notnull()
-            .unwrap()
-            .iter()
-            .position(|s| s.is_none())
-            .ok_or(ErrorCode::NoSpace)?;
-
-        self.targets.as_mut().notnull().unwrap()[index] = Some(target);
-
-        Ok(())
+        self.targets.push(target).map_err(|_| ErrorCode::NoSpace.into())
     }
 
     fn match_accessor(&self, accessor: &Accessor) -> bool {
@@ -354,54 +323,22 @@ impl AclEntry {
             return false;
         }
 
-        let mut allow = false;
-        let mut entries_exist = false;
-        for i in self.subjects.iter().flatten() {
-            entries_exist = true;
-            if accessor.subjects.matches(*i) {
-                allow = true;
-            }
-        }
-        if !entries_exist {
-            // Subjects array empty implies allow for all subjects
-            allow = true;
-        }
+        // Subjects array empty implies allow for all subjects
+        let allow = self.subjects.is_empty() || self.subjects.iter().any(|s| accessor.subjects.matches(*s));
 
         // true if both are true
         allow && self.fab_idx.get() == accessor.fab_idx
     }
 
     fn match_access_desc(&self, object: &AccessDesc) -> bool {
-        let mut allow = false;
-        let mut entries_exist = false;
-        match self.targets.as_ref().notnull() {
-            None => allow = true, // Allow if targets are NULL
-            Some(targets) => {
-                for t in targets.iter().flatten() {
-                    entries_exist = true;
-                    if (t.endpoint.is_none() || t.endpoint == object.path.endpoint)
-                        && (t.cluster.is_none() || t.cluster == object.path.cluster)
-                    {
-                        allow = true
-                    }
-                }
-            }
-        }
-        if !entries_exist {
-            // Targets array empty implies allow for all targets
-            allow = true;
-        }
+        // Targets array empty implies allow for all targets
+        let allow = self.targets.is_empty() || self.targets.iter().any(|t| {
+            (t.endpoint.is_none() || t.endpoint == object.path.endpoint)
+            && (t.cluster.is_none() || t.cluster == object.path.cluster)
+        });
 
-        if allow {
-            // Check that the object's access allows this operation with this privilege
-            if let Some(access) = object.target_perms {
-                access.is_ok(object.operation, self.privilege)
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        // Check that the object's access allows this operation with this privilege
+        allow && object.target_perms.map(|access| access.is_ok(object.operation, self.privilege)).unwrap_or(false)
     }
 
     pub fn allow(&self, req: &AccessReq) -> bool {
@@ -409,236 +346,234 @@ impl AclEntry {
     }
 }
 
-const MAX_ACL_ENTRIES: usize = ENTRIES_PER_FABRIC * fabric::MAX_SUPPORTED_FABRICS;
+// const MAX_ACL_ENTRIES: usize = ENTRIES_PER_FABRIC * fabric::MAX_FABRICS;
 
-type AclEntries = heapless::Vec<Option<AclEntry>, MAX_ACL_ENTRIES>;
+// pub struct AclMgr {
+//     entries: heapless::Vec<AclEntry, MAX_ACL_ENTRIES>,
+//     changed: bool,
+// }
 
-pub struct AclMgr {
-    entries: AclEntries,
-    changed: bool,
-}
+// impl Default for AclMgr {
+//     fn default() -> Self {
+//         Self::new()
+//     }
+// }
 
-impl Default for AclMgr {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// impl AclMgr {
+//     #[inline(always)]
+//     pub const fn new() -> Self {
+//         Self {
+//             entries: heapless::Vec::new(),
+//             changed: false,
+//         }
+//     }
 
-impl AclMgr {
-    #[inline(always)]
-    pub const fn new() -> Self {
-        Self {
-            entries: AclEntries::new(),
-            changed: false,
-        }
-    }
+//     pub fn erase_all(&mut self) -> Result<(), Error> {
+//         self.entries.clear();
+//         self.changed = true;
 
-    pub fn erase_all(&mut self) -> Result<(), Error> {
-        self.entries.clear();
-        self.changed = true;
+//         Ok(())
+//     }
 
-        Ok(())
-    }
+//     pub fn add(&mut self, entry: AclEntry) -> Result<u8, Error> {
+//         if entry.auth_mode == AuthMode::Pase {
+//             // Reserved for future use
+//             // TODO: Should be something that results in IMStatusCode::ConstraintError
+//             Err(ErrorCode::Invalid)?;
+//         }
 
-    pub fn add(&mut self, entry: AclEntry) -> Result<u8, Error> {
-        if entry.auth_mode == AuthMode::Pase {
-            // Reserved for future use
-            // TODO: Should be something that results in IMStatusCode::ConstraintError
-            Err(ErrorCode::Invalid)?;
-        }
+//         let cnt = self.get_index_in_fabric(MAX_ACL_ENTRIES, entry.fab_idx);
+//         if cnt >= ENTRIES_PER_FABRIC as u8 {
+//             Err(ErrorCode::NoSpace)?;
+//         }
 
-        let cnt = self.get_index_in_fabric(MAX_ACL_ENTRIES, entry.fab_idx);
-        if cnt >= ENTRIES_PER_FABRIC as u8 {
-            Err(ErrorCode::NoSpace)?;
-        }
+//         let slot = self.entries.iter().position(|a| a.is_none());
 
-        let slot = self.entries.iter().position(|a| a.is_none());
+//         if slot.is_some() || self.entries.len() < MAX_ACL_ENTRIES {
+//             let fab_idx = entry.fab_idx;
 
-        if slot.is_some() || self.entries.len() < MAX_ACL_ENTRIES {
-            let fab_idx = entry.fab_idx;
+//             let slot = if let Some(slot) = slot {
+//                 self.entries[slot] = Some(entry);
 
-            let slot = if let Some(slot) = slot {
-                self.entries[slot] = Some(entry);
+//                 slot
+//             } else {
+//                 self.entries
+//                     .push(Some(entry))
+//                     .map_err(|_| ErrorCode::NoSpace)
+//                     .unwrap();
 
-                slot
-            } else {
-                self.entries
-                    .push(Some(entry))
-                    .map_err(|_| ErrorCode::NoSpace)
-                    .unwrap();
+//                 self.entries.len() - 1
+//             };
 
-                self.entries.len() - 1
-            };
+//             self.changed = true;
 
-            self.changed = true;
+//             Ok(self.get_index_in_fabric(slot, fab_idx))
+//         } else {
+//             Err(ErrorCode::NoSpace.into())
+//         }
+//     }
 
-            Ok(self.get_index_in_fabric(slot, fab_idx))
-        } else {
-            Err(ErrorCode::NoSpace.into())
-        }
-    }
+//     // Since the entries are fabric-scoped, the index is only for entries with the matching fabric index
+//     pub fn edit(&mut self, index: u8, fab_idx: NonZeroU8, new: AclEntry) -> Result<(), Error> {
+//         let old = self.for_index_in_fabric(index, fab_idx)?;
+//         *old = Some(new);
 
-    // Since the entries are fabric-scoped, the index is only for entries with the matching fabric index
-    pub fn edit(&mut self, index: u8, fab_idx: NonZeroU8, new: AclEntry) -> Result<(), Error> {
-        let old = self.for_index_in_fabric(index, fab_idx)?;
-        *old = Some(new);
+//         self.changed = true;
 
-        self.changed = true;
+//         Ok(())
+//     }
 
-        Ok(())
-    }
+//     pub fn delete(&mut self, index: u8, fab_idx: NonZeroU8) -> Result<(), Error> {
+//         let old = self.for_index_in_fabric(index, fab_idx)?;
+//         *old = None;
 
-    pub fn delete(&mut self, index: u8, fab_idx: NonZeroU8) -> Result<(), Error> {
-        let old = self.for_index_in_fabric(index, fab_idx)?;
-        *old = None;
+//         self.changed = true;
 
-        self.changed = true;
+//         Ok(())
+//     }
 
-        Ok(())
-    }
+//     pub fn delete_for_fabric(&mut self, fab_idx: NonZeroU8) -> Result<(), Error> {
+//         for entry in &mut self.entries {
+//             if entry
+//                 .as_ref()
+//                 .map(|e| e.fab_idx == fab_idx)
+//                 .unwrap_or(false)
+//             {
+//                 *entry = None;
+//                 self.changed = true;
+//             }
+//         }
 
-    pub fn delete_for_fabric(&mut self, fab_idx: NonZeroU8) -> Result<(), Error> {
-        for entry in &mut self.entries {
-            if entry
-                .as_ref()
-                .map(|e| e.fab_idx == fab_idx)
-                .unwrap_or(false)
-            {
-                *entry = None;
-                self.changed = true;
-            }
-        }
+//         Ok(())
+//     }
 
-        Ok(())
-    }
+//     pub fn for_each_acl<T>(&self, mut f: T) -> Result<(), Error>
+//     where
+//         T: FnMut(&AclEntry) -> Result<(), Error>,
+//     {
+//         for entry in self.entries.iter().flatten() {
+//             f(entry)?;
+//         }
 
-    pub fn for_each_acl<T>(&self, mut f: T) -> Result<(), Error>
-    where
-        T: FnMut(&AclEntry) -> Result<(), Error>,
-    {
-        for entry in self.entries.iter().flatten() {
-            f(entry)?;
-        }
+//         Ok(())
+//     }
 
-        Ok(())
-    }
+//     pub fn allow(&self, req: &AccessReq) -> bool {
+//         // PASE Sessions with no fabric index have implicit access grant,
+//         // but only as long as the ACL list is empty
+//         //
+//         // As per the spec:
+//         // The Access Control List is able to have an initial entry added because the Access Control Privilege
+//         // Granting algorithm behaves as if, over a PASE commissioning channel during the commissioning
+//         // phase, the following implicit Access Control Entry were present on the Commissionee (but not on
+//         // the Commissioner):
+//         // Access Control Cluster: {
+//         //     ACL: [
+//         //         0: {
+//         //             // implicit entry only; does not explicitly exist!
+//         //             FabricIndex: 0, // not fabric-specific
+//         //             Privilege: Administer,
+//         //             AuthMode: PASE,
+//         //             Subjects: [],
+//         //             Targets: [] // entire node
+//         //         }
+//         //     ],
+//         //     Extension: []
+//         // }
+//         if req.accessor.auth_mode == AuthMode::Pase {
+//             return true;
+//         }
 
-    pub fn allow(&self, req: &AccessReq) -> bool {
-        // PASE Sessions with no fabric index have implicit access grant,
-        // but only as long as the ACL list is empty
-        //
-        // As per the spec:
-        // The Access Control List is able to have an initial entry added because the Access Control Privilege
-        // Granting algorithm behaves as if, over a PASE commissioning channel during the commissioning
-        // phase, the following implicit Access Control Entry were present on the Commissionee (but not on
-        // the Commissioner):
-        // Access Control Cluster: {
-        //     ACL: [
-        //         0: {
-        //             // implicit entry only; does not explicitly exist!
-        //             FabricIndex: 0, // not fabric-specific
-        //             Privilege: Administer,
-        //             AuthMode: PASE,
-        //             Subjects: [],
-        //             Targets: [] // entire node
-        //         }
-        //     ],
-        //     Extension: []
-        // }
-        if req.accessor.auth_mode == AuthMode::Pase {
-            return true;
-        }
+//         for e in self.entries.iter().flatten() {
+//             if e.allow(req) {
+//                 return true;
+//             }
+//         }
+//         error!(
+//             "ACL Disallow for subjects {} fab idx {}",
+//             req.accessor.subjects, req.accessor.fab_idx
+//         );
+//         error!("{}", self);
+//         false
+//     }
 
-        for e in self.entries.iter().flatten() {
-            if e.allow(req) {
-                return true;
-            }
-        }
-        error!(
-            "ACL Disallow for subjects {} fab idx {}",
-            req.accessor.subjects, req.accessor.fab_idx
-        );
-        error!("{}", self);
-        false
-    }
+//     pub fn load(&mut self, data: &[u8]) -> Result<(), Error> {
+//         let root = TLVList::new(data).iter().next().ok_or(ErrorCode::Invalid)?;
 
-    pub fn load(&mut self, data: &[u8]) -> Result<(), Error> {
-        let root = TLVList::new(data).iter().next().ok_or(ErrorCode::Invalid)?;
+//         tlv::from_tlv(&mut self.entries, &root)?;
+//         self.changed = false;
 
-        tlv::from_tlv(&mut self.entries, &root)?;
-        self.changed = false;
+//         Ok(())
+//     }
 
-        Ok(())
-    }
+//     pub fn store<'a>(&mut self, buf: &'a mut [u8]) -> Result<Option<&'a [u8]>, Error> {
+//         if self.changed {
+//             let mut wb = WriteBuf::new(buf);
+//             let mut tw = TLVWriter::new(&mut wb);
+//             self.entries
+//                 .as_slice()
+//                 .to_tlv(&mut tw, TagType::Anonymous)?;
 
-    pub fn store<'a>(&mut self, buf: &'a mut [u8]) -> Result<Option<&'a [u8]>, Error> {
-        if self.changed {
-            let mut wb = WriteBuf::new(buf);
-            let mut tw = TLVWriter::new(&mut wb);
-            self.entries
-                .as_slice()
-                .to_tlv(&mut tw, TagType::Anonymous)?;
+//             self.changed = false;
 
-            self.changed = false;
+//             let len = tw.get_tail();
 
-            let len = tw.get_tail();
+//             Ok(Some(&buf[..len]))
+//         } else {
+//             Ok(None)
+//         }
+//     }
 
-            Ok(Some(&buf[..len]))
-        } else {
-            Ok(None)
-        }
-    }
+//     pub fn is_changed(&self) -> bool {
+//         self.changed
+//     }
 
-    pub fn is_changed(&self) -> bool {
-        self.changed
-    }
+//     /// Traverse fabric specific entries to find the index
+//     ///
+//     /// If the ACL Mgr has 3 entries with fabric indexes, 1, 2, 1, then the list
+//     /// index 1 for Fabric 1 in the ACL Mgr will be the actual index 2 (starting from  0)
+//     fn for_index_in_fabric(
+//         &mut self,
+//         index: u8,
+//         fab_idx: NonZeroU8,
+//     ) -> Result<&mut Option<AclEntry>, Error> {
+//         // Can't use flatten as we need to borrow the Option<> not the 'AclEntry'
+//         for (curr_index, entry) in self
+//             .entries
+//             .iter_mut()
+//             .filter(|e| e.as_ref().filter(|e1| e1.fab_idx == fab_idx).is_some())
+//             .enumerate()
+//         {
+//             if curr_index == index as usize {
+//                 return Ok(entry);
+//             }
+//         }
+//         Err(ErrorCode::NotFound.into())
+//     }
 
-    /// Traverse fabric specific entries to find the index
-    ///
-    /// If the ACL Mgr has 3 entries with fabric indexes, 1, 2, 1, then the list
-    /// index 1 for Fabric 1 in the ACL Mgr will be the actual index 2 (starting from  0)
-    fn for_index_in_fabric(
-        &mut self,
-        index: u8,
-        fab_idx: NonZeroU8,
-    ) -> Result<&mut Option<AclEntry>, Error> {
-        // Can't use flatten as we need to borrow the Option<> not the 'AclEntry'
-        for (curr_index, entry) in self
-            .entries
-            .iter_mut()
-            .filter(|e| e.as_ref().filter(|e1| e1.fab_idx == fab_idx).is_some())
-            .enumerate()
-        {
-            if curr_index == index as usize {
-                return Ok(entry);
-            }
-        }
-        Err(ErrorCode::NotFound.into())
-    }
+//     /// Traverse fabric specific entries to find the index of an entry relative to its fabric.
+//     ///
+//     /// If the ACL Mgr has 3 entries with fabric indexes, 1, 2, 1, then the actual
+//     /// index 2 in the ACL Mgr will be the list index 1 for Fabric 1
+//     fn get_index_in_fabric(&self, till_slot_index: usize, fab_idx: NonZeroU8) -> u8 {
+//         self.entries
+//             .iter()
+//             .take(till_slot_index)
+//             .flatten()
+//             .filter(|e| e.fab_idx == fab_idx)
+//             .count() as u8
+//     }
+// }
 
-    /// Traverse fabric specific entries to find the index of an entry relative to its fabric.
-    ///
-    /// If the ACL Mgr has 3 entries with fabric indexes, 1, 2, 1, then the actual
-    /// index 2 in the ACL Mgr will be the list index 1 for Fabric 1
-    fn get_index_in_fabric(&self, till_slot_index: usize, fab_idx: NonZeroU8) -> u8 {
-        self.entries
-            .iter()
-            .take(till_slot_index)
-            .flatten()
-            .filter(|e| e.fab_idx == fab_idx)
-            .count() as u8
-    }
-}
-
-impl core::fmt::Display for AclMgr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "ACLS: [")?;
-        for i in self.entries.iter().flatten() {
-            write!(f, "  {{ {:?} }}, ", i)?;
-        }
-        write!(f, "]")
-    }
-}
+// impl core::fmt::Display for AclMgr {
+//     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+//         write!(f, "ACLS: [")?;
+//         for i in self.entries.iter().flatten() {
+//             write!(f, "  {{ {:?} }}, ", i)?;
+//         }
+//         write!(f, "]")
+//     }
+// }
 
 #[cfg(test)]
 #[allow(clippy::bool_assert_comparison)]

@@ -101,16 +101,14 @@ pub struct OpenCommWindowReq<'a> {
 #[derive(Clone)]
 pub struct AdminCommCluster<'a> {
     data_ver: Dataver,
-    pase_mgr: &'a RefCell<PaseMgr>,
-    mdns: &'a dyn Mdns,
+    matter: &'a Matter<'a>,
 }
 
 impl<'a> AdminCommCluster<'a> {
-    pub fn new(pase_mgr: &'a RefCell<PaseMgr>, mdns: &'a dyn Mdns, rand: Rand) -> Self {
+    pub const fn new(init_ver: u32, matter: &'a Matter<'a>) -> Self {
         Self {
-            data_ver: Dataver::new(rand),
-            pase_mgr,
-            mdns,
+            data_ver: Dataver::new(init_ver),
+            matter,
         }
     }
 
@@ -123,7 +121,7 @@ impl<'a> AdminCommCluster<'a> {
                     Attributes::WindowStatus(codec) => codec.encode(writer, 1),
                     Attributes::AdminVendorId(codec) => codec.encode(writer, Nullable::NotNull(1)),
                     Attributes::AdminFabricIndex(codec) => {
-                        codec.encode(writer, Nullable::NotNull(1))
+                        codec.encode(writer, Nullable::NotNull(1)) // TODO: Is this correct?
                     }
                 }
             }
@@ -162,7 +160,7 @@ impl<'a> AdminCommCluster<'a> {
 
     fn handle_command_revokecomm_win(&self, _data: &TLVElement) -> Result<(), Error> {
         cmd_enter!("Revoke Commissioning Window");
-        self.pase_mgr.borrow_mut().disable_pase_session(self.mdns)?;
+        let _ = self.pase_mgr.borrow_mut().disable_pase_session(self.mdns);
 
         // TODO: Send status code if no commissioning window is open
 

@@ -216,19 +216,46 @@ fn encode_extension_end(w: &mut dyn CertConsumer) -> Result<(), Error> {
     w.end_seq()
 }
 
-const MAX_EXTENSION_ENTRIES: usize = 6;
-
 // The order in which the extensions arrive is important, as the signing
 // requires that the ASN1 notation retain the same order
-#[derive(Default, Debug, PartialEq)]
-struct Extensions<'a>(heapless::Vec<Extension<'a>, MAX_EXTENSION_ENTRIES>);
+#[derive(Debug, PartialEq)]
+struct Extensions<'a>(TLVElement<'a>);
 
 impl<'a> Extensions<'a> {
+    pub fn try_iter(&self) -> Result<impl Iterator<Item = Result<Extension, Error>>, Error> {
+        let iter = self
+            .0
+            .confirm_list()?
+            .enter()
+            .ok_or_else(|| Error::new(ErrorCode::Invalid))?
+            .map(|item| {
+                let TagType::Context(tag) = item.get_tag() else {
+                    return Err(ErrorCode::Invalid.into());
+                };
+    
+                let extension = match tag {
+                    1 => Extension::BasicConstraints(BasicConstraints::from_tlv(&item)?),
+                    2 => Extension::KeyUsage(item.u16()?),
+                    3 => Extension::ExtKeyUsage(TLVArray::from_tlv(&item)?),
+                    4 => Extension::SubjectKeyId(OctetStr::from_tlv(&item)?),
+                    5 => Extension::AuthorityKeyId(OctetStr::from_tlv(&item)?),
+                    6 => Extension::FutureExtensions(OctetStr::from_tlv(&item)?),
+                    _ => Err(ErrorCode::Invalid)?,
+                };
+
+                Ok(extension)
+            });
+
+        Ok(iter)
+    }
+
     fn encode(&self, w: &mut dyn CertConsumer) -> Result<(), Error> {
         w.start_ctx("X509v3 extensions:", 3)?;
         w.start_seq("")?;
 
-        for extension in &self.0 {
+        for extension in self.try_iter()? {
+            let extension = extension?;
+
             extension.encode(w)?;
         }
 
@@ -241,34 +268,7 @@ impl<'a> Extensions<'a> {
 
 impl<'a> FromTLV<'a> for Extensions<'a> {
     fn from_tlv(t: &TLVElement<'a>) -> Result<Self, Error> {
-        let tlv_iter = t
-            .confirm_list()?
-            .enter()
-            .ok_or_else(|| Error::new(ErrorCode::Invalid))?;
-
-        let mut extensions = heapless::Vec::new();
-
-        for item in tlv_iter {
-            let TagType::Context(tag) = item.get_tag() else {
-                return Err(ErrorCode::Invalid.into());
-            };
-
-            let extension = match tag {
-                1 => Extension::BasicConstraints(BasicConstraints::from_tlv(&item)?),
-                2 => Extension::KeyUsage(item.u16()?),
-                3 => Extension::ExtKeyUsage(TLVArray::from_tlv(&item)?),
-                4 => Extension::SubjectKeyId(OctetStr::from_tlv(&item)?),
-                5 => Extension::AuthorityKeyId(OctetStr::from_tlv(&item)?),
-                6 => Extension::FutureExtensions(OctetStr::from_tlv(&item)?),
-                _ => Err(ErrorCode::Invalid)?,
-            };
-
-            extensions
-                .push(extension)
-                .map_err(|_| Error::new(ErrorCode::NoSpace))?;
-        }
-
-        Ok(Self(extensions))
+        Ok(Self(t.clone()))
     }
 }
 
@@ -276,10 +276,12 @@ impl<'a> ToTLV for Extensions<'a> {
     fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
         tw.start_list(tag)?;
 
-        for extension in &self.0 {
+        for extension in self.try_iter()? {
+            let extension = extension?;
+
             match extension {
                 Extension::BasicConstraints(t) => t.to_tlv(tw, TagType::Context(1))?,
-                Extension::KeyUsage(t) => tw.u16(TagType::Context(2), *t)?,
+                Extension::KeyUsage(t) => tw.u16(TagType::Context(2), t)?,
                 Extension::ExtKeyUsage(t) => t.to_tlv(tw, TagType::Context(3))?,
                 Extension::SubjectKeyId(t) => t.to_tlv(tw, TagType::Context(4))?,
                 Extension::AuthorityKeyId(t) => t.to_tlv(tw, TagType::Context(5))?,
@@ -384,40 +386,71 @@ enum DistNameValue<'a> {
     PrintableStr(&'a [u8]),
 }
 
-const MAX_DN_ENTRIES: usize = 5;
-
-#[derive(Default, Debug, PartialEq)]
-struct DistNames<'a> {
-    // The order in which the DNs arrive is important, as the signing
-    // requires that the ASN1 notation retains the same order
-    dn: heapless::Vec<(u8, DistNameValue<'a>), MAX_DN_ENTRIES>,
-}
+// The order in which the DNs arrive is important, as the signing
+// requires that the ASN1 notation retains the same order
+#[derive(Debug, PartialEq)]
+struct DistNames<'a>(TLVElement<'a>);
 
 impl<'a> DistNames<'a> {
-    fn u64(&self, match_id: DnTags) -> Option<u64> {
-        self.dn
-            .iter()
-            .find(|(id, _)| *id == match_id as u8)
-            .and_then(|(_, value)| {
-                if let DistNameValue::Uint(u) = *value {
-                    Some(u)
+    pub fn try_iter(&self) -> Result<impl Iterator<Item = Result<(u8, DistNameValue<'a>), Error>>, Error> {
+        let iter = self
+            .0
+            .confirm_list()?
+            .enter()
+            .ok_or_else(|| Error::new(ErrorCode::Invalid))?
+            .map(|item| {
+                let TagType::Context(tag) = item.get_tag() else {
+                    return Err(ErrorCode::Invalid.into());
+                };
+    
+                let value = if let Ok(value) = item.u64() {
+                    DistNameValue::Uint(value)
+                } else if let Ok(value) = item.slice() {
+                    if tag > PRINTABLE_STR_THRESHOLD {
+                        DistNameValue::PrintableStr(value)
+                    } else {
+                        DistNameValue::Utf8Str(value)
+                    }
                 } else {
-                    None
-                }
-            })
+                    return Err(ErrorCode::Invalid.into());
+                };
+    
+                Ok((tag, value))
+            });
+
+        Ok(iter)
     }
 
-    fn u32_arr(&self, match_id: DnTags, output: &mut [u32]) {
+    fn u64(&self, match_id: DnTags) -> Result<Option<u64>, Error> {
+        for item in  self.try_iter()? {
+            let (id, value) = item?;
+            if id == match_id as u8 {
+                if let DistNameValue::Uint(u) = value {
+                    return Ok(Some(u));
+                }
+            }            
+        }
+
+        Ok(None)
+    }
+
+    fn u32_arr(&self, match_id: DnTags, output: &mut [u32]) -> Result<(), Error> {
         let mut out_index = 0;
-        for (_, val) in self.dn.iter().filter(|(id, _)| *id == match_id as u8) {
-            if let DistNameValue::Uint(a) = val {
-                if out_index < output.len() {
-                    // CatIds are actually just 32-bit
-                    output[out_index] = *a as u32;
-                    out_index += 1;
+
+        for item in self.try_iter()? {
+            let (id, value) = item?;
+            if id == match_id as u8 {
+                if let DistNameValue::Uint(a) = value {
+                    if out_index < output.len() {
+                        // CatIds are actually just 32-bit
+                        output[out_index] = a as u32;
+                        out_index += 1;
+                    }
                 }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -425,42 +458,21 @@ const PRINTABLE_STR_THRESHOLD: u8 = 0x80;
 
 impl<'a> FromTLV<'a> for DistNames<'a> {
     fn from_tlv(t: &TLVElement<'a>) -> Result<Self, Error> {
-        let mut d = Self {
-            dn: heapless::Vec::new(),
-        };
-        let iter = t.confirm_list()?.enter().ok_or(ErrorCode::Invalid)?;
-        for t in iter {
-            if let TagType::Context(tag) = t.get_tag() {
-                if let Ok(value) = t.u64() {
-                    d.dn.push((tag, DistNameValue::Uint(value)))
-                        .map_err(|_| ErrorCode::BufferTooSmall)?;
-                } else if let Ok(value) = t.slice() {
-                    if tag > PRINTABLE_STR_THRESHOLD {
-                        d.dn.push((
-                            tag - PRINTABLE_STR_THRESHOLD,
-                            DistNameValue::PrintableStr(value),
-                        ))
-                        .map_err(|_| ErrorCode::BufferTooSmall)?;
-                    } else {
-                        d.dn.push((tag, DistNameValue::Utf8Str(value)))
-                            .map_err(|_| ErrorCode::BufferTooSmall)?;
-                    }
-                }
-            }
-        }
-        Ok(d)
+        Ok(Self(t.clone()))
     }
 }
 
 impl<'a> ToTLV for DistNames<'a> {
     fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
         tw.start_list(tag)?;
-        for (name, value) in &self.dn {
+        for item in self.try_iter()? {
+            let (name, value) = item?;
+
             match value {
-                DistNameValue::Uint(v) => tw.u64(TagType::Context(*name), *v)?,
-                DistNameValue::Utf8Str(v) => tw.utf8(TagType::Context(*name), v)?,
+                DistNameValue::Uint(v) => tw.u64(TagType::Context(name), v)?,
+                DistNameValue::Utf8Str(v) => tw.utf8(TagType::Context(name), v)?,
                 DistNameValue::PrintableStr(v) => {
-                    tw.utf8(TagType::Context(*name + PRINTABLE_STR_THRESHOLD), v)?
+                    tw.utf8(TagType::Context(name + PRINTABLE_STR_THRESHOLD), v)?
                 }
             }
         }
@@ -557,13 +569,15 @@ impl<'a> DistNames<'a> {
         ];
 
         w.start_seq(tag)?;
-        for (id, value) in &self.dn {
-            let tag: Option<DnTags> = num::FromPrimitive::from_u8(*id);
+        for item in self.try_iter()? {
+            let (id, value) = item?;
+
+            let tag: Option<DnTags> = num::FromPrimitive::from_u8(id);
             if tag.is_some() {
                 let index = (id - 1) as usize;
                 if index <= DN_ENCODING.len() {
                     let this = &DN_ENCODING[index];
-                    encode_dn_value(value, this.0, this.1, w, this.2)?;
+                    encode_dn_value(&value, this.0, this.1, w, this.2)?;
                 } else {
                     // Non Matter DNs are encoded as
                     error!("Invalid DN, too high {}", id);
@@ -624,7 +638,7 @@ fn encode_dn_value(
     w.end_set()
 }
 
-#[derive(FromTLV, ToTLV, Default, Debug, PartialEq)]
+#[derive(FromTLV, ToTLV, Debug, PartialEq)]
 #[tlvargs(lifetime = "'a", start = 1)]
 pub struct Cert<'a> {
     serial_no: OctetStr<'a>,
@@ -650,17 +664,17 @@ impl<'a> Cert<'a> {
 
     pub fn get_node_id(&self) -> Result<u64, Error> {
         self.subject
-            .u64(DnTags::NodeId)
+            .u64(DnTags::NodeId)?
             .ok_or_else(|| Error::from(ErrorCode::NoNodeId))
     }
 
-    pub fn get_cat_ids(&self, output: &mut [u32]) {
+    pub fn get_cat_ids(&self, output: &mut [u32]) -> Result<(), Error> {
         self.subject.u32_arr(DnTags::NocCat, output)
     }
 
     pub fn get_fabric_id(&self) -> Result<u64, Error> {
         self.subject
-            .u64(DnTags::FabricId)
+            .u64(DnTags::FabricId)?
             .ok_or_else(|| Error::from(ErrorCode::NoFabricId))
     }
 
@@ -670,8 +684,8 @@ impl<'a> Cert<'a> {
 
     pub fn get_subject_key_id(&self) -> Result<&[u8], Error> {
         self.extensions
-            .0
-            .iter()
+            .try_iter()?
+            .filter_map(|extension| extension.ok())
             .find_map(|extension| {
                 if let Extension::SubjectKeyId(id) = extension {
                     Some(id.0)
@@ -687,8 +701,8 @@ impl<'a> Cert<'a> {
 
         let authority = self
             .extensions
-            .0
-            .iter()
+            .try_iter()?
+            .filter_map(|extension| extension.ok())
             .find_map(|extension| {
                 if let Extension::AuthorityKeyId(id) = extension {
                     Some(id.0 == their_subject)

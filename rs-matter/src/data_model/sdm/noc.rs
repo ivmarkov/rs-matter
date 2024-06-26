@@ -18,12 +18,12 @@
 use core::cell::{Cell, RefCell};
 use core::num::NonZeroU8;
 
-use crate::acl::{AclEntry, AclMgr, AuthMode};
+use crate::acl::{AclEntry, AuthMode};
 use crate::cert::{Cert, MAX_CERT_TLV_LEN};
 use crate::crypto::{self, KeyPair};
 use crate::data_model::objects::*;
 use crate::data_model::sdm::dev_att;
-use crate::fabric::{Fabric, FabricMgr, MAX_SUPPORTED_FABRICS};
+use crate::fabric::{Fabric, FabricMgr, MAX_FABRICS};
 use crate::mdns::Mdns;
 use crate::tlv::{FromTLV, OctetStr, TLVElement, TLVWriter, TagType, ToTLV, UtfStr};
 use crate::transport::core::TransportMgr;
@@ -32,7 +32,7 @@ use crate::transport::session::SessionMode;
 use crate::utils::epoch::Epoch;
 use crate::utils::rand::Rand;
 use crate::utils::writebuf::WriteBuf;
-use crate::{attribute_enum, cmd_enter, command_enum, error::*};
+use crate::{attribute_enum, cmd_enter, command_enum, error::*, Matter};
 use log::{error, info, warn};
 use strum::{EnumDiscriminants, FromRepr};
 
@@ -157,20 +157,6 @@ pub const CLUSTER: Cluster<'static> = Cluster {
     ],
 };
 
-pub struct NocData {
-    pub key_pair: KeyPair,
-    pub root_ca: heapless::Vec<u8, { MAX_CERT_TLV_LEN }>,
-}
-
-impl NocData {
-    pub fn new(key_pair: KeyPair) -> Self {
-        Self {
-            key_pair,
-            root_ca: heapless::Vec::new(),
-        }
-    }
-}
-
 #[derive(ToTLV)]
 struct CertChainResp<'a> {
     cert: OctetStr<'a>,
@@ -218,19 +204,12 @@ struct RemoveFabricReq {
 #[derive(Clone)]
 pub struct NocCluster<'a> {
     data_ver: Dataver,
-    epoch: Epoch,
-    rand: Rand,
-    dev_att: &'a dyn DevAttDataFetcher,
-    fabric_mgr: &'a RefCell<FabricMgr>,
-    acl_mgr: &'a RefCell<AclMgr>,
-    failsafe: &'a RefCell<FailSafe>,
-    transport_mgr: &'a TransportMgr<'a>,
-    mdns: &'a dyn Mdns,
+    matter: &'a Matter<'a>,
 }
 
 impl<'a> NocCluster<'a> {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn new(matter: &'a Matter<'a>) -> Self {
         dev_att: &'a dyn DevAttDataFetcher,
         fabric_mgr: &'a RefCell<FabricMgr>,
         acl_mgr: &'a RefCell<AclMgr>,
@@ -260,28 +239,29 @@ impl<'a> NocCluster<'a> {
             } else {
                 match attr.attr_id.try_into()? {
                     Attributes::SupportedFabrics(codec) => {
-                        codec.encode(writer, MAX_SUPPORTED_FABRICS as _)
+                        codec.encode(writer, MAX_FABRICS as _)
                     }
                     Attributes::CurrentFabricIndex(codec) => codec.encode(writer, attr.fab_idx),
                     Attributes::Fabrics(_) => {
                         writer.start_array(AttrDataWriter::TAG)?;
-                        self.fabric_mgr.borrow().for_each(|entry, fab_idx| {
-                            if !attr.fab_filter || attr.fab_idx == fab_idx.get() {
-                                let root_ca_cert = entry.get_root_ca()?;
 
-                                entry
-                                    .get_fabric_desc(fab_idx, &root_ca_cert)?
+                        for fabric in self.fabric_mgr.borrow().iter() {
+                            if !attr.fab_filter || attr.fab_idx == fabric.idx().get() {
+                                let root_ca_cert = fabric.root_ca()?;
+
+                                fabric
+                                    .desc(&root_ca_cert)?
                                     .to_tlv(&mut writer, TagType::Anonymous)?;
                             }
 
-                            Ok(())
-                        })?;
+                        }
+
                         writer.end_container()?;
 
                         writer.complete()
                     }
                     Attributes::CommissionedFabrics(codec) => {
-                        codec.encode(writer, self.fabric_mgr.borrow().used_count() as _)
+                        codec.encode(writer, self.fabric_mgr.borrow().iter().filter(|fabric| fabric.is_commissioned()).count() as _)
                     }
                     _ => {
                         error!("Attribute not supported: this shouldn't happen");
@@ -327,10 +307,6 @@ impl<'a> NocCluster<'a> {
         exchange: &Exchange,
         data: &TLVElement,
     ) -> Result<NonZeroU8, NocError> {
-        let noc_data = exchange
-            .with_session(|sess| Ok(sess.take_noc_data()))?
-            .ok_or(NocStatus::MissingCsr)?;
-
         if !self
             .failsafe
             .borrow_mut()
@@ -341,44 +317,27 @@ impl<'a> NocCluster<'a> {
             Err(NocStatus::InsufficientPrivlege)?;
         }
 
-        let r = AddNocReq::from_tlv(data).map_err(|_| NocStatus::InvalidNOC)?;
+        // TODO
+        let fabric = self.fabric_mgr.borrow_mut().get_mut(NonZeroU8::new(1).unwrap())?; // TODO
 
-        let noc_cert = Cert::new(r.noc_value.0).map_err(|_| NocStatus::InvalidNOC)?;
-        info!("Received NOC as: {}", noc_cert);
+        let req: AddNocReq = AddNocReq::from_tlv(data).map_err(|_| NocStatus::InvalidNOC)?;
 
-        let noc = heapless::Vec::from_slice(r.noc_value.0).map_err(|_| NocStatus::InvalidNOC)?;
+        fabric.update_noc(
+            req.noc_value.0, 
+            req.icac_value.as_ref().map(|icac| icac.0).unwrap_or(&[]), 
+            req.ipk_value.0, 
+            req.vendor_id, 
+        ).map_err(|_| NocStatus::InvalidNOC)?;
+        
+        //.map_err(|_| NocStatus::TableFull)?; TODO
 
-        let icac = if let Some(icac_value) = r.icac_value {
-            if !icac_value.0.is_empty() {
-                let icac_cert = Cert::new(icac_value.0).map_err(|_| NocStatus::InvalidNOC)?;
-                info!("Received ICAC as: {}", icac_cert);
-
-                let icac =
-                    heapless::Vec::from_slice(icac_value.0).map_err(|_| NocStatus::InvalidNOC)?;
-                Some(icac)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let fabric = Fabric::new(
-            noc_data.key_pair,
-            noc_data.root_ca,
-            icac,
-            noc,
-            r.ipk_value.0,
-            r.vendor_id,
-            "",
-        )
-        .map_err(|_| NocStatus::TableFull)?;
-
-        let fab_idx = self
-            .fabric_mgr
-            .borrow_mut()
-            .add(fabric, self.mdns)
-            .map_err(|_| NocStatus::TableFull)?;
+        // TODO
+        // let fab_idx = self
+        //     .fabric_mgr
+        //     .borrow_mut()
+        //     .add(fabric, self.mdns)
+        //     .map_err(|_| NocStatus::TableFull)?
+        //     .idx();
 
         let succeeded = Cell::new(false);
 
@@ -395,7 +354,7 @@ impl<'a> NocCluster<'a> {
         });
 
         let mut acl = AclEntry::new(fab_idx, Privilege::ADMIN, AuthMode::Case);
-        acl.add_subject(r.case_admin_subject)?;
+        acl.add_subject(req.case_admin_subject)?;
         let acl_entry_index = self.acl_mgr.borrow_mut().add(acl)?;
 
         let _acl_guard = scopeguard::guard(fab_idx, |fab_idx| {

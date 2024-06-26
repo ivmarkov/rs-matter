@@ -30,13 +30,25 @@ pub struct KeySet {
 }
 
 impl KeySet {
-    pub fn new(epoch_key: &[u8], compressed_id: &[u8]) -> Result<Self, Error> {
-        let mut ks = KeySet::default();
-        KeySet::op_key_from_ipk(epoch_key, compressed_id, &mut ks.op_key)?;
-        ks.epoch_key.copy_from_slice(epoch_key);
-        Ok(ks)
+    pub const fn new_empty() -> Self {
+        Self {
+            epoch_key: [0; SYMM_KEY_LEN_BYTES],
+            op_key: [0; SYMM_KEY_LEN_BYTES],
+        }
     }
 
+    pub fn clear(&mut self) {
+        self.epoch_key.iter_mut().for_each(|b| *b = 0);
+        self.op_key.iter_mut().for_each(|b| *b = 0);
+    }
+
+    pub fn update(&mut self, epoch_key: &[u8], compressed_id: &[u8]) -> Result<(), Error> {
+        KeySet::op_key_from_ipk(epoch_key, compressed_id, &mut self.op_key)?;
+        self.epoch_key.copy_from_slice(epoch_key);
+
+        Ok(())
+    }
+    
     fn op_key_from_ipk(ipk: &[u8], compressed_id: &[u8], opkey: &mut [u8]) -> Result<(), Error> {
         const GRP_KEY_INFO: [u8; 13] = [
             0x47, 0x72, 0x6f, 0x75, 0x70, 0x4b, 0x65, 0x79, 0x20, 0x76, 0x31, 0x2e, 0x30,

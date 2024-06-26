@@ -16,12 +16,16 @@
  */
 
 use core::cell::RefCell;
+use core::num::NonZeroU8;
+use core::time::Duration;
 
 use crate::data_model::objects::*;
 use crate::data_model::sdm::failsafe::FailSafe;
+use crate::fabric::FabricMgr;
 use crate::tlv::{FromTLV, TLVElement, ToTLV, UtfStr};
 use crate::transport::exchange::Exchange;
 use crate::transport::session::SessionMode;
+use crate::utils::epoch::Epoch;
 use crate::utils::rand::Rand;
 use crate::{attribute_enum, cmd_enter};
 use crate::{command_enum, error::*};
@@ -121,23 +125,29 @@ pub struct GenCommCluster<'a> {
     basic_comm_info: BasicCommissioningInfo,
     supports_concurrent_connection: bool,
     failsafe: &'a RefCell<FailSafe>,
+    fabric_mgr: &'a RefCell<FabricMgr>,
+    epoch: Epoch,
 }
 
 impl<'a> GenCommCluster<'a> {
     pub fn new(
         failsafe: &'a RefCell<FailSafe>,
+        fabric_mgr: &'a RefCell<FabricMgr>,
         supports_concurrent_connection: bool,
         rand: Rand,
+        epoch: Epoch,
     ) -> Self {
         Self {
             data_ver: Dataver::new(rand),
             failsafe,
+            fabric_mgr,
             // TODO: Arch-Specific
             basic_comm_info: BasicCommissioningInfo {
                 expiry_len: 120,
                 max_cmltv_failsafe_secs: 120,
             },
             supports_concurrent_connection,
+            epoch,
         }
     }
 
@@ -207,11 +217,15 @@ impl<'a> GenCommCluster<'a> {
 
         let p = FailSafeParams::from_tlv(data)?;
 
+        let now = (self.epoch)();
+        let timeout = now + Duration::from_secs(p.expiry_len as _);
+        
         let status = if self
             .failsafe
             .borrow_mut()
             .arm(
-                p.expiry_len,
+                now,
+                timeout,
                 exchange.with_session(|sess| Ok(sess.get_session_mode().clone()))?,
             )
             .is_err()
@@ -274,15 +288,21 @@ impl<'a> GenCommCluster<'a> {
             status = CommissioningErrorEnum::InvalidAuthentication as u8;
         }
 
+        let session_mode = exchange.with_session(|sess| Ok(sess.get_session_mode().clone()))?;
+
+        let now = (self.epoch)();
+
         // AddNOC or UpdateNOC must have happened, and that too for the same fabric
         // scope that is for this session
         if self
             .failsafe
             .borrow_mut()
-            .disarm(exchange.with_session(|sess| Ok(sess.get_session_mode().clone()))?)
+            .disarm(now, session_mode.clone())
             .is_err()
         {
             status = CommissioningErrorEnum::InvalidAuthentication as u8;
+        } else {
+            self.fabric_mgr.borrow_mut().set_commissioned(NonZeroU8::new(session_mode.fab_idx()).unwrap())?;
         }
 
         let cmd_data = CommonResponse {

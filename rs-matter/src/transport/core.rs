@@ -170,7 +170,7 @@ impl<'m> TransportMgr<'m> {
         &'a self,
         matter: &'a Matter<'a>,
         session_id: u32,
-    ) -> Result<Exchange<'_>, Error> {
+    ) -> Result<Exchange, Error> {
         let mut session_mgr = self.session_mgr.borrow_mut();
 
         session_mgr.get(session_id).ok_or(ErrorCode::NoSession)?;

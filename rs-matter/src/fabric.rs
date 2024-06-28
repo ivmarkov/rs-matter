@@ -29,7 +29,7 @@ use crate::{
     group_keys::KeySet,
     mdns::{Mdns, ServiceMode},
     tlv::{self, FromTLV, OctetStr, TLVList, TLVWriter, TagType, ToTLV, UtfStr},
-    utils::writebuf::WriteBuf,
+    utils::{alloc::pool::Pool, writebuf::WriteBuf},
 };
 
 const COMPRESSED_FABRIC_ID_LEN: usize = 8;
@@ -186,21 +186,23 @@ pub const MAX_SUPPORTED_FABRICS: usize = 3;
 
 type FabricEntries = Vec<Option<Fabric>, MAX_SUPPORTED_FABRICS>;
 
-pub struct FabricMgr {
+pub struct FabricMgr<'a> {
+    pool: Option<&'a Pool<Fabric, MAX_SUPPORTED_FABRICS>>,
     fabrics: FabricEntries,
     changed: bool,
 }
 
-impl Default for FabricMgr {
+impl<'a> Default for FabricMgr<'a> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl FabricMgr {
+impl<'a> FabricMgr<'a> {
     #[inline(always)]
     pub const fn new() -> Self {
         Self {
+            pool: None,
             fabrics: FabricEntries::new(),
             changed: false,
         }
@@ -224,7 +226,7 @@ impl FabricMgr {
         Ok(())
     }
 
-    pub fn store<'a>(&mut self, buf: &'a mut [u8]) -> Result<Option<&'a [u8]>, Error> {
+    pub fn store<'b>(&mut self, buf: &'b mut [u8]) -> Result<Option<&'b [u8]>, Error> {
         if self.changed {
             let mut wb = WriteBuf::new(buf);
             let mut tw = TLVWriter::new(&mut wb);

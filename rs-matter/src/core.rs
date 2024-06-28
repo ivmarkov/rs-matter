@@ -51,7 +51,7 @@ pub struct CommissioningData {
 
 /// The primary Matter Object
 pub struct Matter<'a> {
-    pub(crate) fabric_mgr: RefCell<FabricMgr>,
+    pub(crate) fabric_mgr: RefCell<FabricMgr<'a>>,
     pub acl_mgr: RefCell<AclMgr>, // Public for tests
     pub(crate) pase_mgr: RefCell<PaseMgr>,
     pub(crate) failsafe: RefCell<FailSafe>,

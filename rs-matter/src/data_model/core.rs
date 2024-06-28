@@ -429,7 +429,7 @@ where
         Ok(())
     }
 
-    pub async fn process_subscriptions(&self, matter: &Matter<'_>) -> Result<(), Error> {
+    pub async fn process_subscriptions(&self, matter: &'a Matter<'a>) -> Result<(), Error> {
         loop {
             // TODO: Un-hardcode these 4 seconds of waiting when the more precise change detection logic is implemented
             let mut timeout = pin!(Timer::after(embassy_time::Duration::from_secs(4)));

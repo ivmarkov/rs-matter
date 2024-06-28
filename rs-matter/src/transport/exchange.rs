@@ -178,7 +178,7 @@ impl ExchangeId {
     ///
     /// Note also that if the uderlying session or exchange tracked by the Matter stack is dropped
     /// (say, because of lack of resources or a hard networking error), the method will return an error.
-    async fn wait_tx<'a>(&self, matter: &'a Matter<'a>) -> Result<TxOutcome, Error> {
+    async fn wait_tx(&self, matter: &Matter<'_>) -> Result<TxOutcome, Error> {
         if let Some(delay) = self.retrans_delay_ms(matter)? {
             let expired = Instant::now()
                 .checked_add(Duration::from_millis(delay))
@@ -216,14 +216,14 @@ impl ExchangeId {
         })
     }
 
-    fn with_session<'a, F, T>(&self, matter: &'a Matter<'a>, f: F) -> Result<T, Error>
+    fn with_session<F, T>(&self, matter: &Matter, f: F) -> Result<T, Error>
     where
         F: FnOnce(&mut Session) -> Result<T, Error>,
     {
         self.with_ctx(matter, |sess, _| f(sess))
     }
 
-    fn with_ctx<'a, F, T>(&self, matter: &'a Matter<'a>, f: F) -> Result<T, Error>
+    fn with_ctx<F, T>(&self, matter: &Matter, f: F) -> Result<T, Error>
     where
         F: FnOnce(&mut Session, usize) -> Result<T, Error>,
     {
@@ -237,7 +237,7 @@ impl ExchangeId {
         }
     }
 
-    async fn internal_wait_ack<'a>(&self, matter: &'a Matter<'a>) -> Result<(), Error> {
+    async fn internal_wait_ack(&self, matter: &Matter<'_>) -> Result<(), Error> {
         let transport_mgr = &matter.transport_mgr;
 
         transport_mgr
@@ -251,7 +251,7 @@ impl ExchangeId {
         self.with_ctx(matter, |_, _| Ok(()))
     }
 
-    fn retrans_delay_ms<'a>(&self, matter: &'a Matter<'a>) -> Result<Option<u64>, Error> {
+    fn retrans_delay_ms(&self, matter: &Matter) -> Result<Option<u64>, Error> {
         self.with_ctx(matter, |sess, exch_index| {
             let exchange = sess.exchanges[exch_index].as_mut().unwrap();
 
@@ -259,7 +259,7 @@ impl ExchangeId {
         })
     }
 
-    fn check_no_pending_retrans<'a>(&self, matter: &'a Matter<'a>) -> Result<(), Error> {
+    fn check_no_pending_retrans(&self, matter: &Matter) -> Result<(), Error> {
         self.with_ctx(matter, |sess, exch_index| {
             let exchange = sess.exchanges[exch_index].as_mut().unwrap();
 
@@ -654,13 +654,13 @@ impl TxOutcome {
     }
 }
 
-pub struct SenderTx<'a, 'b> {
-    sender: &'b mut Sender<'a>,
+pub struct SenderTx<'a, 'b, 'e> {
+    sender: &'b mut Sender<'e, 'a>,
     message: TxMessage<'a>,
 }
 
-impl<'a, 'b> SenderTx<'a, 'b> {
-    pub fn split(&mut self) -> (&Exchange<'_>, &mut [u8]) {
+impl<'a, 'b, 'e> SenderTx<'a, 'b, 'e> {
+    pub fn split(&mut self) -> (&Exchange<'a>, &mut [u8]) {
         (self.sender.exchange, self.message.payload())
     }
 
@@ -683,14 +683,14 @@ impl<'a, 'b> SenderTx<'a, 'b> {
 }
 
 /// Utility struct for sending a message with potential retransmissions.
-pub struct Sender<'a> {
-    exchange: &'a Exchange<'a>,
+pub struct Sender<'e, 'a> {
+    exchange: &'e mut Exchange<'a>,
     initial: bool,
     complete: bool,
 }
 
-impl<'a> Sender<'a> {
-    fn new(exchange: &'a Exchange<'a>) -> Result<Self, Error> {
+impl<'e, 'a> Sender<'e, 'a> {
+    fn new(exchange: &'e mut Exchange<'a>) -> Result<Self, Error> {
         exchange.id.check_no_pending_retrans(exchange.matter)?;
 
         Ok(Self {
@@ -731,7 +731,7 @@ impl<'a> Sender<'a> {
     ///     tx.complete(payload_start, payload_end, meta)?;
     /// }
     /// ```
-    pub async fn tx(&mut self) -> Result<Option<SenderTx<'a, '_>>, Error> {
+    pub async fn tx(&mut self) -> Result<Option<SenderTx<'a, '_, 'e>>, Error> {
         if self.complete {
             return Ok(None);
         }
@@ -956,7 +956,7 @@ impl<'a> Exchange<'a> {
     /// Note also that if the uderlying session or exchange tracked by the Matter stack is dropped
     /// (say, because of lack of resources or a hard networking error), the method will return an error.
     #[inline(always)]
-    pub async fn init_send(&mut self) -> Result<TxMessage<'_>, Error> {
+    pub async fn init_send(&mut self) -> Result<TxMessage<'a>, Error> {
         self.rx = None;
 
         self.id.init_send(self.matter).await
@@ -1034,7 +1034,7 @@ impl<'a> Exchange<'a> {
     ///
     /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
     /// (say, because of lack of resources or a hard networking error), the method will return an error.
-    pub fn sender(&mut self) -> Result<Sender<'_>, Error> {
+    pub fn sender(&mut self) -> Result<Sender<'_, 'a>, Error> {
         self.rx = None;
 
         Sender::new(self)

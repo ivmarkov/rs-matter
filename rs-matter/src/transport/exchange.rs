@@ -654,12 +654,12 @@ impl TxOutcome {
     }
 }
 
-pub struct SenderTx<'a, 'b, 'e> {
-    sender: &'b mut Sender<'e, 'a>,
+pub struct SenderTx<'a, 'b> {
+    sender: &'b mut Sender<'a>,
     message: TxMessage<'a>,
 }
 
-impl<'a, 'b, 'e> SenderTx<'a, 'b, 'e> {
+impl<'a, 'b> SenderTx<'a, 'b> {
     pub fn split(&mut self) -> (&Exchange<'a>, &mut [u8]) {
         (self.sender.exchange, self.message.payload())
     }
@@ -683,14 +683,14 @@ impl<'a, 'b, 'e> SenderTx<'a, 'b, 'e> {
 }
 
 /// Utility struct for sending a message with potential retransmissions.
-pub struct Sender<'e, 'a> {
-    exchange: &'e mut Exchange<'a>,
+pub struct Sender<'a> {
+    exchange: &'a Exchange<'a>,
     initial: bool,
     complete: bool,
 }
 
-impl<'e, 'a> Sender<'e, 'a> {
-    fn new(exchange: &'e mut Exchange<'a>) -> Result<Self, Error> {
+impl<'e, 'a> Sender<'a> {
+    fn new(exchange: &'a Exchange<'a>) -> Result<Self, Error> {
         exchange.id.check_no_pending_retrans(exchange.matter)?;
 
         Ok(Self {
@@ -731,7 +731,7 @@ impl<'e, 'a> Sender<'e, 'a> {
     ///     tx.complete(payload_start, payload_end, meta)?;
     /// }
     /// ```
-    pub async fn tx(&mut self) -> Result<Option<SenderTx<'a, '_, 'e>>, Error> {
+    pub async fn tx(&mut self) -> Result<Option<SenderTx<'a, '_>>, Error> {
         if self.complete {
             return Ok(None);
         }
@@ -1034,7 +1034,7 @@ impl<'a> Exchange<'a> {
     ///
     /// Note that if the uderlying session or exchange tracked by the Matter stack is dropped
     /// (say, because of lack of resources or a hard networking error), the method will return an error.
-    pub fn sender(&mut self) -> Result<Sender<'_, 'a>, Error> {
+    pub fn sender(&mut self) -> Result<Sender<'_>, Error> {
         self.rx = None;
 
         Sender::new(self)

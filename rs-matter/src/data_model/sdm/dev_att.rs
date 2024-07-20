@@ -42,4 +42,10 @@ pub trait DevAttDataFetcher {
     /// requested by the Matter subsystem.
     /// The type of data that can be queried is defined in the [DataType] enum.
     fn get_devatt_data(&self, data_type: DataType, data: &mut [u8]) -> Result<usize, Error>;
+
+    fn with_devatt_data(
+        &self,
+        data_type: DataType,
+        f: &mut dyn FnOnce(&[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error>;
 }

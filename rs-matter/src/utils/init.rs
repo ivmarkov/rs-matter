@@ -4,6 +4,31 @@ use core::{cell::UnsafeCell, mem::MaybeUninit};
 /// Re-export `pinned-init` because its API is very unstable currently (0.0.x)
 pub use pinned_init::*;
 
+/// An extension trait for converting `Init<T, Infallible>` to a fallible `Init<T, E>`.
+/// Useful when chaining an infallible initializer with a fallible chained initialization function.
+pub trait AsFallibleInit<T>: Init<T, Infallible> {
+    fn as_fallible<E>(self) -> impl Init<T, E> {
+        unsafe {
+            init_from_closure(move |slot| {
+                Self::__init(self, slot).unwrap();
+
+                Ok(())
+            })
+        }
+    }
+}
+
+impl<T, I> AsFallibleInit<T> for I where I: Init<T, Infallible> {}
+
+/// An extension trait for re-setting an already instantiated `T` with the given initializer.
+pub trait ApplyInit<T, E>: Init<T, E> {
+    fn apply(self, to: &mut T) -> Result<(), E> {
+        unsafe { Self::__init(self, to as *mut T) }
+    }
+}
+
+impl<T, I, E> ApplyInit<T, E> for I where I: Init<T, E> {}
+
 /// An extension trait for retrofitting `UnsafeCell` with an initializer.
 pub trait UnsafeCellInit<T> {
     /// Create a new in-place initializer for `UnsafeCell`

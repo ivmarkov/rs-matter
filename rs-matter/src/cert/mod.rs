@@ -624,6 +624,9 @@ fn encode_dn_value(
     w.end_set()
 }
 
+// TODO: Too big (648 bytes) - yet - not contains references
+// Rework in such a way that DistNames and Extensions use borrowing
+// instead of a heapless::Vec
 #[derive(FromTLV, ToTLV, Default, Debug, PartialEq)]
 #[tlvargs(lifetime = "'a", start = 1)]
 pub struct Cert<'a> {

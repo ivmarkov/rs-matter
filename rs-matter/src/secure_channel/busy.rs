@@ -70,7 +70,9 @@ impl BusySecureChannel {
                             &u16::to_le_bytes(Self::BUSY_RETRY_DELAY_MS),
                         )
                     })
-                    .await
+                    .await?;
+
+                Ok(())
             }
             proto_opcode => {
                 error!("OpCode not handled: {:?}", proto_opcode);

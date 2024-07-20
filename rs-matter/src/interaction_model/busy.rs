@@ -73,7 +73,9 @@ impl BusyInteractionModel {
 
                 Ok(Some(OpCode::StatusResponse.meta()))
             })
-            .await
+            .await?;
+
+        Ok(())
     }
 }
 

@@ -265,7 +265,7 @@ where
                     warn!("Too many BTP sessions, dropping a handshake request from address {address}");
                 } else {
                     // Unwrap is safe because we checked the length above
-                    sessions.push_init(Session::process_rx_handshake(address, data, gatt_mtu)?).unwrap();
+                    sessions.push_init_unchecked(Session::process_rx_handshake(address, data, gatt_mtu)?);
                 }
 
                 Ok(())

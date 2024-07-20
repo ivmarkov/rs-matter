@@ -20,7 +20,7 @@ use crate::{error::*, utils::writebuf::WriteBuf};
 use log::error;
 
 #[allow(dead_code)]
-enum WriteElementType {
+pub(crate) enum WriteElementType {
     S8 = 0,
     S16 = 1,
     S32 = 2,

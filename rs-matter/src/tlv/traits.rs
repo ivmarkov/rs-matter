@@ -15,11 +15,20 @@
  *    limitations under the License.
  */
 
-use super::{ElementType, TLVContainerIterator, TLVElement, TLVWriter, TagType};
-use crate::error::{Error, ErrorCode};
 use core::fmt::Debug;
+use core::hash::Hash;
+use core::marker::PhantomData;
+use core::mem::MaybeUninit;
+use core::ptr::addr_of_mut;
 use core::slice::Iter;
+
 use log::error;
+use pinned_init::init_from_closure;
+
+use crate::error::{Error, ErrorCode};
+use crate::utils::init::{init, AsFallibleInit, Init};
+
+use super::{ElementType, TLVContainerIterator, TLVElement, TLVWriter, TagType};
 
 pub trait FromTLV<'a> {
     fn from_tlv(t: &TLVElement<'a>) -> Result<Self, Error>
@@ -32,6 +41,28 @@ pub trait FromTLV<'a> {
         Self: Sized,
     {
         Err(ErrorCode::TLVNotFound.into())
+    }
+
+    fn init_from_tlv(t: &TLVElement<'a>) -> impl Init<Self, Error> + 'a
+    where
+        Self: Sized + 'a,
+    {
+        let t = t.clone();
+
+        unsafe {
+            init_from_closure(move |slot| {
+                *slot = Self::from_tlv(&t)?;
+
+                Ok(())
+            })
+        }
+    }
+
+    fn init_tlv_not_found() -> impl Init<Self, Error> + 'a
+    where
+        Self: Sized + 'a,
+    {
+        unsafe { init_from_closure(move |_| Err(ErrorCode::TLVNotFound.into())) }
     }
 }
 
@@ -63,24 +94,6 @@ impl<'a, T: FromTLV<'a> + Default, const N: usize> FromTLV<'a> for [T; N] {
 
 pub fn from_tlv<'a, T: FromTLV<'a>, const N: usize>(
     vec: &mut heapless::Vec<T, N>,
-    t: &TLVElement<'a>,
-) -> Result<(), Error> {
-    vec.clear();
-
-    t.confirm_array()?;
-
-    if let Some(tlv_iter) = t.enter() {
-        for element in tlv_iter {
-            vec.push(T::from_tlv(&element)?)
-                .map_err(|_| ErrorCode::NoSpace)?;
-        }
-    }
-
-    Ok(())
-}
-
-pub fn vec_from_tlv<'a, T: FromTLV<'a>, const N: usize>(
-    vec: &mut crate::utils::vec::Vec<T, N>,
     t: &TLVElement<'a>,
 ) -> Result<(), Error> {
     vec.clear();
@@ -243,28 +256,50 @@ impl<'a> ToTLV for OctetStr<'a> {
 }
 
 /// Implements the Owned version of Octet String
-impl<const N: usize> FromTLV<'_> for heapless::Vec<u8, N> {
-    fn from_tlv(t: &TLVElement) -> Result<heapless::Vec<u8, N>, Error> {
-        heapless::Vec::from_slice(t.slice()?).map_err(|_| ErrorCode::NoSpace.into())
+#[derive(Debug, Clone, PartialEq, Default, Hash, Eq)]
+pub struct OctetStrOwned<const N: usize> {
+    pub array: crate::utils::vec::Vec<u8, N>,
+}
+
+impl<const N: usize> OctetStrOwned<N> {
+    pub const fn new() -> Self {
+        Self {
+            array: crate::utils::vec::Vec::new(),
+        }
+    }
+
+    pub fn init() -> impl Init<Self> {
+        init!(Self {
+            array <- crate::utils::vec::Vec::init(),
+        })
     }
 }
 
-impl<const N: usize> ToTLV for heapless::Vec<u8, N> {
+impl<'a, const N: usize> FromTLV<'a> for OctetStrOwned<N> {
+    fn from_tlv(t: &TLVElement) -> Result<Self, Error> {
+        Ok(Self {
+            array: crate::utils::vec::Vec::from_slice(t.slice()?)
+                .map_err(|_| ErrorCode::NoSpace)?,
+        })
+    }
+
+    fn init_from_tlv(t: &TLVElement<'a>) -> impl Init<Self, Error> + 'a {
+        let t = t.clone();
+
+        Self::init().as_fallible().chain(move |array| {
+            array
+                .array
+                .extend_from_slice(t.slice()?)
+                .map_err(|_| ErrorCode::NoSpace)?;
+
+            Ok(())
+        })
+    }
+}
+
+impl<const N: usize> ToTLV for OctetStrOwned<N> {
     fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
-        tw.str16(tag, self.as_slice())
-    }
-}
-
-/// Implements the Owned version of Octet String
-impl<const N: usize> FromTLV<'_> for crate::utils::vec::Vec<u8, N> {
-    fn from_tlv(t: &TLVElement) -> Result<crate::utils::vec::Vec<u8, N>, Error> {
-        crate::utils::vec::Vec::from_slice(t.slice()?).map_err(|_| ErrorCode::NoSpace.into())
-    }
-}
-
-impl<const N: usize> ToTLV for crate::utils::vec::Vec<u8, N> {
-    fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
-        tw.str16(tag, self.as_slice())
+        tw.str16(tag, self.array.as_slice())
     }
 }
 
@@ -310,62 +345,265 @@ impl<T: ToTLV> ToTLV for Option<T> {
     }
 }
 
-/// Represent a nullable value
+/// A tag for `Maybe` that makes it behave as an optional struct value per the TLV spec.
+#[derive(Debug)]
+pub struct AsOptional;
+
+/// A tag for `Maybe` that makes it behave as a nullable type per the TLV spec.
+#[derive(Debug)]
+pub struct AsNullable;
+
+/// Represents optional values as per the TLV spec.
 ///
-/// The value may be null or a valid value
-/// Note: Null is different from Option. If the value is optional, include Option<> too. For
-/// example, Option<Nullable<T>>
-#[derive(Copy, Clone, PartialEq, Debug, Hash, Eq)]
-pub enum Nullable<T> {
-    Null,
-    NotNull(T),
+/// Note that `Option<T>` also represents optional values, but `Option<T>`
+/// cannot be created in-place, which is necessary when large values are involved.
+///
+/// Therefore, using `Optional<T>` is recommended over `Option<T>` when the optional value is large.
+pub type Optional<T> = Maybe<T, AsOptional>;
+
+/// Represents nullable values as per the TLV spec.
+pub type Nullable<T> = Maybe<T, AsNullable>;
+
+/// Represents a type similar in spirit to the built-in `Option` type.
+/// Unlike `Option` however, `Maybe` does have in-place initializer support.
+#[derive(Debug)]
+pub struct Maybe<T, G> {
+    some: bool,
+    value: MaybeUninit<T>,
+    _tag: PhantomData<G>,
 }
 
-impl<T> Nullable<T> {
-    pub fn as_mut(&mut self) -> Nullable<&mut T> {
-        match self {
-            Nullable::Null => Nullable::Null,
-            Nullable::NotNull(t) => Nullable::NotNull(t),
+impl<T, G> Maybe<T, G> {
+    pub fn new(value: Option<T>) -> Self {
+        match value {
+            Some(v) => Self::some(v),
+            None => Self::none(),
         }
     }
 
-    pub fn as_ref(&self) -> Nullable<&T> {
-        match self {
-            Nullable::Null => Nullable::Null,
-            Nullable::NotNull(t) => Nullable::NotNull(t),
+    pub const fn none() -> Self {
+        Self {
+            some: false,
+            value: MaybeUninit::uninit(),
+            _tag: PhantomData,
         }
     }
 
-    pub fn is_null(&self) -> bool {
-        match self {
-            Nullable::Null => true,
-            Nullable::NotNull(_) => false,
+    pub const fn some(value: T) -> Self {
+        Self {
+            some: true,
+            value: MaybeUninit::new(value),
+            _tag: PhantomData,
         }
     }
 
-    pub fn notnull(self) -> Option<T> {
-        match self {
-            Nullable::Null => None,
-            Nullable::NotNull(t) => Some(t),
+    pub fn init_none() -> impl Init<Self> {
+        unsafe {
+            init_from_closure(move |slot: *mut Self| {
+                addr_of_mut!((*slot).some).write(false);
+
+                Ok(())
+            })
         }
+    }
+
+    pub fn init_some<I: Init<T, E>, E>(value: I) -> impl Init<Self, E> {
+        unsafe {
+            init_from_closure(move |slot: *mut Self| {
+                addr_of_mut!((*slot).some).write(true);
+
+                value.__init(addr_of_mut!((*slot).value) as _)?;
+
+                Ok(())
+            })
+        }
+    }
+
+    pub fn as_mut(&mut self) -> Option<&mut T> {
+        if self.some {
+            Some(unsafe { self.value.assume_init_mut() })
+        } else {
+            None
+        }
+    }
+
+    pub fn as_ref(&self) -> Option<&T> {
+        if self.some {
+            Some(unsafe { self.value.assume_init_ref() })
+        } else {
+            None
+        }
+    }
+
+    pub fn into_option(self) -> Option<T> {
+        if self.some {
+            Some(unsafe { self.value.assume_init() })
+        } else {
+            None
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.some
+    }
+
+    pub fn is_some(&self) -> bool {
+        self.some
     }
 }
 
-impl<'a, T: FromTLV<'a>> FromTLV<'a> for Nullable<T> {
-    fn from_tlv(t: &TLVElement<'a>) -> Result<Nullable<T>, Error> {
+impl<T, G> Default for Maybe<T, G> {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+impl<T, G> From<Option<T>> for Maybe<T, G> {
+    fn from(value: Option<T>) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<T, G> From<Maybe<T, G>> for Option<T> {
+    fn from(value: Maybe<T, G>) -> Self {
+        value.into_option()
+    }
+}
+
+impl<T, G> Clone for Maybe<T, G>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        Maybe::<_, G>::new(self.as_ref().cloned())
+    }
+}
+
+impl<T, G> Copy for Maybe<T, G> where T: Copy {}
+
+impl<T, G> PartialEq for Maybe<T, G>
+where
+    T: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl<T, G> Eq for Maybe<T, G> where T: Eq {}
+
+impl<T, G> Hash for Maybe<T, G>
+where
+    T: Hash,
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_ref().hash(state)
+    }
+}
+
+impl<'a, T: FromTLV<'a> + 'a> FromTLV<'a> for Maybe<T, AsNullable> {
+    fn from_tlv(t: &TLVElement<'a>) -> Result<Maybe<T, AsNullable>, Error> {
         match t.get_element_type() {
-            ElementType::Null => Ok(Nullable::Null),
-            _ => Ok(Nullable::NotNull(T::from_tlv(t)?)),
+            ElementType::Null => Ok(Maybe::none()),
+            _ => Ok(Maybe::some(T::from_tlv(t)?)),
+        }
+    }
+
+    fn init_from_tlv(t: &TLVElement<'a>) -> impl Init<Self, Error> + 'a {
+        let t = t.clone();
+
+        unsafe {
+            init_from_closure(move |slot: *mut Self| {
+                let null = matches!(t.get_element_type(), ElementType::Null);
+
+                addr_of_mut!((*slot).some).write(null);
+
+                if !null {
+                    T::init_from_tlv(&t).__init(addr_of_mut!((*slot).value) as _)?;
+                }
+
+                Ok(())
+            })
         }
     }
 }
 
-impl<T: ToTLV> ToTLV for Nullable<T> {
+impl<T: ToTLV> ToTLV for Maybe<T, AsNullable> {
     fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
-        match self {
-            Nullable::Null => tw.null(tag),
-            Nullable::NotNull(s) => s.to_tlv(tw, tag),
+        match self.as_ref() {
+            None => tw.null(tag),
+            Some(s) => s.to_tlv(tw, tag),
         }
+    }
+}
+
+impl<'a, T: FromTLV<'a> + 'a> FromTLV<'a> for Maybe<T, AsOptional> {
+    fn from_tlv(t: &TLVElement<'a>) -> Result<Maybe<T, AsOptional>, Error> {
+        Ok(Maybe::some(T::from_tlv(t)?))
+    }
+
+    fn tlv_not_found() -> Result<Self, Error> {
+        Ok(Maybe::none())
+    }
+
+    fn init_from_tlv(t: &TLVElement<'a>) -> impl Init<Self, Error> + 'a {
+        Maybe::init_some(T::init_from_tlv(t))
+    }
+
+    fn init_tlv_not_found() -> impl Init<Self, Error> + 'a {
+        Maybe::init_none().as_fallible()
+    }
+}
+
+impl<T: ToTLV> ToTLV for Maybe<T, AsOptional> {
+    fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
+        match self.as_ref() {
+            None => tw.null(tag),
+            Some(s) => s.to_tlv(tw, tag),
+        }
+    }
+}
+
+impl<'a, T: FromTLV<'a> + 'a, const N: usize> FromTLV<'a> for crate::utils::vec::Vec<T, N> {
+    fn from_tlv(t: &TLVElement<'a>) -> Result<Self, Error> {
+        let mut array = crate::utils::vec::Vec::new();
+
+        t.confirm_array()?;
+
+        if let Some(tlv_iter) = t.enter() {
+            for element in tlv_iter {
+                array.push_init(T::init_from_tlv(&element), || ErrorCode::NoSpace.into())?;
+            }
+        }
+
+        Ok(array)
+    }
+
+    fn init_from_tlv(t: &TLVElement<'a>) -> impl Init<Self, Error> + 'a
+    where
+        Self: Sized + 'a,
+    {
+        let t = t.clone();
+
+        Self::init().as_fallible().chain(move |array| {
+            t.confirm_array()?;
+
+            if let Some(tlv_iter) = t.enter() {
+                for element in tlv_iter {
+                    array.push_init(T::init_from_tlv(&element), || ErrorCode::NoSpace.into())?;
+                }
+            }
+
+            Ok(())
+        })
+    }
+}
+
+impl<T: ToTLV, const N: usize> ToTLV for crate::utils::vec::Vec<T, N> {
+    fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
+        let r: &[T] = &self;
+
+        r.to_tlv(tw, tag)
     }
 }
 

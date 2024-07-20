@@ -12,7 +12,7 @@ license = "Apache-2.0"
 rust-version = "1.78"
 
 [features]
-default = ["os", "mbedtls"]
+default = ["os", "rustcrypto"]
 os = ["std", "backtrace", "critical-section/std", "embassy-sync/std", "embassy-time/std", "embassy-time/generic-queue"]
 std = ["alloc", "rand"]
 backtrace = []

@@ -111,7 +111,9 @@ pub async fn complete_with_status(
 ) -> Result<(), Error> {
     exchange
         .send_with(|_, wb| sc_write(wb, status_code, payload))
-        .await
+        .await?;
+
+    Ok(())
 }
 
 pub fn sc_write(

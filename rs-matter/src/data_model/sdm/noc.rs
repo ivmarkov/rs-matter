@@ -73,13 +73,6 @@ impl From<Error> for NocError {
     }
 }
 
-// Some placeholder value for now
-const MAX_CERT_DECLARATION_LEN: usize = 600;
-// Some placeholder value for now
-const MAX_CSR_LEN: usize = 300;
-// As defined in the Matter Spec
-const RESP_MAX: usize = 900;
-
 pub const ID: u32 = 0x003E;
 
 #[derive(FromRepr)]
@@ -89,6 +82,7 @@ pub enum Commands {
     CertChainReq = 0x02,
     CSRReq = 0x04,
     AddNOC = 0x06,
+    //UpdateNOC = 0x07,
     UpdateFabricLabel = 0x09,
     RemoveFabric = 0x0a,
     AddTrustedRootCert = 0x0b,
@@ -240,21 +234,17 @@ impl NocCluster {
                     Attributes::CurrentFabricIndex(codec) => codec.encode(writer, attr.fab_idx),
                     Attributes::Fabrics(_) => {
                         writer.start_array(AttrDataWriter::TAG)?;
-                        exchange
-                            .matter()
-                            .fabric_mgr
-                            .borrow()
-                            .for_each(|entry, fab_idx| {
-                                if !attr.fab_filter || attr.fab_idx == fab_idx.get() {
-                                    let root_ca_cert = entry.get_root_ca()?;
 
-                                    entry
-                                        .get_fabric_desc(fab_idx, &root_ca_cert)?
-                                        .to_tlv(&mut writer, TagType::Anonymous)?;
-                                }
+                        let fabric_mgr = exchange.matter().fabric_mgr.borrow();
 
-                                Ok(())
-                            })?;
+                        for fabric in fabric_mgr.iter() {
+                            if !attr.fab_filter || attr.fab_idx == fabric.fabric_idx().get() {
+                                fabric.with_fabric_desc(|fd| {
+                                    fd.to_tlv(&mut writer, TagType::Anonymous)
+                                })?;
+                            }
+                        }
+
                         writer.end_container()?;
 
                         writer.complete()
@@ -324,44 +314,29 @@ impl NocCluster {
 
         let r = AddNocReq::from_tlv(data).map_err(|_| NocStatus::InvalidNOC)?;
 
-        let noc_cert = Cert::new(r.noc_value.0).map_err(|_| NocStatus::InvalidNOC)?;
-        info!("Received NOC as: {}", noc_cert);
+        info!(
+            "Received NOC as: {}",
+            Cert::new(r.noc_value.0).map_err(|_| NocStatus::InvalidNOC)?
+        );
 
-        let noc =
-            crate::utils::vec::Vec::from_slice(r.noc_value.0).map_err(|_| NocStatus::InvalidNOC)?;
+        let icac = r.icac_value.as_ref().map(|icac| icac.0).unwrap_or(&[]);
+        if !icac.is_empty() {
+            info!(
+                "Received ICAC as: {}",
+                Cert::new(icac).map_err(|_| NocStatus::InvalidNOC)?
+            );
+        }
 
-        let icac = if let Some(icac_value) = r.icac_value {
-            if !icac_value.0.is_empty() {
-                let icac_cert = Cert::new(icac_value.0).map_err(|_| NocStatus::InvalidNOC)?;
-                info!("Received ICAC as: {}", icac_cert);
-
-                let icac = crate::utils::vec::Vec::from_slice(icac_value.0)
-                    .map_err(|_| NocStatus::InvalidNOC)?;
-                Some(icac)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let fabric = Fabric::new(
-            noc_data.key_pair,
-            noc_data.root_ca,
-            icac,
-            noc,
-            r.ipk_value.0,
-            r.vendor_id,
-            "",
-        )
-        .map_err(|_| NocStatus::TableFull)?;
-
-        let fab_idx = exchange
+        let fabric = exchange
             .matter()
             .fabric_mgr
-            .borrow_mut()
-            .add(fabric, &exchange.matter().transport_mgr.mdns)
-            .map_err(|_| NocStatus::TableFull)?;
+            .borrow()
+            .get_mut(NonZeroU8::new(0).unwrap())
+            .ok_or(NocStatus::FabricConflict)?;
+
+        fabric
+            .update_noc(r.noc_value.0, icac, r.ipk_value.0, r.vendor_id)
+            .map_err(|_| NocStatus::InvalidNOC)?;
 
         let succeeded = Cell::new(false);
 
@@ -546,35 +521,25 @@ impl NocCluster {
         let req = CommonReq::from_tlv(data).map_err(Error::map_invalid_command)?;
         info!("Received Attestation Nonce:{:?}", req.str);
 
-        let mut attest_challenge = [0u8; crypto::SYMM_KEY_LEN_BYTES];
         exchange.with_session(|sess| {
-            attest_challenge.copy_from_slice(sess.get_att_challenge());
-            Ok(())
-        })?;
+            let mut writer = encoder.with_command(RespCommands::AttReqResp as _)?;
 
-        let mut writer = encoder.with_command(RespCommands::AttReqResp as _)?;
+            writer.start_struct(CmdDataWriter::TAG)?;
+            add_attestation_element(
+                exchange.matter().epoch(),
+                exchange.matter().dev_att(),
+                req.str.0,
+                &mut writer,
+            )?;
+            add_attestation_signature(
+                exchange.matter().dev_att(),
+                sess.get_att_challenge(),
+                &mut writer,
+            )?;
+            writer.end_container()?;
 
-        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX];
-        let mut attest_element = WriteBuf::new(&mut buf);
-        writer.start_struct(CmdDataWriter::TAG)?;
-        add_attestation_element(
-            exchange.matter().epoch(),
-            exchange.matter().dev_att(),
-            req.str.0,
-            &mut attest_element,
-            &mut writer,
-        )?;
-        add_attestation_signature(
-            exchange.matter().dev_att(),
-            &mut attest_element,
-            &attest_challenge,
-            &mut writer,
-        )?;
-        writer.end_container()?;
-
-        writer.complete()?;
-
-        Ok(())
+            writer.complete()
+        })
     }
 
     fn handle_command_certchainrequest(
@@ -588,22 +553,18 @@ impl NocCluster {
         info!("Received data: {}", data);
         let cert_type = get_certchainrequest_params(data).map_err(Error::map_invalid_command)?;
 
-        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX];
-        let len = exchange
+        exchange
             .matter()
             .dev_att()
-            .get_devatt_data(cert_type, &mut buf)?;
-        let buf = &buf[0..len];
+            .with_devatt_data(cert_type, &mut |data| {
+                let cmd_data = CertChainResp {
+                    cert: OctetStr::new(data),
+                };
 
-        let cmd_data = CertChainResp {
-            cert: OctetStr::new(buf),
-        };
-
-        encoder
-            .with_command(RespCommands::CertChainResp as _)?
-            .set(cmd_data)?;
-
-        Ok(())
+                encoder
+                    .with_command(RespCommands::CertChainResp as _)?
+                    .set(cmd_data)
+            })
     }
 
     fn handle_command_csrrequest(
@@ -622,27 +583,21 @@ impl NocCluster {
         }
 
         let noc_keypair = KeyPair::new(exchange.matter().rand())?;
-        let mut attest_challenge = [0u8; crypto::SYMM_KEY_LEN_BYTES];
+
         exchange.with_session(|sess| {
-            attest_challenge.copy_from_slice(sess.get_att_challenge());
-            Ok(())
+            let mut writer = encoder.with_command(RespCommands::CSRResp as _)?;
+
+            writer.start_struct(CmdDataWriter::TAG)?;
+            add_nocsrelement(&noc_keypair, req.str.0, &mut writer)?;
+            add_attestation_signature(
+                exchange.matter().dev_att(),
+                sess.get_att_challenge(),
+                &mut writer,
+            )?;
+            writer.end_container()?;
+
+            writer.complete()
         })?;
-
-        let mut writer = encoder.with_command(RespCommands::CSRResp as _)?;
-
-        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX];
-        let mut nocsr_element = WriteBuf::new(&mut buf);
-        writer.start_struct(CmdDataWriter::TAG)?;
-        add_nocsrelement(&noc_keypair, req.str.0, &mut nocsr_element, &mut writer)?;
-        add_attestation_signature(
-            exchange.matter().dev_att(),
-            &mut nocsr_element,
-            &attest_challenge,
-            &mut writer,
-        )?;
-        writer.end_container()?;
-
-        writer.complete()?;
 
         let noc_data = NocData::new(noc_keypair);
         // Store this in the session data instead of cluster data, so it gets cleared
@@ -660,7 +615,7 @@ impl NocCluster {
             let noc_data = sess.get_noc_data().ok_or(ErrorCode::NoSession)?;
 
             let req = CommonReq::from_tlv(data).map_err(Error::map_invalid_command)?;
-            info!("Received Trusted Cert:{:x?}", req.str);
+            info!("Received Trusted Root Cert: {:x?}", req.str);
 
             noc_data.root_ca = crate::utils::vec::Vec::from_slice(req.str.0)
                 .map_err(|_| ErrorCode::BufferTooSmall)?;
@@ -728,58 +683,59 @@ fn add_attestation_element(
     epoch: Epoch,
     dev_att: &dyn DevAttDataFetcher,
     att_nonce: &[u8],
-    write_buf: &mut WriteBuf,
     t: &mut TLVWriter,
 ) -> Result<(), Error> {
-    let mut cert_dec: [u8; MAX_CERT_DECLARATION_LEN] = [0; MAX_CERT_DECLARATION_LEN];
-    let len = dev_att.get_devatt_data(dev_att::DataType::CertDeclaration, &mut cert_dec)?;
-    let cert_dec = &cert_dec[0..len];
-
     let epoch = epoch().as_secs() as u32;
-    let mut writer = TLVWriter::new(write_buf);
-    writer.start_struct(TagType::Anonymous)?;
-    writer.str16(TagType::Context(1), cert_dec)?;
-    writer.str8(TagType::Context(2), att_nonce)?;
-    writer.u32(TagType::Context(3), epoch)?;
-    writer.end_container()?;
 
-    t.str16(TagType::Context(0), write_buf.as_slice())
+    t.str16_as(TagType::Context(0), |buf| {
+        let mut write_buf = WriteBuf::new(buf);
+        let mut writer = TLVWriter::new(&mut write_buf);
+
+        writer.start_struct(TagType::Anonymous)?;
+        dev_att.with_devatt_data(dev_att::DataType::CertDeclaration, &mut |cert_dec| {
+            writer.str16(TagType::Context(1), cert_dec)
+        })?;
+        writer.str8(TagType::Context(2), att_nonce)?;
+        writer.u32(TagType::Context(3), epoch)?;
+        writer.end_container()?;
+
+        Ok(writer.get_tail())
+    })
 }
 
 fn add_attestation_signature(
     dev_att: &dyn DevAttDataFetcher,
-    attest_element: &mut WriteBuf,
     attest_challenge: &[u8],
     resp: &mut TLVWriter,
 ) -> Result<(), Error> {
-    let dac_key = {
-        let mut pubkey = [0_u8; crypto::EC_POINT_LEN_BYTES];
-        let mut privkey = [0_u8; crypto::BIGNUM_LEN_BYTES];
-        dev_att.get_devatt_data(dev_att::DataType::DACPubKey, &mut pubkey)?;
-        dev_att.get_devatt_data(dev_att::DataType::DACPrivKey, &mut privkey)?;
-        KeyPair::new_from_components(&pubkey, &privkey)
-    }?;
-    attest_element.copy_from_slice(attest_challenge)?;
-    let mut signature = [0u8; crypto::EC_SIGNATURE_LEN_BYTES];
-    dac_key.sign_msg(attest_element.as_slice(), &mut signature)?;
-    resp.str8(TagType::Context(1), &signature)
+    dev_att.with_devatt_data(dev_att::DataType::DACPubKey, &mut |pubkey| {
+        dev_att.with_devatt_data(dev_att::DataType::DACPrivKey, &mut |privkey| {
+            let dac_key = KeyPair::new_from_components(&pubkey, &privkey)?;
+
+            dac_key.with_msg_signature(attest_challenge.iter().copied(), |signature| {
+                resp.str8(TagType::Context(1), signature)
+            })
+        })
+    })
 }
 
 fn add_nocsrelement(
     noc_keypair: &KeyPair,
     csr_nonce: &[u8],
-    write_buf: &mut WriteBuf,
     resp: &mut TLVWriter,
 ) -> Result<(), Error> {
-    let mut csr: [u8; MAX_CSR_LEN] = [0; MAX_CSR_LEN];
-    let csr = noc_keypair.get_csr(&mut csr)?;
-    let mut writer = TLVWriter::new(write_buf);
-    writer.start_struct(TagType::Anonymous)?;
-    writer.str8(TagType::Context(1), csr)?;
-    writer.str8(TagType::Context(2), csr_nonce)?;
-    writer.end_container()?;
+    resp.str16_as(TagType::Context(0), |buf| {
+        let mut write_buf = WriteBuf::new(buf);
+        let mut writer = TLVWriter::new(&mut write_buf);
+        writer.start_struct(TagType::Anonymous)?;
 
-    resp.str8(TagType::Context(0), write_buf.as_slice())
+        noc_keypair.with_csr(|csr| writer.str8(TagType::Context(1), csr))?;
+
+        writer.str8(TagType::Context(2), csr_nonce)?;
+        writer.end_container()?;
+
+        Ok(writer.get_tail())
+    })
 }
 
 fn get_certchainrequest_params(data: &TLVElement) -> Result<DataType, Error> {

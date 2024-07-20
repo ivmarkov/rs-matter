@@ -21,8 +21,9 @@ use strum::{EnumDiscriminants, FromRepr};
 
 use log::{error, info};
 
-use crate::acl::{self, AclEntry, AclMgr};
+use crate::acl::{self, AclEntry};
 use crate::data_model::objects::*;
+use crate::fabric::FabricMgr;
 use crate::interaction_model::messages::ib::{attr_list_write, ListOperation};
 use crate::tlv::{FromTLV, TLVElement, TagType, ToTLV};
 use crate::transport::exchange::Exchange;
@@ -93,7 +94,7 @@ impl AccessControlCluster {
         attr: &AttrDetails,
         encoder: AttrDataEncoder,
     ) -> Result<(), Error> {
-        self.read_acl_attr(&exchange.matter().acl_mgr.borrow(), attr, encoder)
+        self.read_acl_attr(&exchange.matter().fabric_mgr.borrow(), attr, encoder)
     }
 
     pub fn write(
@@ -106,7 +107,7 @@ impl AccessControlCluster {
             Attributes::Acl(_) => {
                 attr_list_write(attr, data.with_dataver(self.data_ver.get())?, |op, data| {
                     self.write_acl_attr(
-                        &mut exchange.matter().acl_mgr.borrow_mut(),
+                        &mut exchange.matter().fabric_mgr.borrow_mut(),
                         &op,
                         data,
                         NonZeroU8::new(attr.fab_idx).ok_or(ErrorCode::Invalid)?,
@@ -122,7 +123,7 @@ impl AccessControlCluster {
 
     fn read_acl_attr(
         &self,
-        acl_mgr: &AclMgr,
+        fabric_mgr: &FabricMgr,
         attr: &AttrDetails,
         encoder: AttrDataEncoder,
     ) -> Result<(), Error> {
@@ -133,13 +134,16 @@ impl AccessControlCluster {
                 match attr.attr_id.try_into()? {
                     Attributes::Acl(_) => {
                         writer.start_array(AttrDataWriter::TAG)?;
-                        acl_mgr.for_each_acl(|entry| {
-                            if !attr.fab_filter || attr.fab_idx == entry.fab_idx.get() {
-                                entry.to_tlv(&mut writer, TagType::Anonymous)?;
-                            }
 
-                            Ok(())
-                        })?;
+                        for fabric in fabric_mgr.iter() {
+                            if !attr.fab_filter || attr.fab_idx == fabric.fabric_idx().get() {
+                                for acl in fabric.acl_iter() {
+                                    // TODO: Fabric ID should be written here
+                                    acl.to_tlv(&mut writer, TagType::Anonymous)?;
+                                }
+                            }
+                        }
+
                         writer.end_container()?;
 
                         writer.complete()
@@ -173,29 +177,33 @@ impl AccessControlCluster {
     /// Care about fabric-scoped behaviour is taken
     fn write_acl_attr(
         &self,
-        acl_mgr: &mut AclMgr,
+        fabric_mgr: &mut FabricMgr,
         op: &ListOperation,
         data: &TLVElement,
         fab_idx: NonZeroU8,
     ) -> Result<(), Error> {
         info!("Performing ACL operation {:?}", op);
+        let fabric = fabric_mgr.get_mut(fab_idx).ok_or(ErrorCode::Invalid)?;
+
         match op {
             ListOperation::AddItem | ListOperation::EditItem(_) => {
-                let mut acl_entry = AclEntry::from_tlv(data)?;
-                info!("ACL  {:?}", acl_entry);
-                // Overwrite the fabric index with our accessing fabric index
-                acl_entry.fab_idx = fab_idx;
+                let acl_entry = AclEntry::init_from_tlv(data);
+                //info!("ACL  {:?}", acl_entry);
 
                 if let ListOperation::EditItem(index) = op {
-                    acl_mgr.edit(*index as u8, fab_idx, acl_entry)?;
+                    fabric.acl_edit(*index as usize, acl_entry)?;
                 } else {
-                    acl_mgr.add(acl_entry)?;
+                    fabric.acl_add(acl_entry)?;
                 }
 
                 Ok(())
             }
-            ListOperation::DeleteItem(index) => acl_mgr.delete(*index as u8, fab_idx),
-            ListOperation::DeleteList => acl_mgr.delete_for_fabric(fab_idx),
+            ListOperation::DeleteItem(index) => fabric.acl_remove(*index as usize),
+            ListOperation::DeleteList => {
+                fabric.acl_remove_all();
+
+                Ok(())
+            }
         }
     }
 }

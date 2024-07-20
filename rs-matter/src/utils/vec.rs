@@ -26,7 +26,6 @@
 
 use core::{
     cmp::Ordering,
-    convert::Infallible,
     fmt, hash,
     iter::FromIterator,
     mem::MaybeUninit,
@@ -104,7 +103,7 @@ impl<T, const N: usize> Vec<T, N> {
     /// Returns an in-place initializer for a new, empty vector.
     pub fn init() -> impl Init<Self> {
         unsafe {
-            init_from_closure::<_, Infallible>(move |slot: *mut Self| {
+            init_from_closure(move |slot: *mut Self| {
                 addr_of_mut!((*slot).len).write(0);
 
                 Ok(())
@@ -299,12 +298,15 @@ impl<T, const N: usize> Vec<T, N> {
     /// Appends an `item` to the back of the collection
     ///
     /// Returns back the `item` if the vector is full
-    pub fn push_init<I: Init<T>>(&mut self, init: I) -> Result<(), ()> {
+    pub fn push_init<I: Init<T, E>, E, F: FnOnce() -> E>(
+        &mut self,
+        init: I,
+        f: F,
+    ) -> Result<(), E> {
         if self.len < self.capacity() {
-            unsafe { self.push_init_unchecked(init) }
-            Ok(())
+            self.push_init_unchecked(init)
         } else {
-            Err(())
+            Err(f())
         }
     }
 
@@ -340,16 +342,22 @@ impl<T, const N: usize> Vec<T, N> {
     /// # Safety
     ///
     /// This assumes the vec is not full.
-    pub unsafe fn push_init_unchecked<I: Init<T>>(&mut self, init: I) {
-        // NOTE(ptr::write) the memory slot that we are about to write to is uninitialized. We
-        // use `ptr::write` to avoid running `T`'s destructor on the uninitialized memory
-        debug_assert!(!self.is_full());
+    pub fn push_init_unchecked<I: Init<T, E>, E>(&mut self, init: I) -> Result<(), E> {
+        if self.is_full() {
+            panic!("Vec::push_init_unchecked: vec is full");
+        }
 
-        let buffer: *mut T = self.buffer.as_mut_ptr().add(self.len) as _;
+        unsafe {
+            // NOTE(ptr::write) the memory slot that we are about to write to is uninitialized. We
+            // use `ptr::write` to avoid running `T`'s destructor on the uninitialized memory
+            let buffer: *mut T = self.buffer.as_mut_ptr().add(self.len) as _;
 
-        init.__init(buffer).unwrap();
+            init.__init(buffer)?;
+        }
 
         self.len += 1;
+
+        Ok(())
     }
 
     /// Shortens the vector, keeping the first `len` elements and dropping the rest.

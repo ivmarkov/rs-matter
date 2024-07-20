@@ -154,19 +154,26 @@ impl KeyPair {
         }
     }
 
-    pub fn get_private_key(&self, priv_key: &mut [u8]) -> Result<usize, Error> {
+    pub fn with_private_key<F, R>(&self, priv_key_cb: F) -> Result<R, Error>
+    where
+        F: FnOnce(&[u8]) -> Result<R, Error>,
+    {
         match &self.key {
-            KeyType::Private(key) => {
-                let bytes = key.to_bytes();
-                let slice = bytes.as_slice();
-                let len = slice.len();
-                priv_key[..slice.len()].copy_from_slice(slice);
-                Ok(len)
-            }
+            KeyType::Private(key) => priv_key_cb(key.to_bytes().as_slice()),
             KeyType::Public(_) => Err(ErrorCode::Crypto.into()),
         }
     }
-    pub fn get_csr<'a>(&self, out_csr: &'a mut [u8]) -> Result<&'a [u8], Error> {
+    pub fn get_private_key(&self, priv_key: &mut [u8]) -> Result<usize, Error> {
+        self.with_private_key(|key| {
+            let len = key.len();
+            priv_key[..len].copy_from_slice(key);
+            Ok(len)
+        })
+    }
+    pub fn with_csr<F, R>(&self, f: F) -> Result<R, Error>
+    where
+        F: FnOnce(&[u8]) -> Result<R, Error>,
+    {
         use p256::ecdsa::signature::Signer;
 
         let subject = RdnSequence(vec![x509_cert::name::RelativeDistinguishedName(
@@ -182,61 +189,88 @@ impl KeyPair {
             .try_into()
             .unwrap(),
         )]);
-        let mut pubkey = [0; 65];
-        self.get_public_key(&mut pubkey).unwrap();
-        let info = x509_cert::request::CertReqInfo {
-            version: x509_cert::request::Version::V1,
-            subject,
-            public_key: SubjectPublicKeyInfoOwned {
-                algorithm: AlgorithmIdentifier {
-                    // ecPublicKey(1) http://www.oid-info.com/get/1.2.840.10045.2.1
-                    oid: AttributeType::new_unwrap("1.2.840.10045.2.1"),
-                    parameters: Some(
-                        Any::new(
-                            x509_cert::der::Tag::ObjectIdentifier,
-                            // prime256v1 http://www.oid-info.com/get/1.2.840.10045.3.1.7
-                            AttributeType::new_unwrap("1.2.840.10045.3.1.7").as_bytes(),
-                        )
-                        .unwrap(),
-                    ),
+
+        self.with_public_key(|pubkey| {
+            let info = x509_cert::request::CertReqInfo {
+                version: x509_cert::request::Version::V1,
+                subject,
+                public_key: SubjectPublicKeyInfoOwned {
+                    algorithm: AlgorithmIdentifier {
+                        // ecPublicKey(1) http://www.oid-info.com/get/1.2.840.10045.2.1
+                        oid: AttributeType::new_unwrap("1.2.840.10045.2.1"),
+                        parameters: Some(
+                            Any::new(
+                                x509_cert::der::Tag::ObjectIdentifier,
+                                // prime256v1 http://www.oid-info.com/get/1.2.840.10045.3.1.7
+                                AttributeType::new_unwrap("1.2.840.10045.3.1.7").as_bytes(),
+                            )
+                            .unwrap(),
+                        ),
+                    },
+                    subject_public_key: BitString::from_bytes(&pubkey).unwrap(),
                 },
-                subject_public_key: BitString::from_bytes(&pubkey).unwrap(),
-            },
-            attributes: Default::default(),
-        };
-        let mut message = vec![];
-        info.encode(&mut VecWriter(&mut message)).unwrap();
+                attributes: Default::default(),
+            };
+            let mut message = vec![];
+            info.encode(&mut VecWriter(&mut message)).unwrap();
 
-        // Can't use self.sign_msg as the signature has to be in DER format
-        let private_key = self.private_key()?;
-        let signing_key = SigningKey::from(private_key);
-        let sig: Signature = signing_key.sign(&message);
-        let to_der = sig.to_der();
-        let signature = to_der.as_bytes();
+            // Can't use self.sign_msg as the signature has to be in DER format
+            let private_key = self.private_key()?;
+            let signing_key = SigningKey::from(private_key);
+            let sig: Signature = signing_key.sign(&message);
+            let to_der = sig.to_der();
+            let signature = to_der.as_bytes();
 
-        let cert = CertReq {
-            info,
-            algorithm: AlgorithmIdentifier {
-                // ecdsa-with-SHA256(2) http://www.oid-info.com/get/1.2.840.10045.4.3.2
-                oid: AttributeType::new_unwrap("1.2.840.10045.4.3.2"),
-                parameters: None,
-            },
-            signature: BitString::from_bytes(signature).unwrap(),
-        };
-        let out = cert.to_der().unwrap();
-        let a = &mut out_csr[0..out.len()];
-        a.copy_from_slice(&out);
+            let cert = CertReq {
+                info,
+                algorithm: AlgorithmIdentifier {
+                    // ecdsa-with-SHA256(2) http://www.oid-info.com/get/1.2.840.10045.4.3.2
+                    oid: AttributeType::new_unwrap("1.2.840.10045.4.3.2"),
+                    parameters: None,
+                },
+                signature: BitString::from_bytes(signature).unwrap(),
+            };
+            let out = cert.to_der().unwrap();
 
-        Ok(a)
+            f(&out)
+        })
+    }
+    pub fn get_csr<'a>(&self, out_csr: &'a mut [u8]) -> Result<&'a [u8], Error> {
+        let len = self.with_csr(|csr| {
+            let a = &mut out_csr[0..csr.len()];
+            a.copy_from_slice(&csr);
+            Ok(a.len())
+        })?;
+
+        Ok(&out_csr[..len])
+    }
+    pub fn with_public_key<F, R>(&self, pub_key_cb: F) -> Result<R, Error>
+    where
+        F: FnOnce(&[u8]) -> Result<R, Error>,
+    {
+        let point = self.public_key_point().to_encoded_point(false);
+
+        pub_key_cb(point.as_bytes())
     }
     pub fn get_public_key(&self, pub_key: &mut [u8]) -> Result<usize, Error> {
-        let point = self.public_key_point().to_encoded_point(false);
-        let bytes = point.as_bytes();
-        let len = bytes.len();
-        pub_key[..len].copy_from_slice(bytes);
-        Ok(len)
+        self.with_public_key(|key| {
+            let len = key.len();
+            pub_key[..len].copy_from_slice(key);
+            Ok(len)
+        })
     }
     pub fn derive_secret(self, peer_pub_key: &[u8], secret: &mut [u8]) -> Result<usize, Error> {
+        self.with_derived_secret(peer_pub_key, |s| {
+            assert_eq!(secret.len(), s.len());
+            secret.copy_from_slice(s);
+
+            Ok(s.len())
+        })
+    }
+    pub fn with_derived_secret<F, R>(self, peer_pub_key: &[u8], f: F) -> Result<R, Error>
+    where
+        F: FnOnce(&[u8]) -> Result<R, Error>,
+    {
         let encoded_point = EncodedPoint::from_bytes(peer_pub_key).unwrap();
         let peer_pubkey = PublicKey::from_encoded_point(&encoded_point).unwrap();
         let private_key = self.private_key()?;
@@ -245,40 +279,60 @@ impl KeyPair {
             peer_pubkey.as_affine(),
         );
         let bytes = shared_secret.raw_secret_bytes();
-        let bytes = bytes.as_slice();
-        let len = bytes.len();
-        assert_eq!(secret.len(), len);
-        secret.copy_from_slice(bytes);
 
-        Ok(len)
+        f(bytes.as_slice())
     }
-    pub fn sign_msg(&self, msg: &[u8], signature: &mut [u8]) -> Result<usize, Error> {
-        use p256::ecdsa::signature::Signer;
-
+    pub fn sign_msg<I>(&self, msg: I, signature: &mut [u8]) -> Result<usize, Error>
+    where
+        I: Iterator<Item = u8>,
+    {
         if signature.len() < super::EC_SIGNATURE_LEN_BYTES {
             return Err(ErrorCode::NoSpace.into());
         }
 
+        self.with_msg_signature(msg, |s| {
+            let len = s.len();
+            signature[..len].copy_from_slice(s);
+            Ok(len)
+        })
+    }
+    pub fn with_msg_signature<I, F, R>(&self, msg: I, f: F) -> Result<R, Error>
+    where
+        I: Iterator<Item = u8>,
+        F: FnOnce(&[u8]) -> Result<R, Error>,
+    {
+        use p256::ecdsa::signature::DigestSigner;
+
         match &self.key {
             KeyType::Private(k) => {
                 let signing_key = SigningKey::from(k);
-                let sig: Signature = signing_key.sign(msg);
+                let mut digest = sha2::Sha256::new();
+                for byte in msg {
+                    digest.update(&[byte]);
+                }
+                let sig: Signature = signing_key.sign_digest(digest);
                 let bytes = sig.to_bytes();
-                let len = bytes.len();
-                signature[..len].copy_from_slice(&bytes);
-                Ok(len)
+                f(&bytes)
             }
             KeyType::Public(_) => todo!(),
         }
     }
-    pub fn verify_msg(&self, msg: &[u8], signature: &[u8]) -> Result<(), Error> {
-        use p256::ecdsa::signature::Verifier;
+    pub fn verify_msg<I>(&self, msg: I, signature: &[u8]) -> Result<(), Error>
+    where
+        I: Iterator<Item = u8>,
+    {
+        use p256::ecdsa::signature::DigestVerifier;
 
         let verifying_key = VerifyingKey::from_affine(self.public_key_point()).unwrap();
         let signature = Signature::try_from(signature).unwrap();
 
+        let mut digest = sha2::Sha256::new();
+        for byte in msg {
+            digest.update(&[byte]);
+        }
+
         verifying_key
-            .verify(msg, &signature)
+            .verify_digest(digest, &signature)
             .map_err(|_| ErrorCode::InvalidSignature)?;
 
         Ok(())

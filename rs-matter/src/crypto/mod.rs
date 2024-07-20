@@ -82,15 +82,11 @@ impl<'a> FromTLV<'a> for KeyPair {
 
 impl ToTLV for KeyPair {
     fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
-        let mut buf = [0; 1024]; // TODO
-
         tw.start_array(tag)?;
 
-        let size = self.get_public_key(&mut buf)?;
-        tw.str16(TagType::Anonymous, &buf[..size])?;
+        self.with_public_key(|key| tw.str16(TagType::Anonymous, key))?;
 
-        let size = self.get_private_key(&mut buf)?;
-        tw.str16(TagType::Anonymous, &buf[..size])?;
+        self.with_private_key(|key| tw.str16(TagType::Anonymous, key))?;
 
         tw.end_container()
     }

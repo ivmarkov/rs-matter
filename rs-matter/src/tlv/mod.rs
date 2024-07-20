@@ -43,10 +43,12 @@ pub static TAG_SIZE_MAP: [usize; MAX_TAG_INDEX] = [
     8, // FullQual64
 ];
 
+mod iter;
 mod parser;
 mod traits;
 mod writer;
 
+pub use iter::*;
 pub use parser::*;
 pub use rs_matter_macros::{FromTLV, ToTLV};
 pub use traits::*;

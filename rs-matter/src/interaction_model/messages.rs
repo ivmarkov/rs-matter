@@ -421,7 +421,7 @@ pub mod ib {
     where
         F: FnMut(ListOperation, &TLVElement) -> Result<(), Error>,
     {
-        if let Some(Nullable::NotNull(index)) = attr.list_index {
+        if let Some(Some(index)) = attr.list_index.map(Into::into) {
             // If list index is valid,
             //    - this is a modify item or delete item operation
             if data.null().is_ok() {

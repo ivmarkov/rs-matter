@@ -19,6 +19,7 @@ use core::fmt::Debug;
 use core::hash::Hash;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+use core::ops::{Deref, DerefMut};
 use core::ptr::addr_of_mut;
 use core::slice::Iter;
 
@@ -43,12 +44,10 @@ pub trait FromTLV<'a> {
         Err(ErrorCode::TLVNotFound.into())
     }
 
-    fn init_from_tlv(t: &TLVElement<'a>) -> impl Init<Self, Error> + 'a
+    fn init_from_tlv(t: TLVElement<'a>) -> impl Init<Self, Error> + 'a
     where
         Self: Sized + 'a,
     {
-        let t = t.clone();
-
         unsafe {
             init_from_closure(move |slot| {
                 *slot = Self::from_tlv(&t)?;
@@ -283,7 +282,7 @@ impl<'a, const N: usize> FromTLV<'a> for OctetStrOwned<N> {
         })
     }
 
-    fn init_from_tlv(t: &TLVElement<'a>) -> impl Init<Self, Error> + 'a {
+    fn init_from_tlv(t: TLVElement<'a>) -> impl Init<Self, Error> + 'a {
         let t = t.clone();
 
         Self::init().as_fallible().chain(move |array| {
@@ -435,6 +434,26 @@ impl<T, G> Maybe<T, G> {
         }
     }
 
+    pub fn as_deref(&self) -> Option<&T::Target>
+    where
+        T: Deref,
+    {
+        match self.as_ref() {
+            Some(t) => Some(t.deref()),
+            None => None,
+        }
+    }
+
+    pub fn as_deref_mut(&mut self) -> Option<&mut T::Target>
+    where
+        T: DerefMut,
+    {
+        match self.as_mut() {
+            Some(t) => Some(t.deref_mut()),
+            None => None,
+        }
+    }
+
     pub fn into_option(self) -> Option<T> {
         if self.some {
             Some(unsafe { self.value.assume_init() })
@@ -509,9 +528,7 @@ impl<'a, T: FromTLV<'a> + 'a> FromTLV<'a> for Maybe<T, AsNullable> {
         }
     }
 
-    fn init_from_tlv(t: &TLVElement<'a>) -> impl Init<Self, Error> + 'a {
-        let t = t.clone();
-
+    fn init_from_tlv(t: TLVElement<'a>) -> impl Init<Self, Error> + 'a {
         unsafe {
             init_from_closure(move |slot: *mut Self| {
                 let null = matches!(t.get_element_type(), ElementType::Null);
@@ -519,7 +536,7 @@ impl<'a, T: FromTLV<'a> + 'a> FromTLV<'a> for Maybe<T, AsNullable> {
                 addr_of_mut!((*slot).some).write(null);
 
                 if !null {
-                    T::init_from_tlv(&t).__init(addr_of_mut!((*slot).value) as _)?;
+                    T::init_from_tlv(t).__init(addr_of_mut!((*slot).value) as _)?;
                 }
 
                 Ok(())
@@ -546,7 +563,7 @@ impl<'a, T: FromTLV<'a> + 'a> FromTLV<'a> for Maybe<T, AsOptional> {
         Ok(Maybe::none())
     }
 
-    fn init_from_tlv(t: &TLVElement<'a>) -> impl Init<Self, Error> + 'a {
+    fn init_from_tlv(t: TLVElement<'a>) -> impl Init<Self, Error> + 'a {
         Maybe::init_some(T::init_from_tlv(t))
     }
 
@@ -572,25 +589,23 @@ impl<'a, T: FromTLV<'a> + 'a, const N: usize> FromTLV<'a> for crate::utils::vec:
 
         if let Some(tlv_iter) = t.enter() {
             for element in tlv_iter {
-                array.push_init(T::init_from_tlv(&element), || ErrorCode::NoSpace.into())?;
+                array.push_init(T::init_from_tlv(element), || ErrorCode::NoSpace.into())?;
             }
         }
 
         Ok(array)
     }
 
-    fn init_from_tlv(t: &TLVElement<'a>) -> impl Init<Self, Error> + 'a
+    fn init_from_tlv(t: TLVElement<'a>) -> impl Init<Self, Error> + 'a
     where
         Self: Sized + 'a,
     {
-        let t = t.clone();
-
         Self::init().as_fallible().chain(move |array| {
             t.confirm_array()?;
 
             if let Some(tlv_iter) = t.enter() {
                 for element in tlv_iter {
-                    array.push_init(T::init_from_tlv(&element), || ErrorCode::NoSpace.into())?;
+                    array.push_init(T::init_from_tlv(element), || ErrorCode::NoSpace.into())?;
                 }
             }
 

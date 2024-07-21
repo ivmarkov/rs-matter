@@ -143,19 +143,16 @@ impl Case {
                 let root = get_root_node_struct(decrypted)?;
                 let d = Sigma3Decrypt::from_tlv(&root)?;
 
-                let initiator_noc = alloc!(Cert::new(d.initiator_noc.0)?);
-                let mut initiator_icac = None;
-                if let Some(icac) = d.initiator_icac {
-                    initiator_icac = Some(alloc!(Cert::new(icac.0)?));
-                }
+                let initiator_noc = Cert::new(d.initiator_noc.0)?;
 
-                #[cfg(feature = "alloc")]
-                let initiator_icac_mut = initiator_icac.as_deref();
+                let mut initiator_icac = d
+                    .initiator_icac
+                    .map(|initiator_icac| Cert::new(initiator_icac.0))
+                    .transpose()?;
 
-                #[cfg(not(feature = "alloc"))]
-                let initiator_icac_mut = initiator_icac.as_ref();
-
-                if let Err(e) = Self::validate_certs(fabric, &initiator_noc, initiator_icac_mut) {
+                if let Err(e) =
+                    Self::validate_certs(fabric, &initiator_noc, initiator_icac.as_ref())
+                {
                     error!("Certificate Chain doesn't match: {}", e);
                     SCStatusCodes::InvalidParameter
                 } else if let Err(e) = Self::validate_sigma3_sign(
@@ -361,7 +358,12 @@ impl Case {
         Ok(())
     }
 
-    fn validate_certs(fabric: &Fabric, noc: &Cert, icac: Option<&Cert>) -> Result<(), Error> {
+    fn validate_certs(
+        fabric: &Fabric,
+        noc: &Cert,
+        icac: Option<&Cert>,
+        buf: &mut [u8],
+    ) -> Result<(), Error> {
         let mut verifier = noc.verify_chain_start();
 
         if fabric.fabric_id() != noc.get_fabric_id()? {
@@ -375,12 +377,12 @@ impl Case {
                     Err(ErrorCode::Invalid)?;
                 }
             }
-            verifier = verifier.add_cert(icac)?;
+            verifier = verifier.add_cert(icac, buf)?;
         }
 
         verifier
-            .add_cert(&Cert::new(&fabric.root_ca.array)?)?
-            .finalise()?;
+            .add_cert(&Cert::new(&fabric.root_ca.array)?, buf)?
+            .finalise(buf)?;
         Ok(())
     }
 

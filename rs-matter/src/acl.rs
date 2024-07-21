@@ -32,8 +32,8 @@ use crate::utils::writebuf::WriteBuf;
 use crate::{fabric, Matter};
 
 // Matter Minimum Requirements
-const SUBJECTS_PER_ENTRY: usize = 4;
-const TARGETS_PER_ENTRY: usize = 3;
+pub const SUBJECTS_PER_ENTRY: usize = 4;
+pub const TARGETS_PER_ENTRY: usize = 3;
 pub const ENTRIES_PER_FABRIC: usize = 3;
 
 // TODO: Check if this and the SessionMode can be combined into some generic data structure
@@ -326,7 +326,7 @@ impl Target {
 // TODO:
 // Implement a separate AclEntryRef struct that just borrows the
 // subjects and targets using a TLVArray?
-#[derive(ToTLV, FromTLV, Clone, Debug, PartialEq)]
+#[derive(FromTLV, Clone, Debug, PartialEq)]
 #[tlvargs(start = 1)]
 pub struct AclEntry {
     privilege: Privilege,
@@ -414,6 +414,27 @@ impl AclEntry {
             .map(|access| access.is_ok(object.operation, self.privilege))
             .unwrap_or(false)
     }
+
+    pub fn as_fabric_scoped(&self, fab_idx: NonZeroU8) -> AclFabricScopedEntry {
+        AclFabricScopedEntry {
+            privilege: self.privilege,
+            auth_mode: self.auth_mode,
+            subjects: &self.subjects,
+            targets: self.targets.as_deref().into(),
+            fab_idx,
+        }
+    }
+}
+
+#[derive(ToTLV, Clone, Debug, PartialEq)]
+#[tlvargs(start = 1)]
+pub struct AclFabricScopedEntry<'a> {
+    privilege: Privilege,
+    auth_mode: AuthMode,
+    subjects: &'a [u64],
+    targets: Nullable<&'a [Target]>,
+    #[tagval(0xfe)]
+    fab_idx: NonZeroU8,
 }
 
 const MAX_ACL_ENTRIES: usize = ENTRIES_PER_FABRIC * fabric::MAX_SUPPORTED_FABRICS;

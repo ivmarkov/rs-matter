@@ -138,8 +138,8 @@ impl AccessControlCluster {
                         for fabric in fabric_mgr.iter() {
                             if !attr.fab_filter || attr.fab_idx == fabric.fabric_idx().get() {
                                 for acl in fabric.acl_iter() {
-                                    // TODO: Fabric ID should be written here
-                                    acl.to_tlv(&mut writer, TagType::Anonymous)?;
+                                    acl.as_fabric_scoped(fabric.fabric_idx())
+                                        .to_tlv(&mut writer, TagType::Anonymous)?;
                                 }
                             }
                         }
@@ -187,7 +187,7 @@ impl AccessControlCluster {
 
         match op {
             ListOperation::AddItem | ListOperation::EditItem(_) => {
-                let acl_entry = AclEntry::init_from_tlv(data);
+                let acl_entry = AclEntry::init_from_tlv(data.clone());
                 //info!("ACL  {:?}", acl_entry);
 
                 if let ListOperation::EditItem(index) = op {

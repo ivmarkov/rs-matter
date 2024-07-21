@@ -17,17 +17,20 @@
 
 use core::fmt::{self, Write};
 
-use crate::{
-    crypto::KeyPair,
-    error::{Error, ErrorCode},
-    tlv::{self, FromTLV, OctetStr, TLVArray, TLVElement, TLVWriter, TagType, ToTLV},
-    utils::{epoch::MATTER_CERT_DOESNT_EXPIRE, writebuf::WriteBuf},
-};
 use log::error;
+
 use num_derive::FromPrimitive;
 
-pub use self::asn1_writer::ASN1Writer;
+use crate::crypto::KeyPair;
+use crate::error::{Error, ErrorCode};
+use crate::tlv::{self, FromTLV, OctetStr, TLVArray, TLVElement, TLVWriter, TagType, ToTLV};
+use crate::utils::epoch::MATTER_CERT_DOESNT_EXPIRE;
+use crate::utils::init::Init;
+use crate::utils::writebuf::WriteBuf;
+
 use self::printer::CertPrinter;
+
+pub use self::asn1_writer::ASN1Writer;
 
 // As per section 6.1.3 "Certificate Sizes" of the Matter 1.1 spec
 pub const MAX_CERT_TLV_LEN: usize = 400;
@@ -634,9 +637,6 @@ fn encode_dn_value(
     w.end_set()
 }
 
-// TODO: Too big (648 bytes) - yet - not contains references
-// Rework in such a way that DistNames and Extensions use borrowing
-// instead of a heapless::Vec
 #[derive(FromTLV, ToTLV, Debug, PartialEq)]
 #[tlvargs(lifetime = "'a", start = 1)]
 pub struct Cert<'a> {
@@ -659,6 +659,12 @@ impl<'a> Cert<'a> {
     pub fn new(cert_bin: &'a [u8]) -> Result<Self, Error> {
         let root = tlv::get_root_node(cert_bin)?;
         Cert::from_tlv(&root)
+    }
+
+    pub fn try_init(cert_bin: &'a [u8]) -> Result<impl Init<Self, Error>, Error> {
+        let root = tlv::get_root_node(cert_bin)?;
+
+        Ok(Cert::init_from_tlv(root))
     }
 
     pub fn get_node_id(&self) -> Result<u64, Error> {
@@ -807,13 +813,12 @@ impl<'a> CertVerifier<'a> {
         Self { cert }
     }
 
-    pub fn add_cert(self, parent: &'a Cert) -> Result<CertVerifier<'a>, Error> {
+    pub fn add_cert(self, parent: &'a Cert, buf: &mut [u8]) -> Result<Self, Error> {
         if !self.cert.is_authority(parent)? {
             Err(ErrorCode::InvalidAuthKey)?;
         }
-        let mut asn1 = [0u8; MAX_ASN1_CERT_SIZE]; // TODO: Large buffer
-        let len = self.cert.as_asn1(&mut asn1)?;
-        let asn1 = &asn1[..len];
+        let len = self.cert.as_asn1(buf)?;
+        let asn1 = &buf[..len];
 
         let k = KeyPair::new_from_public(parent.get_pubkey())?;
         k.verify_msg(asn1.iter().copied(), self.cert.get_signature())
@@ -830,9 +835,10 @@ impl<'a> CertVerifier<'a> {
         Ok(CertVerifier::new(parent))
     }
 
-    pub fn finalise(self) -> Result<(), Error> {
+    pub fn finalise(self, buf: &mut [u8]) -> Result<(), Error> {
         let cert = self.cert;
-        self.add_cert(cert)?;
+        self.add_cert(cert, buf)?;
+
         Ok(())
     }
 }
@@ -871,6 +877,8 @@ mod tests {
     use crate::tlv::{self, FromTLV, TLVWriter, TagType, ToTLV};
     use crate::utils::writebuf::WriteBuf;
 
+    use super::MAX_ASN1_CERT_SIZE;
+
     #[test]
     fn test_asn1_encode_success() {
         {
@@ -897,15 +905,16 @@ mod tests {
 
     #[test]
     fn test_verify_chain_success() {
+        let mut buf = [0; MAX_ASN1_CERT_SIZE];
         let noc = Cert::new(&test_vectors::NOC1_SUCCESS).unwrap();
         let icac = Cert::new(&test_vectors::ICAC1_SUCCESS).unwrap();
         let rca = Cert::new(&test_vectors::RCA1_SUCCESS).unwrap();
         let a = noc.verify_chain_start();
-        a.add_cert(&icac)
+        a.add_cert(&icac, &mut buf)
             .unwrap()
-            .add_cert(&rca)
+            .add_cert(&rca, &mut buf)
             .unwrap()
-            .finalise()
+            .finalise(&mut buf)
             .unwrap();
     }
 
@@ -914,12 +923,16 @@ mod tests {
         // The chain doesn't lead up to a self-signed certificate
 
         use crate::error::ErrorCode;
+        let mut buf = [0; MAX_ASN1_CERT_SIZE];
         let noc = Cert::new(&test_vectors::NOC1_SUCCESS).unwrap();
         let icac = Cert::new(&test_vectors::ICAC1_SUCCESS).unwrap();
         let a = noc.verify_chain_start();
         assert_eq!(
             Err(ErrorCode::InvalidAuthKey),
-            a.add_cert(&icac).unwrap().finalise().map_err(|e| e.code())
+            a.add_cert(&icac, &mut buf)
+                .unwrap()
+                .finalise(&mut buf)
+                .map_err(|e| e.code())
         );
     }
 
@@ -927,35 +940,42 @@ mod tests {
     fn test_auth_key_chain_incorrect() {
         use crate::error::ErrorCode;
 
+        let mut buf = [0; MAX_ASN1_CERT_SIZE];
         let noc = Cert::new(&test_vectors::NOC1_AUTH_KEY_FAIL).unwrap();
         let icac = Cert::new(&test_vectors::ICAC1_SUCCESS).unwrap();
         let a = noc.verify_chain_start();
         assert_eq!(
             Err(ErrorCode::InvalidAuthKey),
-            a.add_cert(&icac).map(|_| ()).map_err(|e| e.code())
+            a.add_cert(&icac, &mut buf)
+                .map(|_| ())
+                .map_err(|e| e.code())
         );
     }
 
     #[test]
     fn test_zero_value_of_not_after_field() {
+        let mut buf = [0; MAX_ASN1_CERT_SIZE];
         let noc = Cert::new(&test_vectors::NOC_NOT_AFTER_ZERO).unwrap();
         let rca = Cert::new(&test_vectors::RCA_FOR_NOC_NOT_AFTER_ZERO).unwrap();
 
         let v = noc.verify_chain_start();
-        let v = v.add_cert(&rca).unwrap();
-        v.finalise().unwrap();
+        let v = v.add_cert(&rca, &mut buf).unwrap();
+        v.finalise(&mut buf).unwrap();
     }
 
     #[test]
     fn test_cert_corrupted() {
         use crate::error::ErrorCode;
 
+        let mut buf = [0; MAX_ASN1_CERT_SIZE];
         let noc = Cert::new(&test_vectors::NOC1_CORRUPT_CERT).unwrap();
         let icac = Cert::new(&test_vectors::ICAC1_SUCCESS).unwrap();
         let a = noc.verify_chain_start();
         assert_eq!(
             Err(ErrorCode::InvalidSignature),
-            a.add_cert(&icac).map(|_| ()).map_err(|e| e.code())
+            a.add_cert(&icac, &mut buf)
+                .map(|_| ())
+                .map_err(|e| e.code())
         );
     }
 

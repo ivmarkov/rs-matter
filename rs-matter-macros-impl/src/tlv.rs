@@ -403,7 +403,28 @@ fn gen_fromtlv_for_struct(
                    })
                }
            }
+
+           impl #generics #krate::tlv2::FromTLV<#lifetime> for #struct_name #generics {
+            fn from_tlv<I: #krate::tlv2::BytesSlice<#lifetime> >(value_type: #krate::tlv2::TLVValueType, read: I) -> Result<Self, #krate::error::Error> {
+                
+                let mut t_iter = t.#datatype ()?.enter().ok_or_else(|| #krate::error::Error::new(#krate::error::ErrorCode::Invalid))?;
+                let mut item = t_iter.next();
+                #(
+                    let #idents = if Some(true) == item.as_ref().map(|x| x.check_ctx_tag(#tags)) {
+                        let backup = item;
+                        item = t_iter.next();
+                        #types::from_tlv(&backup.unwrap())
+                    } else {
+                        #types::tlv_not_found()
+                    }?;
+                )*
+                Ok(Self {
+                    #(#idents,
+                    )*
+                })
+            }
         }
+     }
     } else {
         quote! {
            impl #generics #krate::tlv::FromTLV <#lifetime> for #struct_name #generics {

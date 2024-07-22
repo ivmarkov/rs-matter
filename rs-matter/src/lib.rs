@@ -88,6 +88,7 @@ pub mod persist;
 pub mod respond;
 pub mod secure_channel;
 pub mod tlv;
+pub mod tlv2;
 pub mod transport;
 pub mod utils;
 

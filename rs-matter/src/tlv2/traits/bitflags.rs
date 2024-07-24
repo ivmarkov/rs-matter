@@ -28,38 +28,16 @@
 #[macro_export]
 macro_rules! bitflags_tlv {
     ($enum_name:ident, $type:ident) => {
-        impl $crate::tlv2::FromTLVOwned for $enum_name {
-            fn from_tlv_owned<I>(
-                value_type: $crate::tlv2::TLVValueType,
-                mut read: I,
-            ) -> Result<Self, Error>
-            where
-                I: $crate::tlv2::BytesRead,
-            {
-                Ok(Self::from_bits_retain($crate::tlv2::TLVRead::$type(
-                    &mut read, value_type,
-                )?))
-            }
-        }
-
         impl<'a> $crate::tlv2::FromTLV<'a> for $enum_name {
-            fn from_tlv<I>(
-                value_type: $crate::tlv2::TLVValueType,
-                mut read: I,
-            ) -> Result<Self, Error>
-            where
-                I: $crate::tlv2::BytesSlice<'a>,
-            {
-                Ok(Self::from_bits_retain($crate::tlv2::TLVRead::$type(
-                    &mut read, value_type,
-                )?))
+            fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+                Ok(Self::from_bits_retain($crate::tlv2::TLV::$type(&tlv)?))
             }
         }
 
         impl $crate::tlv2::ToTLV for $enum_name {
             fn to_tlv<O>(&self, tag: &$crate::tlv2::TLVTag, mut write: O) -> Result<(), Error>
             where
-                O: $crate::tlv2::BytesWrite,
+                O: $crate::tlv2::TLVWrite,
             {
                 $crate::tlv2::TLVWrite::$type(&mut write, tag, self.bits())
             }

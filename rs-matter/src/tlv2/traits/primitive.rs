@@ -19,30 +19,14 @@
 
 use crate::error::{Error, ErrorCode};
 
-use super::{
-    BytesRead, BytesSlice, BytesWrite, FromTLV, FromTLVOwned, TLVRead, TLVTag, TLVValueType,
-    TLVWrite, ToTLV,
-};
+use super::{FromTLV, TLVTag, TLVWrite, ToTLV, TLV};
 
 macro_rules! fromtlv_for {
     ($($t:ident)*) => {
         $(
-            impl FromTLVOwned for $t {
-                #[allow(unused_mut)]
-                fn from_tlv_owned<I>(value_type: TLVValueType, mut read: I) -> Result<Self, Error>
-                where
-                    I: BytesRead,
-                {
-                    read.$t(value_type)
-                }
-            }
-
             impl<'a> FromTLV<'a> for $t {
-                fn from_tlv<I>(value_type: TLVValueType, read: I) -> Result<Self, Error>
-                where
-                    I: BytesRead + BytesSlice<'a>,
-                {
-                    Self::from_tlv_owned(value_type, read)
+                fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+                    tlv.$t()
                 }
             }
         )*
@@ -52,22 +36,9 @@ macro_rules! fromtlv_for {
 macro_rules! fromtlv_for_nonzero {
     ($($t:ident:$n:ty)*) => {
         $(
-            impl FromTLVOwned for $n {
-                #[allow(unused_mut)]
-                fn from_tlv_owned<I>(value_type: TLVValueType, mut read: I) -> Result<Self, Error>
-                where
-                    I: BytesRead,
-                {
-                    <$n>::new(read.$t(value_type)?).ok_or_else(|| ErrorCode::Invalid.into())
-                }
-            }
-
             impl<'a> FromTLV<'a> for $n {
-                fn from_tlv<I>(value_type: TLVValueType, read: I) -> Result<Self, Error>
-                where
-                    I: BytesSlice<'a>,
-                {
-                    Self::from_tlv_owned(value_type, read)
+                fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+                    <$n>::new(tlv.$t()?).ok_or_else(|| ErrorCode::Invalid.into())
                 }
             }
         )*
@@ -80,7 +51,7 @@ macro_rules! totlv_for {
             impl ToTLV for $t {
                 fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
                 where
-                    O: BytesWrite
+                    O: TLVWrite
                 {
                     write.$t(tag, *self)
                 }
@@ -107,7 +78,7 @@ macro_rules! totlv_for_nonzero {
             impl ToTLV for $n {
                 fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
                 where
-                    O: BytesWrite,
+                    O: TLVWrite,
                 {
                     write.$t(tag, self.get())
                 }

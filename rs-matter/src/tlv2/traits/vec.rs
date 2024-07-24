@@ -17,88 +17,45 @@
 
 //! TLV support for the `Vec<T, N>` type.
 //! `Vec<T, N>` is serialized and deserialized as a TLV array.
-//! 
+//!
 //! Unlike Rust `[T;N]` arrays, the `Vec` type can be efficiently deserialized in-place, so use it
 //! when the array holds large structures (like fabrics, certificates, sessions and so on).
-//! 
-//! Of course, the `Vec` type is always owned (even if the deserialized elements `T` do borrow from the 
+//!
+//! Of course, the `Vec` type is always owned (even if the deserialized elements `T` do borrow from the
 //! deserializer), so it might consume more memory than necessary, as its memory is statically allocated
 //! to be N * size_of(T) bytes.
+//!
+//! For cases where the array does not need to be owned and instantiating `T` elements on the fly when
+//! traversing the array is tolerable (i.e. `T` is small enough), prefer `TLVArray`, which operates
+//! directly on the borrowed, encoded TLV representation of the whole array.
 
 use crate::error::{Error, ErrorCode};
 use crate::utils::init::{self, AsFallibleInit};
 use crate::utils::vec::Vec;
 
-use super::{
-    into_tlv_array_iter, BytesRead, BytesSlice, BytesWrite, FromTLV, FromTLVOwned, TLVIter,
-    TLVRead, TLVTag, TLVValueType, ToTLV,
-};
-
-impl<T, const N: usize> FromTLVOwned for Vec<T, N>
-where
-    T: FromTLVOwned + 'static,
-{
-    fn from_tlv_owned<I>(value_type: TLVValueType, read: I) -> Result<Self, Error>
-    where
-        I: BytesRead,
-    {
-        let mut vec = Vec::<T, N>::new();
-
-        read.array(value_type)?;
-
-        vec_extend_owned(&mut vec, read)?;
-
-        return Ok(vec);
-    }
-
-    fn init_from_tlv_owned<I>(value_type: TLVValueType, read: I) -> impl init::Init<Self, Error>
-    where
-        I: BytesRead + Clone,
-    {
-        init::Init::chain(Vec::<T, N>::init().as_fallible(), move |vec| {
-            read.array(value_type)?;
-
-            vec_extend_init_owned(vec, read)?;
-
-            Ok(())
-        })
-    }
-}
+use super::slice::into_tlv_array_iter;
+use super::{FromTLV, TLVArray, TLVTag, TLVWrite, ToTLV};
 
 impl<'a, T, const N: usize> FromTLV<'a> for Vec<T, N>
 where
     T: FromTLV<'a> + 'a,
 {
-    fn from_tlv<I>(value_type: TLVValueType, read: I) -> Result<Self, Error>
-    where
-        I: BytesSlice<'a>,
-    {
+    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
         let mut vec = Vec::<T, N>::new();
 
-        read.array(value_type)?;
-
-        vec_extend(&mut vec, read)?;
+        for item in TLVArray::new(tlv)? {
+            vec.push(item?).map_err(|_| ErrorCode::NoSpace)?;
+        }
 
         return Ok(vec);
     }
 
-    fn init_from_tlv<I>(value_type: TLVValueType, read: I) -> impl init::Init<Self, Error>
-    where
-        I: BytesSlice<'a> + Clone,
-    {
+    fn init_from_tlv(tlv: &'a [u8]) -> impl init::Init<Self, Error> {
         init::Init::chain(Vec::<T, N>::init().as_fallible(), move |vec| {
-            read.array(value_type)?;
+            let mut iter = TLVArray::new(tlv)?.iter()?;
 
-            // TODO vec_extend_init(vec, read)?;
-
-            let mut iter = TLVIter::new(read);
-
-            while let Some((tag, value_type)) = iter.try_next_tag()? {
-                tag.confirm_anonymous()?;
-
-                let value = T::init_from_tlv(value_type, iter.read().clone());
-
-                vec.push_init(value, || ErrorCode::NoSpace.into())?;
+            while let Some(item) = iter.try_next_init()? {
+                vec.push_init(item, || ErrorCode::NoSpace.into())?;
             }
 
             Ok(())
@@ -112,7 +69,7 @@ where
 {
     fn to_tlv<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: BytesWrite,
+        O: TLVWrite,
     {
         self.as_slice().to_tlv(tag, write)
     }
@@ -124,80 +81,4 @@ where
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
         into_tlv_array_iter(tag, self.into_iter())
     }
-}
-
-pub(crate) fn vec_extend<'a, T, const N: usize, I>(
-    vec: &mut Vec<T, N>,
-    read: I,
-) -> Result<(), Error>
-where
-    T: FromTLV<'a> + 'a,
-    I: BytesRead + BytesSlice<'a>,
-{
-    let mut iter = TLVIter::new(read);
-
-    while let Some((tag, value)) = iter.try_next()? {
-        tag.confirm_anonymous()?;
-
-        vec.push(value).map_err(|_| ErrorCode::NoSpace)?;
-    }
-
-    Ok(())
-}
-
-pub(crate) fn vec_extend_owned<T, const N: usize, I>(
-    vec: &mut Vec<T, N>,
-    read: I,
-) -> Result<(), Error>
-where
-    T: FromTLVOwned + 'static,
-    I: BytesRead,
-{
-    let mut iter = TLVIter::new(read);
-
-    while let Some((tag, value)) = iter.try_next_owned()? {
-        tag.confirm_anonymous()?;
-
-        vec.push(value).map_err(|_| ErrorCode::NoSpace)?;
-    }
-
-    Ok(())
-}
-
-pub(crate) fn vec_extend_init<'a, T, const N: usize, I>(
-    vec: &mut Vec<T, N>,
-    read: I,
-) -> Result<(), Error>
-where
-    T: FromTLV<'a>,
-    I: BytesRead + BytesSlice<'a> + Clone + 'a,
-{
-    let mut iter = TLVIter::new(read);
-
-    while let Some((tag, value)) = iter.try_next_init()? {
-        tag.confirm_anonymous()?;
-
-        vec.push_init(value, || ErrorCode::NoSpace.into())?;
-    }
-
-    Ok(())
-}
-
-pub(crate) fn vec_extend_init_owned<T, const N: usize, I>(
-    vec: &mut Vec<T, N>,
-    read: I,
-) -> Result<(), Error>
-where
-    T: FromTLVOwned + 'static,
-    I: BytesRead + Clone,
-{
-    let mut iter = TLVIter::new(read);
-
-    while let Some((tag, value)) = iter.try_next_init_owned()? {
-        tag.confirm_anonymous()?;
-
-        vec.push_init(value, || ErrorCode::NoSpace.into())?;
-    }
-
-    Ok(())
 }

@@ -16,15 +16,15 @@
  */
 
 //! TLV support for octet strings (i.e. byte arrays).
-//! 
+//!
 //! Support is provided via two dedicated newtypes:
 //! - `Octets<'a>` newtype which wraps an ordinary `&[u8]` - for borrowed byte arrays
 //! - `OctetsOwned<const N>` newtype which wraps a `Vec<u8, N>` for owned byte arrays of fixed length N
-//! 
+//!
 //! Newtype wrapping is necessary because naked Rust slices, arrays and the naked `Vec` type
 //! serialize and deserialize as TLV arrays, rather than as octet strings.
-//! 
-//! I.e. serializing `[0; 3]` will result in a TLV array with 3 elements of type u8 and value 0, rather than a TLV 
+//!
+//! I.e. serializing `[0; 3]` will result in a TLV array with 3 elements of type u8 and value 0, rather than a TLV
 //! octet string containing 3 zero bytes.
 
 use core::fmt::Debug;
@@ -34,16 +34,13 @@ use crate::error::{Error, ErrorCode};
 use crate::utils::init::{self, init, AsFallibleInit};
 use crate::utils::vec::Vec;
 
-use super::{
-    BytesRead, BytesSlice, BytesWrite, FromTLV, FromTLVOwned, TLVRead, TLVTag, TLVValueType,
-    TLVWrite, ToTLV,
-};
+use super::{FromTLV, TLVTag, TLVWrite, ToTLV, TLV};
 
 /// For backwards compatibility
 type OctetStr<'a> = Octets<'a>;
 
 /// Newtype for borrowed byte arrays
-/// 
+///
 /// When deserializing, this type grabs the octet slice directly from the byte reader and therefore requires
 /// the reader to have in-memory representation of its data (i.e. a `ByteSlice` reader)
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -51,18 +48,15 @@ type OctetStr<'a> = Octets<'a>;
 pub struct Octets<'a>(pub &'a [u8]);
 
 impl<'a> FromTLV<'a> for Octets<'a> {
-    fn from_tlv<I>(value_type: TLVValueType, mut read: I) -> Result<Self, Error>
-    where
-        I: BytesSlice<'a>,
-    {
-        Ok(Octets(read.str(value_type)?))
+    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+        Ok(Octets(tlv.str()?))
     }
 }
 
 impl<'a> ToTLV for Octets<'a> {
     fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
     where
-        O: BytesWrite,
+        O: TLVWrite,
     {
         write.str(tag, self.0)
     }
@@ -106,66 +100,29 @@ impl<const N: usize> OctetsOwned<N> {
     }
 }
 
-impl<const N: usize> FromTLVOwned for OctetsOwned<N> {
-    fn from_tlv_owned<I>(value_type: TLVValueType, mut read: I) -> Result<Self, Error>
-    where
-        I: BytesRead,
-    {
-        let len = read.str_len(value_type)?;
-
-        let mut bytes = OctetsOwned::new();
-
-        for _ in 0..len {
-            bytes
-                .vec
-                .push(read.read()?)
-                .map_err(|_| ErrorCode::NoSpace)?;
-        }
-
-        Ok(bytes)
+impl<'a, const N: usize> FromTLV<'a> for OctetsOwned<N> {
+    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+        Ok(Self {
+            vec: tlv.str()?.try_into().map_err(|_| ErrorCode::NoSpace)?,
+        })
     }
 
-    fn init_from_tlv_owned<I>(value_type: TLVValueType, read: I) -> impl init::Init<Self, Error>
-    where
-        I: BytesRead + Clone,
-    {
-        let mut read = read.clone();
-
+    fn init_from_tlv(tlv: &'a [u8]) -> impl init::Init<Self, Error> {
         init::Init::chain(OctetsOwned::init().as_fallible(), move |bytes| {
-            let len = read.str_len(value_type)?;
-
-            for _ in 0..len {
-                bytes
-                    .vec
-                    .push(read.read()?)
-                    .map_err(|_| ErrorCode::NoSpace)?;
-            }
+            bytes
+                .vec
+                .extend_from_slice(tlv.str()?)
+                .map_err(|_| ErrorCode::NoSpace)?;
 
             Ok(())
         })
     }
 }
 
-impl<'a, const N: usize> FromTLV<'a> for OctetsOwned<N> {
-    fn from_tlv<I>(value_type: TLVValueType, read: I) -> Result<Self, Error>
-    where
-        I: BytesSlice<'a>,
-    {
-        Self::from_tlv_owned(value_type, read)
-    }
-
-    fn init_from_tlv<I>(value_type: TLVValueType, read: I) -> impl init::Init<Self, Error>
-    where
-        I: BytesSlice<'a> + Clone,
-    {
-        Self::init_from_tlv_owned(value_type, read)
-    }
-}
-
 impl<const N: usize> ToTLV for OctetsOwned<N> {
     fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
     where
-        O: BytesWrite,
+        O: TLVWrite,
     {
         write.str(tag, &self.vec)
     }

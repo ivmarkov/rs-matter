@@ -18,10 +18,10 @@
 //! TLV support for Rust slices `&[T]`.
 //! Rust slices are serialized as TLV arrays.
 //!
-//! Note that only serialization `(trait `ToTLV`) is supported for Rust slices, 
-//! because deserialization (`FromTLV` and `FromTLVOwned`) requires the deserialized Rust type
+//! Note that only serialization `(trait `ToTLV`) is supported for Rust slices,
+//! because deserialization (`FromTLV`) requires the deserialized Rust type
 //! to be `Sized`, which slices aren't.
-//! 
+//!
 //! (Deserializing strings as `&str` and octets as `Bytes<'a>` (which is really a newtype over
 //! `&'a [u8]`) is supported, but that's because their deserialization works by borrowing their
 //! content 1:1 from inside the buffer of the deserializer, which is not possible for a generic
@@ -31,7 +31,7 @@ use core::iter::empty;
 
 use crate::error::Error;
 
-use super::{BytesWrite, TLVTag, TLVWrite, ToTLV};
+use super::{TLVTag, TLVWrite, ToTLV};
 
 impl<'a, T: ToTLV> ToTLV for &'a [T]
 where
@@ -39,7 +39,7 @@ where
 {
     fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
     where
-        O: BytesWrite,
+        O: TLVWrite,
     {
         to_tlv_array(tag, self.iter(), &mut write)
     }
@@ -53,13 +53,11 @@ where
     }
 }
 
-// TODO: Implement FromTLV / FromTLVOwned utilities?
-
-pub fn to_tlv_array<I, O>(tag: &TLVTag, iter: I, mut write: O) -> Result<(), Error>
+pub(crate) fn to_tlv_array<I, O>(tag: &TLVTag, iter: I, mut write: O) -> Result<(), Error>
 where
     I: Iterator,
     I::Item: ToTLV,
-    O: BytesWrite,
+    O: TLVWrite,
 {
     write.start_array(tag)?;
 
@@ -70,7 +68,7 @@ where
     write.end_container()
 }
 
-pub fn into_tlv_array_iter<I>(tag: TLVTag, iter: I) -> impl Iterator<Item = u8>
+pub(crate) fn into_tlv_array_iter<I>(tag: TLVTag, iter: I) -> impl Iterator<Item = u8>
 where
     I: Iterator,
     I::Item: ToTLV,

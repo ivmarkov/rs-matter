@@ -16,29 +16,26 @@
  */
 
 use core::fmt;
-use core::marker::PhantomData;
 
 use num::FromPrimitive;
 
 use crate::error::{Error, ErrorCode};
-use crate::utils::init;
 
 pub use rs_matter_macros::{FromTLV, ToTLV};
 
-pub use io::*;
 pub use read::*;
 pub use toiter::*;
 pub use traits::*;
 pub use write::*;
 
-mod io;
 mod read;
-mod tlv2;
 mod toiter;
 mod traits;
 mod write;
 
+/// Represents the TLV tag type encoded in the control byte of each TLV element.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, num_derive::FromPrimitive)]
+#[repr(u8)]
 pub enum TLVTagType {
     Anonymous = 0,
     Context = 1,
@@ -51,6 +48,8 @@ pub enum TLVTagType {
 }
 
 impl TLVTagType {
+    /// Return the size of the tag data following the control byte
+    /// in the TLV element representation.
     pub const fn size(&self) -> usize {
         match self {
             Self::Anonymous => 0,
@@ -61,22 +60,6 @@ impl TLVTagType {
             Self::ImplPrf32 => 4,
             Self::FullQual48 => 6,
             Self::FullQual64 => 8,
-        }
-    }
-
-    pub fn confirm_anonymous(&self) -> Result<(), Error> {
-        if matches!(self, Self::Anonymous) {
-            Ok(())
-        } else {
-            Err(ErrorCode::InvalidData.into())
-        }
-    }
-
-    pub fn confirm_context(&self) -> Result<(), Error> {
-        if matches!(self, Self::Context) {
-            Ok(())
-        } else {
-            Err(ErrorCode::InvalidData.into())
         }
     }
 }
@@ -96,6 +79,7 @@ impl fmt::Display for TLVTagType {
     }
 }
 
+/// Represents the TLV value type encoded in the control byte of each TLV element.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, num_derive::FromPrimitive)]
 #[repr(u8)]
 pub enum TLVValueType {
@@ -127,30 +111,9 @@ pub enum TLVValueType {
 }
 
 impl TLVValueType {
-    pub fn present(value_type: Option<Self>) -> Result<Self, Error> {
-        value_type.ok_or(ErrorCode::TLVTypeMismatch.into())
-    }
-
-    pub fn confirm(&self, is: Self) -> Result<(), Error> {
-        if *self != is {
-            Err(ErrorCode::InvalidData)?;
-        }
-
-        Ok(())
-    }
-
-    pub const fn is_container(&self) -> bool {
-        self.is_container_start() || self.is_container_end()
-    }
-
-    pub const fn is_container_start(&self) -> bool {
-        matches!(self, Self::Struct | Self::Array | Self::List)
-    }
-
-    pub const fn is_container_end(&self) -> bool {
-        matches!(self, Self::EndCnt)
-    }
-
+    /// Return the size of the value corresponding to this value type.
+    ///
+    /// If the value type has a variable size (i.e. octet and Utf8 strings), this function returns `None`.
     pub const fn fixed_size(&self) -> Option<usize> {
         match self {
             Self::S8 => Some(1),
@@ -175,6 +138,10 @@ impl TLVValueType {
         }
     }
 
+    /// Return the size of the length field for variable size value types.
+    ///
+    /// if the value type has a fixed size, this function returns 0.
+    /// Variable size types are only octet strings and utf8 strings.
     pub const fn variable_size_len(&self) -> usize {
         match self {
             Self::Utf8l | Self::Str8l => 1,
@@ -185,10 +152,23 @@ impl TLVValueType {
         }
     }
 
-    pub const fn is_slice(&self) -> bool {
-        self.variable_size_len() != 0
+    /// Convenience method to check if the value type is a container type
+    /// (container start or end).
+    pub const fn is_container(&self) -> bool {
+        self.is_container_start() || self.is_container_end()
     }
 
+    /// Convenience method to check if the value type is a container start type.
+    pub const fn is_container_start(&self) -> bool {
+        matches!(self, Self::Struct | Self::Array | Self::List)
+    }
+
+    /// Convenience method to check if the value type is a container end type.
+    pub const fn is_container_end(&self) -> bool {
+        matches!(self, Self::EndCnt)
+    }
+
+    /// Convenience method to check if the value type is an Octet String type.
     pub const fn is_str(&self) -> bool {
         matches!(
             self,
@@ -196,6 +176,7 @@ impl TLVValueType {
         )
     }
 
+    /// Convenience method to check if the value type is a UTF-8 String type.
     pub const fn is_utf8(&self) -> bool {
         matches!(
             self,
@@ -236,7 +217,9 @@ impl fmt::Display for TLVValueType {
     }
 }
 
+/// Represents the control byte of a TLV element (i.e. the tag type and the value type).
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[repr(transparent)]
 pub struct TLVControl(u8);
 
 impl TLVControl {
@@ -244,6 +227,10 @@ impl TLVControl {
     const TAG_MASK: u8 = 0xe0;
     const TYPE_MASK: u8 = 0x1f;
 
+    /// Create a new TLV control byte by parsing the provided control byte
+    /// into a tag type and a value type.
+    ///
+    /// The function will return an error if the provided control byte is invalid.
     pub fn new(control: u8) -> Result<Self, Error> {
         let this = Self::new_unchecked(control);
 
@@ -253,22 +240,33 @@ impl TLVControl {
         Ok(this)
     }
 
+    /// Create a new TLV control byte by parsing the provided tag type and value type.
     pub const fn from(tag_type: TLVTagType, value_type: TLVValueType) -> Self {
         Self::new_unchecked(((tag_type as u8) << Self::TAG_SHIFT_BITS) | (value_type as u8))
     }
 
+    /// Create a new TLV control byte without checking the validity of the provided control byte.
     pub const fn new_unchecked(control: u8) -> Self {
         Self(control)
     }
 
+    /// Return the raw control byte.
     pub const fn into_raw(self) -> u8 {
         self.0
     }
 
+    /// Return the tag type encoded in the control byte.
+    ///
+    /// The function might panic if the `TLVControl` instance was
+    /// created using `TLVControl::new_unchecked` and thus the control byte was not validated.
     fn tag_type(&self) -> TLVTagType {
         self.try_tag_type().unwrap()
     }
 
+    /// Return the value type encoded in the control byte.
+    ///
+    /// The function might panic if the `TLVControl` instance was
+    /// created using `TLVControl::new_unchecked` and thus the control byte was not validated.
     fn value_type(&self) -> TLVValueType {
         self.try_value_type().unwrap()
     }
@@ -288,6 +286,7 @@ impl TLVControl {
 
 pub type TagType = TLVTag;
 
+/// A high-level representation of a TLV tag (tag type and tag value).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TLVTag {
     Anonymous,
@@ -301,6 +300,7 @@ pub enum TLVTag {
 }
 
 impl TLVTag {
+    /// Return the tag type of the TLV tag.
     pub const fn tag_type(&self) -> TLVTagType {
         match self {
             Self::Anonymous => TLVTagType::Anonymous,
@@ -311,22 +311,6 @@ impl TLVTag {
             Self::ImplPrf32(_) => TLVTagType::ImplPrf32,
             Self::FullQual48(_) => TLVTagType::FullQual48,
             Self::FullQual64(_) => TLVTagType::FullQual64,
-        }
-    }
-
-    pub fn confirm_anonymous(&self) -> Result<(), Error> {
-        if matches!(self, Self::Anonymous) {
-            Ok(())
-        } else {
-            Err(ErrorCode::InvalidData.into())
-        }
-    }
-
-    pub fn confirm_context(&self) -> Result<u8, Error> {
-        if let Self::Context(n) = self {
-            Ok(*n)
-        } else {
-            Err(ErrorCode::InvalidData.into())
         }
     }
 }
@@ -350,6 +334,7 @@ impl fmt::Display for TLVTag {
 
 pub type ElementType<'a> = TLVValue<'a>;
 
+/// A high-level representation of a TLV value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TLVValue<'a> {
     S8(i8),
@@ -364,10 +349,10 @@ pub enum TLVValue<'a> {
     True,
     F32(f32),
     F64(f64),
-    Utf8l(&'a [u8]),
-    Utf16l(&'a [u8]),
-    Utf32l(&'a [u8]),
-    Utf64l(&'a [u8]),
+    Utf8l(&'a str),
+    Utf16l(&'a str),
+    Utf32l(&'a str),
+    Utf64l(&'a str),
     Str8l(&'a [u8]),
     Str16l(&'a [u8]),
     Str32l(&'a [u8]),
@@ -380,6 +365,7 @@ pub enum TLVValue<'a> {
 }
 
 impl<'a> TLVValue<'a> {
+    /// Return the value type of the TLV value.
     pub const fn value_type(&self) -> TLVValueType {
         match self {
             Self::S8(_) => TLVValueType::S8,
@@ -414,40 +400,29 @@ impl<'a> TLVValue<'a> {
 impl<'a> fmt::Display for TLVValue<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::S8(a) => write!(f, "S8({})", a),
+            Self::S16(a) => write!(f, "S16({})", a),
+            Self::S32(a) => write!(f, "S32({})", a),
+            Self::S64(a) => write!(f, "S64({})", a),
+            Self::U8(a) => write!(f, "U8({})", a),
+            Self::U16(a) => write!(f, "U16({})", a),
+            Self::U32(a) => write!(f, "U32({})", a),
+            Self::U64(a) => write!(f, "U64({})", a),
+            Self::F32(a) => write!(f, "F32({})", a),
+            Self::F64(a) => write!(f, "F64({})", a),
+            Self::Null => write!(f, "Null"),
             Self::Struct => write!(f, "{{"),
             Self::Array => write!(f, "["),
             Self::List => write!(f, "["),
             Self::EndCnt => write!(f, ">"),
             Self::True => write!(f, "True"),
             Self::False => write!(f, "False"),
-            Self::Str8l(a)
-            | Self::Utf8l(a)
-            | Self::Str16l(a)
-            | Self::Utf16l(a)
-            | Self::Str32l(a)
-            | Self::Utf32l(a)
-            | Self::Str64l(a)
-            | Self::Utf64l(a) => {
-                if let Ok(s) = core::str::from_utf8(a) {
-                    write!(f, "len[{}]\"{}\"", s.len(), s)
-                } else {
-                    write!(f, "len[{}]{:x?}", a.len(), a)
-                }
+            Self::Utf8l(a) | Self::Utf16l(a) | Self::Utf32l(a) | Self::Utf64l(a) => {
+                write!(f, "{}", a)
             }
-            other => write!(f, "{:?}", other),
+            Self::Str8l(a) | Self::Str16l(a) | Self::Str32l(a) | Self::Str64l(a) => {
+                write!(f, "({}){:02X?}", a.len(), a)
+            }
         }
-    }
-}
-
-pub type TLVElement<'a> = TLV<'a>;
-
-pub struct TLV<'a> {
-    pub tag: TLVTag,
-    pub value: TLVValue<'a>,
-}
-
-impl<'a> TLV<'a> {
-    pub const fn new(tag: TLVTag, value: TLVValue<'a>) -> Self {
-        Self { tag, value }
     }
 }

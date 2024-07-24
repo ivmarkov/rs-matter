@@ -15,82 +15,189 @@
  *    limitations under the License.
  */
 
-//! An efficient, multi-purpose `TLVArray` enum type that can be used to represent three different internal
-//! representations of TLV data with a single type:
-//! - `TLVArray::Ptr` - TLV Array data borrowed directly from the TLV deserializer (only possible when the deserializer is a `BytesSlice`)
-//!   - Note that the elements of the array are nevertheless still materialized in that case
-//!   - Note also that this representation does not have an efficient index operation, as it needs to scan
-//!     the TLV data to locate the element, as the data does not have a uniform size
-//! - `TLVArray::Slice` - TLV Array data borrowed from the application code (i.e. a wrapper around `&[T]`)
-//!   - This representation CANNOT be deserialized (only serialized) as Rust slices do not support deserialization,
-//!     so trying to serialize this enum variant will panic
-//! - `TLVArray::Vec` - TLV Array data owned by the application code (i.e. a wrapper around `Vec<T>`)
-//!   - This representation can be serialized and deserialized
+//! A container type (`TLVArray`) and an iterator type (`TLVArrayIter`) that represents and iterates directly over serialized TLV arrays.
+//! As such, the memory prepresentation of `TLVArray` / `TLVArrayIter` is just a byte slice (`&[u8]`),
+//! and the array elements are materialized only when the array is iterated over.
 
-use core::iter::empty;
-use std::marker::PhantomData;
+use core::marker::PhantomData;
 
-use crate::tlv2::{SliceReader, TLVTagType};
-use crate::{error::Error, utils::vec::Vec};
+use crate::tlv2::{TLVTag, ToTLVIter};
 use crate::utils::init;
+use crate::{error::Error, tlv2::TLVWrite};
 
-use super::{
-    BytesRead, BytesSlice, BytesWrite, FromTLV, TLVIter, TLVRead, TLVTag, TLVValue, TLVValueType, TLVWrite, ToTLVIter
-};
+use super::{FromTLV, ToTLV, TLV};
 
+/// `TLVArray` is an efficient (memory-wise) way to represent a serialized TLV array, in that
+/// it does not materialize the array elements until the array is iterated over.
+///
+/// Therefore, `TLVArray` is just a wrapper (newtype) of the serialized TLV array `&[u8]` slice.
 #[derive(Debug, Copy, Clone)]
+#[repr(transparent)]
 pub struct TLVArray<'a, T> {
-    tlv_data: &'a [u8],
+    tlv: &'a [u8],
     _type: PhantomData<fn() -> T>,
 }
 
-impl<'a, T> TLVArray<'a, T> 
-where 
+impl<'a, T> TLVArray<'a, T>
+where
     T: FromTLV<'a>,
 {
-    pub const fn new(tlv_data: &'a [u8]) -> Self {
+    /// Creates a new `TLVArray` from a TLV slice.
+    pub fn new(tlv: &'a [u8]) -> Result<Self, Error> {
+        tlv.confirm_array()?;
+
+        Ok(Self::new_unchecked(tlv))
+    }
+
+    /// Creates a new `TLVArray` from a TLV slice.
+    /// The constructor does not check whether the passed slice is a valid TLV array.
+    pub const fn new_unchecked(tlv: &'a [u8]) -> Self {
         Self {
-            tlv_data,
+            tlv,
             _type: PhantomData,
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = Result<T, Error>> + 'a {
-        TLVIter::new(SliceReader::new(self.tlv_data))
-            .map(|r| r.and_then(|(tag, value)| tag.confirm_anonymous().map(|_| value)))
+    /// Returns an iterator over the elements of the array.
+    pub fn iter(&self) -> Result<TLVArrayIter<'a, T>, Error> {
+        Ok(TLVArrayIter::new(self.tlv.enter_array()?))
     }
 }
 
+impl<'a, T> IntoIterator for TLVArray<'a, T>
+where
+    T: FromTLV<'a>,
+{
+    type Item = Result<T, Error>;
+    type IntoIter = TLVArrayIter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        if let Ok(iter) = self.iter() {
+            iter
+        } else {
+            // Delay the error until the iterator is traversed
+            TLVArrayIter::new(&[])
+        }
+    }
+}
+
+impl<'a, T> FromTLV<'a> for TLVArray<'a, T>
+where
+    T: FromTLV<'a>,
+{
+    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+        Self::new(tlv)
+    }
+}
+
+impl<'a, T> ToTLV for TLVArray<'a, T> {
+    fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
+    where
+        O: TLVWrite,
+    {
+        write.start_array(tag)?;
+
+        write._write_raw_data(self.tlv.tlv_container_content_slice()?.into_iter().copied())?;
+
+        write.end_container()
+    }
+
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+        core::iter::empty()
+            .start_array(tag)
+            .chain(
+                self.tlv
+                    .tlv_container_content_slice()
+                    .unwrap()
+                    .into_iter()
+                    .copied(),
+            )
+            .end_container()
+    }
+
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+        core::iter::empty()
+            .start_array(tag)
+            .chain(
+                self.tlv
+                    .tlv_container_content_slice()
+                    .unwrap()
+                    .into_iter()
+                    .copied(),
+            )
+            .end_container()
+    }
+}
+
+/// An iterator over a serialized TLV array.
+#[repr(transparent)]
 pub struct TLVArrayIter<'a, T> {
-    current: TLVIter<'a>,
+    current: &'a [u8],
     _type: PhantomData<fn() -> T>,
 }
 
-// #[derive(Debug, Clone)]
-// pub enum TLVArrayIter<'a, T> {
-//     Ptr(SliceReader<'a>),
-//     Slice(core::slice::Iter<'a, T>),
-// }
+impl<'a, T> TLVArrayIter<'a, T>
+where
+    T: FromTLV<'a>,
+{
+    /// Create a new `TLVArrayIter` from a TLV slice.
+    ///
+    /// The slice is expected to be positioned at the 1st, 2nd or Nth element of the array,
+    /// or at the array end, but NOT at the beginning of the array (`TLVVAlueType::Array`).
+    ///
+    /// In other words, pass the outcome of `tlv.enter_array()` to this constructor function.
+    pub const fn new(tlv: &'a [u8]) -> Self {
+        Self {
+            current: tlv,
+            _type: PhantomData,
+        }
+    }
 
-// impl<'a, T> Iterator for TLVArrayIter<'a, T>
-// where
-//     T: FromTLV<'a> + Clone,
-// {
-//     type Item = Result<T, Error>;
+    pub fn try_next(&mut self) -> Result<Option<T>, Error> {
+        let tlv = self.try_next_tlv()?;
 
-//     fn next(&mut self) -> Option<Self::Item> {
-//         match self {
-//             Self::Ptr(r) => match r.next() {
-//                 Some(t) => Some(T::from_tlv(t?)),
-//                 None => None,
-//             },
-//             Self::Slice(i) => match i.next() {
-//                 Some(t) => Some(Ok(t.clone())),
-//                 None => None,
-//             },
-//         }
-//     }
-// }
+        if tlv.is_container_end()? {
+            return Ok(None);
+        }
+
+        tlv.confirm_anon()?;
+
+        Ok(Some(T::from_tlv(tlv)?))
+    }
+
+    pub fn try_next_init(&mut self) -> Result<Option<impl init::Init<T, Error> + 'a>, Error> {
+        let tlv = self.try_next_tlv()?;
+
+        if tlv.is_container_end()? {
+            return Ok(None);
+        }
+
+        tlv.confirm_anon()?;
+
+        Ok(Some(T::init_from_tlv(self.current)))
+    }
+
+    fn try_next_tlv(&mut self) -> Result<&'a [u8], Error> {
+        let tlv = self.current.clone();
+
+        if !tlv.is_container_end()? {
+            self.current = tlv.container_next()?;
+        }
+
+        Ok(tlv)
+    }
+}
+
+impl<'a, T> Iterator for TLVArrayIter<'a, T>
+where
+    T: FromTLV<'a>,
+{
+    type Item = Result<T, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.try_next().transpose()
+    }
+}
 
 // // TODO: Uncomment once impl type aliases in traits are stabilized
 // // pub struct TLVArrayInitIter<'a, T> {

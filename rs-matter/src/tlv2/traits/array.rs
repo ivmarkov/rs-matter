@@ -17,57 +17,36 @@
 
 //! TLV support for Rust built-in arrays.
 //! Rust bilt-in arrays are serialized and deserialized as TLV arrays.
-//! 
+//!
+//! The deserialization support requires `T` to implement `Default`, or else
+//! the deserialization will not work for the cases where the deserialized TLV array
+//! turns out to be shorter than the Rust array into which we deserialize.
+//!
 //! Note that the implementation below CANNOT efficiently in-place initialize the arrays,
-//! as that would imply that the array elements should implement the unsafe `Zeroed` trait.
-//! 
-//! Since that would restruct the use-cases where built-in arrays can be utilized,
+//! as that would imply that the array elements should implement the unsafe `Zeroed` trait
+//! instead of `Default`.
+//! Since that would restrict the use-cases where built-in arrays can be utilized,
 //! the implementation below requires `Default` instead for the array elements.
+//!
+//! Therefore, use `Vec` instead of built-in arrays if you need to efficiently in-place initialize
+//! (potentially large) arrays.
 
 use crate::error::{Error, ErrorCode};
 use crate::utils::vec::Vec;
 
-use super::{
-    into_tlv_array_iter, vec_extend, vec_extend_owned, BytesRead, BytesSlice, BytesWrite, FromTLV,
-    FromTLVOwned, TLVRead, TLVTag, TLVValueType, ToTLV,
-};
-
-impl<T, const N: usize> FromTLVOwned for [T; N]
-where
-    T: FromTLVOwned + Default,
-{
-    fn from_tlv_owned<I>(value_type: TLVValueType, read: I) -> Result<Self, Error>
-    where
-        I: BytesRead,
-    {
-        let mut vec = Vec::<T, N>::new();
-
-        read.array(value_type)?;
-
-        vec_extend_owned(&mut vec, read)?;
-
-        while !vec.is_full() {
-            vec.push(Default::default())
-                .map_err(|_| ErrorCode::NoSpace)?;
-        }
-
-        return Ok(vec.into_array().map_err(|_| ErrorCode::NoSpace).unwrap());
-    }
-}
+use super::slice::into_tlv_array_iter;
+use super::{FromTLV, TLVArray, TLVTag, TLVWrite, ToTLV};
 
 impl<'a, T, const N: usize> FromTLV<'a> for [T; N]
 where
     T: FromTLV<'a> + Default,
 {
-    fn from_tlv<I>(value_type: TLVValueType, read: I) -> Result<Self, Error>
-    where
-        I: BytesSlice<'a>,
-    {
+    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
         let mut vec = Vec::<T, N>::new();
 
-        read.array(value_type)?;
-
-        vec_extend(&mut vec, read)?;
+        for item in TLVArray::new(tlv)? {
+            vec.push(item?).map_err(|_| ErrorCode::NoSpace)?;
+        }
 
         while !vec.is_full() {
             vec.push(Default::default())
@@ -84,7 +63,7 @@ where
 {
     fn to_tlv<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: BytesWrite,
+        O: TLVWrite,
     {
         self.as_slice().to_tlv(tag, write)
     }

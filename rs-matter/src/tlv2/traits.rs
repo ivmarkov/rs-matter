@@ -20,24 +20,14 @@ use core::iter::empty;
 use crate::error::Error;
 use crate::utils::init;
 
-use super::{
-    BytesRead, BytesSlice, BytesWrite, TLVRead, TLVTag, TLVValue, TLVValueType, TLVWrite, ToTLVIter,
-};
+use super::{TLVTag, TLVValue, TLVValueType, TLVWrite, ToTLVIter, TLV};
 
-pub use array::*;
-pub use bitflags::*;
-pub use iter::*;
 pub use maybe::*;
 pub use octets::*;
-pub use primitive::*;
-pub use slice::*;
-pub use str::*;
 pub use tlvarray::*;
-pub use vec::*;
 
 mod array;
 mod bitflags;
-mod iter;
 mod maybe;
 mod octets;
 mod primitive;
@@ -46,99 +36,38 @@ mod str;
 mod tlvarray;
 mod vec;
 
-pub trait FromTLVOwned: Sized + 'static {
-    fn from_tlv_owned<I>(value_type: TLVValueType, read: I) -> Result<Self, Error>
-    where
-        I: BytesRead;
-
-    fn init_from_tlv_owned<I>(value_type: TLVValueType, read: I) -> impl init::Init<Self, Error>
-    where
-        I: BytesRead + Clone,
-    {
-        unsafe {
-            init::init_from_closure(move |slot| {
-                core::ptr::write(slot, Self::from_tlv_owned(value_type, read)?);
-
-                Ok(())
-            })
-        }
-    }
-
-    fn from_tlv_owned_maybe<I>(value_type: Option<TLVValueType>, read: I) -> Result<Self, Error>
-    where
-        I: BytesRead,
-    {
-        Self::from_tlv_owned(TLVValueType::present(value_type)?, read)
-    }
-
-    fn init_from_tlv_owned_maybe<I>(
-        value_type: Option<TLVValueType>,
-        read: I,
-    ) -> impl init::Init<Self, Error>
-    where
-        I: BytesRead + Clone,
-    {
-        unsafe {
-            init::init_from_closure(move |slot| {
-                init::Init::__init(
-                    Self::init_from_tlv_owned(TLVValueType::present(value_type)?, read),
-                    slot,
-                )
-            })
-        }
-    }
-}
-
+/// A trait representing Rust types that can deserialize themselves from
+/// a TLV-encoded byte slice.
 pub trait FromTLV<'a>: Sized + 'a {
-    fn from_tlv<I>(value_type: TLVValueType, read: I) -> Result<Self, Error>
-    where
-        I: BytesSlice<'a>;
+    /// Deserialize the type from a TLV-encoded byte slice.
+    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error>;
 
-    fn init_from_tlv<I>(value_type: TLVValueType, read: I) -> impl init::Init<Self, Error>
-    where
-        I: BytesSlice<'a> + Clone,
-    {
+    /// Generate an in-place initializer for the type that initializes
+    /// the type from a TLV-encoded byte slice.
+    fn init_from_tlv(tlv: &'a [u8]) -> impl init::Init<Self, Error> {
         unsafe {
             init::init_from_closure(move |slot| {
-                core::ptr::write(slot, Self::from_tlv(value_type, read)?);
+                core::ptr::write(slot, Self::from_tlv(tlv)?);
 
                 Ok(())
             })
         }
     }
-
-    fn from_tlv_maybe<I>(value_type: Option<TLVValueType>, read: I) -> Result<Self, Error>
-    where
-        I: BytesSlice<'a>,
-    {
-        Self::from_tlv(TLVValueType::present(value_type)?, read)
-    }
-
-    fn init_from_tlv_maybe<I>(
-        value_type: Option<TLVValueType>,
-        read: I,
-    ) -> impl init::Init<Self, Error>
-    where
-        I: BytesSlice<'a> + Clone,
-    {
-        unsafe {
-            init::init_from_closure(move |slot| {
-                init::Init::__init(
-                    Self::init_from_tlv(TLVValueType::present(value_type)?, read),
-                    slot,
-                )
-            })
-        }
-    }
 }
 
+/// A trait representing Rust types that can serialize themselves to
+/// a TLV-encoded stream.
 pub trait ToTLV {
+    /// Serialize the type to a TLV-encoded stream.
     fn to_tlv<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: BytesWrite;
+        O: TLVWrite;
 
+    /// Serialize the type as an iterator of bytes by potentially borrowing
+    /// data from the type.
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8>;
 
+    /// Serialize the type as an iterator of bytes by consuming the type.
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8>;
 }
 
@@ -148,7 +77,7 @@ where
 {
     fn to_tlv<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: BytesWrite,
+        O: TLVWrite,
     {
         (*self).to_tlv(tag, write)
     }
@@ -163,29 +92,25 @@ where
 }
 
 impl<'a> FromTLV<'a> for TLVValue<'a> {
-    fn from_tlv<I>(value_type: TLVValueType, mut read: I) -> Result<Self, Error>
-    where
-        I: BytesSlice<'a>,
-    {
-        read.value(value_type)
+    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+        tlv.value()
     }
 }
 
 impl<'a> ToTLV for TLVValue<'a> {
     fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
     where
-        O: BytesWrite,
+        O: TLVWrite,
     {
-        write.tag(tag, self.value_type())?;
-        write.value(self)
+        write.tlv(tag, self)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
-        empty().tag(tag, self.value_type()).value(self.clone())
+        empty().tlv(tag, self.clone())
     }
 
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
-        empty().tag(tag, self.value_type()).value(self)
+        empty().tlv(tag, self)
     }
 }
 

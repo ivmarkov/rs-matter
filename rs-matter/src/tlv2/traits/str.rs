@@ -29,20 +29,29 @@ use heapless::String;
 
 use crate::error::{Error, ErrorCode};
 
-use super::{FromTLV, TLVTag, TLVWrite, ToTLV, TLV};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2};
+
+/// For (partial) backwards compatibility
+///
+/// Partial because `UtfStr` used to be a newtype rather than a type alias,
+/// and - furthermore - used to expose the Utf8 octets as raw bytes
+/// rather than as the native Rust `str` type. The reason for that is probably
+/// a misundersatanding that Utf16l, Utf32l and Utf64l are not UTF-8 strings,
+/// while they actually are. Simply their length prefix is encoded variably.
+pub type UtfStr<'a> = &'a str;
 
 impl<'a> FromTLV<'a> for &'a str {
-    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
         tlv.utf8()
     }
 }
 
-impl ToTLV for &str {
-    fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
+impl ToTLV2 for &str {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
-        write.utf8(tag, self)
+        TLVWrite::new(write).utf8(tag, self)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
@@ -59,18 +68,18 @@ impl ToTLV for &str {
 }
 
 impl<'a, const N: usize> FromTLV<'a> for String<N> {
-    fn from_tlv(tlv: &'a [u8]) -> Result<String<N>, Error> {
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<String<N>, Error> {
         tlv.utf8()
             .and_then(|s| s.try_into().map_err(|_| ErrorCode::NoSpace.into()))
     }
 }
 
-impl<const N: usize> ToTLV for String<N> {
-    fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
+impl<const N: usize> ToTLV2 for String<N> {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
-        write.utf8(tag, self)
+        TLVWrite::new(write).utf8(tag, self)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {

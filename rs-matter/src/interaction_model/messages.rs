@@ -100,11 +100,6 @@ pub mod msg {
                 ..Default::default()
             }
         }
-
-        pub fn set_attr_requests(mut self, requests: &'a [AttrPath]) -> Self {
-            self.attr_requests = Some(TLVArray::new(requests));
-            self
-        }
     }
 
     #[derive(Debug, FromTLV, ToTLV)]
@@ -180,11 +175,6 @@ pub mod msg {
                 ..Default::default()
             }
         }
-
-        pub fn set_attr_requests(mut self, requests: &'a [AttrPath]) -> Self {
-            self.attr_requests = Some(TLVArray::new(requests));
-            self
-        }
     }
 
     #[derive(FromTLV, ToTLV, Debug)]
@@ -197,10 +187,10 @@ pub mod msg {
     }
 
     impl<'a> WriteReq<'a> {
-        pub fn new(supress_response: bool, write_requests: &'a [AttrData<'a>]) -> Self {
+        pub fn new(supress_response: bool) -> Self {
             let mut w = Self {
                 supress_response: None,
-                write_requests: TLVArray::new(write_requests),
+                write_requests: TLVArray::new(&[]),
                 timed_request: None,
                 more_chunked: None,
             };
@@ -251,6 +241,7 @@ pub mod ib {
         error::{Error, ErrorCode},
         interaction_model::core::IMStatusCode,
         tlv::{FromTLV, Nullable, TLVElement, TLVWriter, TagType, ToTLV},
+        tlv2::{TLVTag, TLVWrite},
     };
     use log::error;
 

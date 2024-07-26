@@ -19,13 +19,13 @@
 
 use crate::error::{Error, ErrorCode};
 
-use super::{FromTLV, TLVTag, TLVWrite, ToTLV, TLV};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2};
 
 macro_rules! fromtlv_for {
     ($($t:ident)*) => {
         $(
             impl<'a> FromTLV<'a> for $t {
-                fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+                fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
                     tlv.$t()
                 }
             }
@@ -37,7 +37,7 @@ macro_rules! fromtlv_for_nonzero {
     ($($t:ident:$n:ty)*) => {
         $(
             impl<'a> FromTLV<'a> for $n {
-                fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+                fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
                     <$n>::new(tlv.$t()?).ok_or_else(|| ErrorCode::Invalid.into())
                 }
             }
@@ -48,12 +48,12 @@ macro_rules! fromtlv_for_nonzero {
 macro_rules! totlv_for {
     ($($t:ident)*) => {
         $(
-            impl ToTLV for $t {
-                fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
+            impl ToTLV2 for $t {
+                fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
                 where
-                    O: TLVWrite
+                    O: TLVWriteStorage,
                 {
-                    write.$t(tag, *self)
+                    TLVWrite::new(write).$t(tag, *self)
                 }
 
                 fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
@@ -75,12 +75,12 @@ macro_rules! totlv_for {
 macro_rules! totlv_for_nonzero {
     ($($t:ident:$n:ty)*) => {
         $(
-            impl ToTLV for $n {
-                fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
+            impl ToTLV2 for $n {
+                fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
                 where
-                    O: TLVWrite,
+                    O: TLVWriteStorage,
                 {
-                    write.$t(tag, self.get())
+                    TLVWrite::new(write).$t(tag, self.get())
                 }
 
                 fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {

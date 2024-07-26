@@ -47,7 +47,7 @@ use crate::error::Error;
 use crate::utils::init;
 use crate::utils::maybe::Maybe;
 
-use super::{FromTLV, TLVTag, TLVValueType, TLVWrite, ToTLV, TLV};
+use super::{FromTLV, TLVElement, TLVTag, TLVValueType, TLVWrite, TLVWriteStorage, ToTLV2};
 
 /// A tag for `Maybe` that makes it behave as an optional struct value per the TLV spec.
 pub type AsOptional = ();
@@ -68,17 +68,17 @@ pub type Optional<T> = Maybe<T, AsOptional>;
 pub type Nullable<T> = Maybe<T, AsNullable>;
 
 impl<'a, T: FromTLV<'a>> FromTLV<'a> for Maybe<T, AsNullable> {
-    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
-        match tlv.control()?.value_type() {
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
+        match tlv.control()?.value_type {
             TLVValueType::Null => Ok(Maybe::none()),
             _ => Ok(Maybe::some(T::from_tlv(tlv)?)),
         }
     }
 
-    fn init_from_tlv(tlv: &'a [u8]) -> impl init::Init<Self, Error> {
+    fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
         unsafe {
             init::init_from_closure(move |slot| {
-                let init = match tlv.control()?.value_type() {
+                let init = match tlv.control()?.value_type {
                     TLVValueType::Null => None,
                     _ => Some(T::init_from_tlv(tlv)),
                 };
@@ -89,14 +89,14 @@ impl<'a, T: FromTLV<'a>> FromTLV<'a> for Maybe<T, AsNullable> {
     }
 }
 
-impl<T: ToTLV> ToTLV for Maybe<T, AsNullable> {
-    fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
+impl<T: ToTLV2> ToTLV2 for Maybe<T, AsNullable> {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
         match self.as_ref() {
-            None => write.null(tag),
-            Some(s) => s.to_tlv(tag, write),
+            None => TLVWrite::new(write).null(tag),
+            Some(s) => s.to_tlv2(tag, write),
         }
     }
 
@@ -125,7 +125,7 @@ impl<T: ToTLV> ToTLV for Maybe<T, AsNullable> {
 }
 
 impl<'a, T: FromTLV<'a> + 'a> FromTLV<'a> for Maybe<T, AsOptional> {
-    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
         if tlv.is_empty() {
             Ok(Self::none())
         } else {
@@ -133,7 +133,7 @@ impl<'a, T: FromTLV<'a> + 'a> FromTLV<'a> for Maybe<T, AsOptional> {
         }
     }
 
-    fn init_from_tlv(tlv: &'a [u8]) -> impl init::Init<Self, Error> {
+    fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
         if tlv.is_empty() {
             Self::init(None)
         } else {
@@ -142,14 +142,14 @@ impl<'a, T: FromTLV<'a> + 'a> FromTLV<'a> for Maybe<T, AsOptional> {
     }
 }
 
-impl<T: ToTLV> ToTLV for Maybe<T, AsOptional> {
-    fn to_tlv<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
+impl<T: ToTLV2> ToTLV2 for Maybe<T, AsOptional> {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
         match self.as_ref() {
             None => Ok(()),
-            Some(s) => s.to_tlv(tag, write),
+            Some(s) => s.to_tlv2(tag, write),
         }
     }
 
@@ -176,7 +176,7 @@ impl<T: ToTLV> ToTLV for Maybe<T, AsOptional> {
 }
 
 impl<'a, T: FromTLV<'a>> FromTLV<'a> for Option<T> {
-    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
         if tlv.is_empty() {
             return Ok(None);
         }
@@ -185,14 +185,14 @@ impl<'a, T: FromTLV<'a>> FromTLV<'a> for Option<T> {
     }
 }
 
-impl<T: ToTLV> ToTLV for Option<T> {
-    fn to_tlv<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
+impl<T: ToTLV2> ToTLV2 for Option<T> {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
         match self.as_ref() {
             None => Ok(()),
-            Some(s) => s.to_tlv(tag, write),
+            Some(s) => s.to_tlv2(tag, write),
         }
     }
 

@@ -29,17 +29,17 @@
 macro_rules! bitflags_tlv {
     ($enum_name:ident, $type:ident) => {
         impl<'a> $crate::tlv2::FromTLV<'a> for $enum_name {
-            fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
-                Ok(Self::from_bits_retain($crate::tlv2::TLV::$type(&tlv)?))
+            fn from_tlv(tlv: &$crate::tlv2::TLV<'a>) -> Result<Self, Error> {
+                Ok(Self::from_bits_retain($crate::tlv2::TLV::$type(tlv)?))
             }
         }
 
-        impl $crate::tlv2::ToTLV for $enum_name {
-            fn to_tlv<O>(&self, tag: &$crate::tlv2::TLVTag, mut write: O) -> Result<(), Error>
+        impl $crate::tlv2::ToTLV2 for $enum_name {
+            fn to_tlv2<O>(&self, tag: &$crate::tlv2::TLVTag, write: O) -> Result<(), Error>
             where
-                O: $crate::tlv2::TLVWrite,
+                O: $crate::tlv2::TLVWriteStorage,
             {
-                $crate::tlv2::TLVWrite::$type(&mut write, tag, self.bits())
+                $crate::tlv2::TLVWrite::new(write).$type(tag, self.bits())
             }
 
             fn to_tlv_iter(&self, tag: crate::tlv2::TLVTag) -> impl Iterator<Item = u8> {

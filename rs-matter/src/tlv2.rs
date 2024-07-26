@@ -219,68 +219,57 @@ impl fmt::Display for TLVValueType {
 
 /// Represents the control byte of a TLV element (i.e. the tag type and the value type).
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-#[repr(transparent)]
-pub struct TLVControl(u8);
+pub struct TLVControl {
+    pub tag_type: TLVTagType,
+    pub value_type: TLVValueType,
+}
 
 impl TLVControl {
     const TAG_SHIFT_BITS: u8 = 5;
     const TAG_MASK: u8 = 0xe0;
     const TYPE_MASK: u8 = 0x1f;
 
+    /// Create a new TLV control byte by parsing the provided tag type and value type.
+    #[inline(always)]
+    pub const fn new(tag_type: TLVTagType, value_type: TLVValueType) -> Self {
+        Self {
+            tag_type,
+            value_type,
+        }
+    }
+
     /// Create a new TLV control byte by parsing the provided control byte
     /// into a tag type and a value type.
     ///
     /// The function will return an error if the provided control byte is invalid.
-    pub fn new(control: u8) -> Result<Self, Error> {
-        let this = Self::new_unchecked(control);
+    #[inline(always)]
+    pub fn parse(control: u8) -> Result<Self, Error> {
+        let tag_type = FromPrimitive::from_u8((control & Self::TAG_MASK) >> Self::TAG_SHIFT_BITS)
+            .ok_or(ErrorCode::TLVTypeMismatch)?;
+        let value_type =
+            FromPrimitive::from_u8(control & Self::TYPE_MASK).ok_or(ErrorCode::TLVTypeMismatch)?;
 
-        this.try_tag_type().ok_or(ErrorCode::InvalidData)?;
-        this.try_value_type().ok_or(ErrorCode::InvalidData)?;
-
-        Ok(this)
-    }
-
-    /// Create a new TLV control byte by parsing the provided tag type and value type.
-    pub const fn from(tag_type: TLVTagType, value_type: TLVValueType) -> Self {
-        Self::new_unchecked(((tag_type as u8) << Self::TAG_SHIFT_BITS) | (value_type as u8))
-    }
-
-    /// Create a new TLV control byte without checking the validity of the provided control byte.
-    pub const fn new_unchecked(control: u8) -> Self {
-        Self(control)
+        Ok(Self::new(tag_type, value_type))
     }
 
     /// Return the raw control byte.
-    pub const fn into_raw(self) -> u8 {
-        self.0
+    #[inline(always)]
+    pub const fn as_raw(&self) -> u8 {
+        ((self.tag_type as u8) << Self::TAG_SHIFT_BITS) | (self.value_type as u8)
     }
 
-    /// Return the tag type encoded in the control byte.
-    ///
-    /// The function might panic if the `TLVControl` instance was
-    /// created using `TLVControl::new_unchecked` and thus the control byte was not validated.
-    fn tag_type(&self) -> TLVTagType {
-        self.try_tag_type().unwrap()
+    #[inline(always)]
+    pub fn is_container_end(&self) -> bool {
+        matches!(self.tag_type, TLVTagType::Anonymous) && self.value_type.is_container_end()
     }
 
-    /// Return the value type encoded in the control byte.
-    ///
-    /// The function might panic if the `TLVControl` instance was
-    /// created using `TLVControl::new_unchecked` and thus the control byte was not validated.
-    fn value_type(&self) -> TLVValueType {
-        self.try_value_type().unwrap()
-    }
+    #[inline(always)]
+    pub fn confirm_container_end(&self) -> Result<(), Error> {
+        if !self.is_container_end() {
+            return Err(ErrorCode::InvalidData.into());
+        }
 
-    fn try_tag_type(&self) -> Option<TLVTagType> {
-        let tag_type = (self.0 & Self::TAG_MASK) >> Self::TAG_SHIFT_BITS;
-
-        FromPrimitive::from_u8(tag_type)
-    }
-
-    fn try_value_type(&self) -> Option<TLVValueType> {
-        let element_type = self.0 & Self::TYPE_MASK;
-
-        FromPrimitive::from_u8(element_type)
+        Ok(())
     }
 }
 
@@ -358,9 +347,9 @@ pub enum TLVValue<'a> {
     Str32l(&'a [u8]),
     Str64l(&'a [u8]),
     Null,
-    Struct,
-    Array,
-    List,
+    Struct(TLVSequence<'a>),
+    Array(TLVSequence<'a>),
+    List(TLVSequence<'a>),
     EndCnt,
 }
 

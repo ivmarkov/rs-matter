@@ -20,10 +20,14 @@ use core::iter::empty;
 use crate::error::Error;
 use crate::utils::init;
 
-use super::{TLVTag, TLVValue, TLVValueType, TLVWrite, ToTLVIter, TLV};
+use super::{
+    TLVElement, TLVSequence, TLVTag, TLVValue, TLVValueType, TLVWrite, TLVWriteStorage, TLVWriter,
+    ToTLVIter,
+};
 
 pub use maybe::*;
 pub use octets::*;
+pub use str::*;
 pub use tlvarray::*;
 
 mod array;
@@ -40,14 +44,14 @@ mod vec;
 /// a TLV-encoded byte slice.
 pub trait FromTLV<'a>: Sized + 'a {
     /// Deserialize the type from a TLV-encoded byte slice.
-    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error>;
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error>;
 
     /// Generate an in-place initializer for the type that initializes
     /// the type from a TLV-encoded byte slice.
-    fn init_from_tlv(tlv: &'a [u8]) -> impl init::Init<Self, Error> {
+    fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
         unsafe {
             init::init_from_closure(move |slot| {
-                core::ptr::write(slot, Self::from_tlv(tlv)?);
+                core::ptr::write(slot, Self::from_tlv(&tlv)?);
 
                 Ok(())
             })
@@ -55,31 +59,52 @@ pub trait FromTLV<'a>: Sized + 'a {
     }
 }
 
-/// A trait representing Rust types that can serialize themselves to
-/// a TLV-encoded stream.
 pub trait ToTLV {
     /// Serialize the type to a TLV-encoded stream.
-    fn to_tlv<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
+    fn to_tlv(&self, tw: &mut TLVWriter, tag: TLVTag) -> Result<(), Error>;
+}
+
+impl<T> ToTLV for T
+where
+    T: ToTLV2,
+{
+    fn to_tlv(&self, tw: &mut TLVWriter, tag: TLVTag) -> Result<(), Error> {
+        self.to_tlv2(&tag, tw.storage_mut())
+    }
+}
+
+/// A trait representing Rust types that can serialize themselves to
+/// a TLV-encoded stream.
+pub trait ToTLV2 {
+    /// Serialize the type to a TLV-encoded stream.
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite;
+        O: TLVWriteStorage;
 
     /// Serialize the type as an iterator of bytes by potentially borrowing
     /// data from the type.
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8>;
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+        core::iter::empty()
+    }
 
     /// Serialize the type as an iterator of bytes by consuming the type.
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8>;
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8>
+    where
+        Self: Sized,
+    {
+        core::iter::empty()
+    }
 }
 
-impl<T> ToTLV for &T
+impl<T> ToTLV2 for &T
 where
-    T: ToTLV,
+    T: ToTLV2,
 {
-    fn to_tlv<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
-        (*self).to_tlv(tag, write)
+        (*self).to_tlv2(tag, write)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
@@ -91,18 +116,36 @@ where
     }
 }
 
+impl<'a> ToTLV2 for TLVElement<'a> {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
+    where
+        O: TLVWriteStorage,
+    {
+        let mut tw = TLVWrite::new(write);
+        tw.tlv(tag, self)
+    }
+
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+        self.ptr().iter().copied()
+    }
+
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+        self.into_slice().into_iter().copied()
+    }
+}
+
 impl<'a> FromTLV<'a> for TLVValue<'a> {
-    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
         tlv.value()
     }
 }
 
-impl<'a> ToTLV for TLVValue<'a> {
-    fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
+impl<'a> ToTLV2 for TLVValue<'a> {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
-        write.tlv(tag, self)
+        TLVWrite::new(write).tlv(tag, self)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {

@@ -21,20 +21,20 @@
 
 use core::marker::PhantomData;
 
-use crate::tlv2::{TLVTag, ToTLVIter};
-use crate::utils::init;
-use crate::{error::Error, tlv2::TLVWrite};
+use crate::error::Error;
+use crate::tlv2::Either;
+use crate::{tlv2::TLVContainerIter, utils::init};
 
-use super::{FromTLV, ToTLV, TLV};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2, ToTLVIter};
 
 /// `TLVArray` is an efficient (memory-wise) way to represent a serialized TLV array, in that
 /// it does not materialize the array elements until the array is iterated over.
 ///
 /// Therefore, `TLVArray` is just a wrapper (newtype) of the serialized TLV array `&[u8]` slice.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct TLVArray<'a, T> {
-    tlv: &'a [u8],
+    tlv: TLVElement<'a>,
     _type: PhantomData<fn() -> T>,
 }
 
@@ -43,15 +43,15 @@ where
     T: FromTLV<'a>,
 {
     /// Creates a new `TLVArray` from a TLV slice.
-    pub fn new(tlv: &'a [u8]) -> Result<Self, Error> {
-        tlv.confirm_array()?;
+    pub fn new(tlv: TLVElement<'a>) -> Result<Self, Error> {
+        tlv.enter_array()?;
 
         Ok(Self::new_unchecked(tlv))
     }
 
     /// Creates a new `TLVArray` from a TLV slice.
     /// The constructor does not check whether the passed slice is a valid TLV array.
-    pub const fn new_unchecked(tlv: &'a [u8]) -> Self {
+    pub const fn new_unchecked(tlv: TLVElement<'a>) -> Self {
         Self {
             tlv,
             _type: PhantomData,
@@ -59,8 +59,8 @@ where
     }
 
     /// Returns an iterator over the elements of the array.
-    pub fn iter(&self) -> Result<TLVArrayIter<'a, T>, Error> {
-        Ok(TLVArrayIter::new(self.tlv.enter_array()?))
+    pub fn iter(&self) -> TLVArrayIter<'a, T> {
+        TLVArrayIter::new(self.tlv.enter_array().unwrap().iter())
     }
 }
 
@@ -72,12 +72,7 @@ where
     type IntoIter = TLVArrayIter<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        if let Ok(iter) = self.iter() {
-            iter
-        } else {
-            // Delay the error until the iterator is traversed
-            TLVArrayIter::new(&[])
-        }
+        self.iter()
     }
 }
 
@@ -85,21 +80,23 @@ impl<'a, T> FromTLV<'a> for TLVArray<'a, T>
 where
     T: FromTLV<'a>,
 {
-    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
-        Self::new(tlv)
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
+        Self::new(tlv.clone())
     }
 }
 
-impl<'a, T> ToTLV for TLVArray<'a, T> {
-    fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
+impl<'a, T> ToTLV2 for TLVArray<'a, T> {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
-        write.start_array(tag)?;
+        let mut tw = TLVWrite::new(write);
 
-        write._write_raw_data(self.tlv.tlv_container_content_slice()?.into_iter().copied())?;
+        tw.start_array(tag)?;
 
-        write.end_container()
+        let seq = self.tlv.enter_array()?;
+
+        tw.write_raw_data(seq.raw_value()?.into_iter().copied())
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
@@ -107,7 +104,9 @@ impl<'a, T> ToTLV for TLVArray<'a, T> {
             .start_array(tag)
             .chain(
                 self.tlv
-                    .tlv_container_content_slice()
+                    .enter_array()
+                    .unwrap()
+                    .raw_value()
                     .unwrap()
                     .into_iter()
                     .copied(),
@@ -120,7 +119,9 @@ impl<'a, T> ToTLV for TLVArray<'a, T> {
             .start_array(tag)
             .chain(
                 self.tlv
-                    .tlv_container_content_slice()
+                    .enter_array()
+                    .unwrap()
+                    .raw_value()
                     .unwrap()
                     .into_iter()
                     .copied(),
@@ -132,7 +133,7 @@ impl<'a, T> ToTLV for TLVArray<'a, T> {
 /// An iterator over a serialized TLV array.
 #[repr(transparent)]
 pub struct TLVArrayIter<'a, T> {
-    current: &'a [u8],
+    iter: TLVContainerIter<'a>,
     _type: PhantomData<fn() -> T>,
 }
 
@@ -146,45 +147,23 @@ where
     /// or at the array end, but NOT at the beginning of the array (`TLVVAlueType::Array`).
     ///
     /// In other words, pass the outcome of `tlv.enter_array()` to this constructor function.
-    pub const fn new(tlv: &'a [u8]) -> Self {
+    pub const fn new(iter: TLVContainerIter<'a>) -> Self {
         Self {
-            current: tlv,
+            iter,
             _type: PhantomData,
         }
     }
 
-    pub fn try_next(&mut self) -> Result<Option<T>, Error> {
-        let tlv = self.try_next_tlv()?;
+    pub fn try_next(&mut self) -> Option<Result<T, Error>> {
+        let tlv = self.iter.next()?;
 
-        if tlv.is_container_end()? {
-            return Ok(None);
-        }
-
-        tlv.confirm_anon()?;
-
-        Ok(Some(T::from_tlv(tlv)?))
+        Some(tlv.and_then(|tlv| tlv.confirm_anon().and_then(|_| T::from_tlv(&tlv))))
     }
 
-    pub fn try_next_init(&mut self) -> Result<Option<impl init::Init<T, Error> + 'a>, Error> {
-        let tlv = self.try_next_tlv()?;
+    pub fn try_next_init(&mut self) -> Option<Result<impl init::Init<T, Error> + 'a, Error>> {
+        let tlv = self.iter.next()?;
 
-        if tlv.is_container_end()? {
-            return Ok(None);
-        }
-
-        tlv.confirm_anon()?;
-
-        Ok(Some(T::init_from_tlv(self.current)))
-    }
-
-    fn try_next_tlv(&mut self) -> Result<&'a [u8], Error> {
-        let tlv = self.current.clone();
-
-        if !tlv.is_container_end()? {
-            self.current = tlv.container_next()?;
-        }
-
-        Ok(tlv)
+        Some(tlv.and_then(|tlv| tlv.confirm_anon().map(move |_| T::init_from_tlv(tlv))))
     }
 }
 
@@ -195,59 +174,100 @@ where
     type Item = Result<T, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.try_next().transpose()
+        self.try_next()
     }
 }
 
-// // TODO: Uncomment once impl type aliases in traits are stabilized
-// // pub struct TLVArrayInitIter<'a, T> {
-// //     current: TLVElement<'a>,
-// //     _type: PhantomData<fn() -> T>,
-// // }
+/// A container type that can represent either a serialized TLV array or a slice of elements.
+///
+/// Necessary for the few cases in the code where deserialized TLV structures are mutated -
+/// post deserialization - with custom array data.
+#[derive(Debug, Clone)]
+pub enum TLVArrayOrSlice<'a, T> {
+    Array(TLVArray<'a, T>),
+    Slice(&'a [T]),
+}
 
-// // impl<'a, T> Iterator for TLVArrayInitIter<'a, T>
-// // where
-// //     T: FromTLV<'a>,
-// // {
-// //     type Item = Result<impl Init<T, Error>, Error>;
+impl<'a, T> TLVArrayOrSlice<'a, T>
+where
+    T: FromTLV<'a> + Clone,
+{
+    /// Creates a new `TLVArrayOrSlice` from a TLV slice.
+    pub const fn new_array(array: TLVArray<'a, T>) -> Self {
+        Self::Array(array)
+    }
 
-// //     fn next(&mut self) -> Option<Self::Item> {
-// //         match self.current.is_container_end() {
-// //             Ok(true) => None,
-// //             Ok(false) => match self.current.next() {
-// //                 Ok(Some(t)) => {
-// //                     self.current = t;
-// //                     Some(T::init_from_tlv(t))
-// //                 }
-// //                 Ok(None) => None,
-// //                 Err(err) => Some(Err(err)),
-// //             }
-// //             Err(err) => Some(Err(err)),
-// //         }
-// //     }
-// // }
+    /// Creates a new `TLVArrayOrSlice` from a slice.
+    pub const fn new_slice(slice: &'a [T]) -> Self {
+        Self::Slice(slice)
+    }
 
-// impl<'a, T> TLVArray<'a, T> {
-//     pub fn new(element: TLVElement<'a>) -> Result<Self, Error> {
-//         element.confirm_array()?;
+    /// Returns an iterator over the elements of the array.
+    pub fn iter(&self) -> Result<TLVArrayOrSliceIter<'a, T>, Error> {
+        match self {
+            Self::Array(array) => Ok(TLVArrayOrSliceIter::Array(array.iter())),
+            Self::Slice(slice) => Ok(TLVArrayOrSliceIter::Slice(slice.iter())),
+        }
+    }
+}
 
-//         Ok(Self::new_unchecked(element))
-//     }
+impl<'a, T> FromTLV<'a> for TLVArrayOrSlice<'a, T>
+where
+    T: FromTLV<'a> + Clone,
+{
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
+        Ok(Self::new_array(TLVArray::new(tlv.clone())?))
+    }
+}
 
-//     pub const fn new_unchecked(element: TLVElement<'a>) -> Self {
-//         Self {
-//             start: element,
-//             _type: PhantomData,
-//         }
-//     }
+impl<'a, T> ToTLV2 for TLVArrayOrSlice<'a, T>
+where
+    T: ToTLV2,
+{
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
+    where
+        O: TLVWriteStorage,
+    {
+        match self {
+            Self::Array(array) => array.to_tlv2(tag, write),
+            Self::Slice(slice) => slice.to_tlv2(tag, write),
+        }
+    }
 
-//     pub fn iter(&self) -> TLVArrayIter<'a, T> {
-//         TLVArrayIter {
-//             current: self.start,
-//             _type: PhantomData,
-//         }
-//     }
-// }
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+        match self {
+            Self::Array(array) => Either::First(array.to_tlv_iter(tag)),
+            Self::Slice(slice) => Either::Second(slice.to_tlv_iter(tag)),
+        }
+    }
+
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+        match self {
+            Self::Array(array) => Either::First(array.into_tlv_iter(tag)),
+            Self::Slice(slice) => Either::Second(slice.into_tlv_iter(tag)),
+        }
+    }
+}
+
+/// An iterator over the `TLVArrayOrSlice` elements.
+pub enum TLVArrayOrSliceIter<'a, T> {
+    Array(TLVArrayIter<'a, T>),
+    Slice(core::slice::Iter<'a, T>),
+}
+
+impl<'a, T> Iterator for TLVArrayOrSliceIter<'a, T>
+where
+    T: FromTLV<'a> + Clone,
+{
+    type Item = Result<T, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Array(array) => array.next(),
+            Self::Slice(slice) => slice.next().cloned().map(|t| Ok(t)),
+        }
+    }
+}
 
 // impl<'a, T: ToTLV + FromTLV<'a> + Clone> TLVArray<'a, T> {
 //     pub fn get_index(&self, index: usize) -> T {

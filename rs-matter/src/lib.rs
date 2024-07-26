@@ -87,12 +87,14 @@ pub mod pairing;
 pub mod persist;
 pub mod respond;
 pub mod secure_channel;
-pub mod tlv;
+//pub mod tlv;
 pub mod tlv2;
 pub mod transport;
 pub mod utils;
 
 pub use crate::core::*;
+
+pub use tlv2 as tlv;
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

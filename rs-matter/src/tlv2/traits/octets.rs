@@ -34,10 +34,13 @@ use crate::error::{Error, ErrorCode};
 use crate::utils::init::{self, init, AsFallibleInit};
 use crate::utils::vec::Vec;
 
-use super::{FromTLV, TLVTag, TLVWrite, ToTLV, TLV};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2};
 
 /// For backwards compatibility
-type OctetStr<'a> = Octets<'a>;
+pub type OctetStr<'a> = Octets<'a>;
+
+/// For backwards compatibility
+pub type OctetStrOwned<const N: usize> = OctetsOwned<N>;
 
 /// Newtype for borrowed byte arrays
 ///
@@ -48,17 +51,17 @@ type OctetStr<'a> = Octets<'a>;
 pub struct Octets<'a>(pub &'a [u8]);
 
 impl<'a> FromTLV<'a> for Octets<'a> {
-    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
         Ok(Octets(tlv.str()?))
     }
 }
 
-impl<'a> ToTLV for Octets<'a> {
-    fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
+impl<'a> ToTLV2 for Octets<'a> {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
-        write.str(tag, self.0)
+        TLVWrite::new(write).str(tag, self.0)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
@@ -73,8 +76,6 @@ impl<'a> ToTLV for Octets<'a> {
         core::iter::empty().str(tag, self.0)
     }
 }
-
-type OctetStrOwned<const N: usize> = OctetsOwned<N>;
 
 /// Newtype for owned byte arrays with a fixed maximum length
 /// (represented by a `Vec<u8, N>`)
@@ -101,13 +102,13 @@ impl<const N: usize> OctetsOwned<N> {
 }
 
 impl<'a, const N: usize> FromTLV<'a> for OctetsOwned<N> {
-    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
         Ok(Self {
             vec: tlv.str()?.try_into().map_err(|_| ErrorCode::NoSpace)?,
         })
     }
 
-    fn init_from_tlv(tlv: &'a [u8]) -> impl init::Init<Self, Error> {
+    fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
         init::Init::chain(OctetsOwned::init().as_fallible(), move |bytes| {
             bytes
                 .vec
@@ -119,12 +120,12 @@ impl<'a, const N: usize> FromTLV<'a> for OctetsOwned<N> {
     }
 }
 
-impl<const N: usize> ToTLV for OctetsOwned<N> {
-    fn to_tlv<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
+impl<const N: usize> ToTLV2 for OctetsOwned<N> {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
-        write.str(tag, &self.vec)
+        TLVWrite::new(write).str(tag, &self.vec)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {

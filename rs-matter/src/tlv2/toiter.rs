@@ -53,13 +53,12 @@ pub trait ToTLVIter: Iterator<Item = u8> + Sized {
             TLVValue::U16(a) => Either6::Third(size._raw_bytes(a.to_le_bytes())),
             TLVValue::U32(a) => Either6::Fourth(size._raw_bytes(a.to_le_bytes())),
             TLVValue::U64(a) => Either6::Fifth(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::Struct
-            | TLVValue::Array
-            | TLVValue::List
-            | TLVValue::EndCnt
-            | TLVValue::Null
-            | TLVValue::True
-            | TLVValue::False => Either6::First(size),
+            TLVValue::Struct(seq) | TLVValue::Array(seq) | TLVValue::List(seq) => {
+                Either6::Sixth(size.chain(seq.0.into_iter().copied()))
+            }
+            TLVValue::EndCnt | TLVValue::Null | TLVValue::True | TLVValue::False => {
+                Either6::First(size)
+            }
             TLVValue::F32(a) => Either6::Fourth(size._raw_bytes(a.to_le_bytes())),
             TLVValue::F64(a) => Either6::Fifth(size._raw_bytes(a.to_le_bytes())),
             TLVValue::Str8l(a)
@@ -335,7 +334,7 @@ pub trait ToTLVIter: Iterator<Item = u8> + Sized {
     /// NOTE: This method must be called only when the corresponding container has been opened
     /// using `start_struct`, `start_array`, or `start_list`, or else the generated TLV stream will be invalid.
     fn end_container(self) -> impl Iterator<Item = u8> {
-        self._raw_byte(TLVControl::from(TLVTagType::Anonymous, TLVValueType::EndCnt).into_raw())
+        self._raw_byte(TLVControl::new(TLVTagType::Anonymous, TLVValueType::EndCnt).as_raw())
     }
 
     /// Serialize the given tag and a value indicating a Null TLV value.
@@ -360,7 +359,7 @@ pub trait ToTLVIter: Iterator<Item = u8> + Sized {
     ///
     /// Note that this is a low-level method which is not expected to be called directly by users.
     fn _tag(self, tag: TLVTag, value_type: TLVValueType) -> impl Iterator<Item = u8> {
-        let control = self._raw_byte(TLVControl::from(tag.tag_type(), value_type).into_raw());
+        let control = self._raw_byte(TLVControl::new(tag.tag_type(), value_type).as_raw());
 
         match tag {
             TLVTag::Anonymous => Either6::First(control),

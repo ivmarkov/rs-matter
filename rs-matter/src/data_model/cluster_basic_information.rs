@@ -27,7 +27,7 @@ use crate::transport::exchange::Exchange;
 
 use super::objects::*;
 
-idl_import!(clusters = ["BasicInformation"]);
+//idl_import!(clusters = ["BasicInformation"]);
 
 pub use basic_information::ID;
 

@@ -19,6 +19,9 @@ use crate::error::{Error, ErrorCode};
 
 use super::{TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType};
 
+// For backwards compatibility
+pub type TLV<'a> = TLVElement<'a>;
+
 /// A decorator trait for reading TLV-encoded data from Rust `&[u8]` slices.
 ///
 /// This trait is already implemented on the Rust `&[u8]` slice type, so users are not expected
@@ -62,73 +65,31 @@ use super::{TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType};
 /// In practice, random access - and in general - representation of the TLV stream as a `&[u8]` slice should be natural and
 /// convenient, as the TLV stream usually comes from the network UDP/TCP memory buffers of the Matter transport protocol, and
 /// these can and are borrowed as `&[u8]` slices in the upper-layer code for direct reads.
-pub trait TLV<'a>: Clone {
+#[derive(Debug, Clone)]
+#[repr(transparent)]
+pub struct TLVElement<'a>(TLVSequence<'a>);
+
+impl<'a> TLVElement<'a> {
+    pub fn new(slice: &'a [u8]) -> Self {
+        Self(TLVSequence(slice))
+    }
+
     /// Parse and return the TLV control byte of the first TLV in the slice.
     #[inline(always)]
-    fn control(&self) -> Result<TLVControl, Error> {
-        if self.ptr().is_empty() {
-            Err(ErrorCode::TLVTypeMismatch)?;
-        }
-
-        TLVControl::new(self.ptr()[0])
-    }
-
-    /// Return the length of the first TLV in the slice.
-    #[inline(always)]
-    fn tlv_len(&self) -> Result<usize, Error> {
-        let control = self.control()?;
-
-        self.value_size().map(|value_size| {
-            1 + control.tag_type().size() + control.value_type().variable_size_len() + value_size
-        })
-    }
-
-    /// Return the slice of the first TLV in the slice.
-    #[inline(always)]
-    fn tlv_slice(&self) -> Result<&'a [u8], Error> {
-        self.ptr()
-            .get(..self.tlv_len()?)
-            .ok_or(ErrorCode::TLVTypeMismatch.into())
-    }
-
-    /// Return the slice of the content of the first TLV in the slice.
-    ///
-    /// If the first TLV in the slice is not a container, this method will return an error.
-    fn tlv_container_content_slice(&self) -> Result<&'a [u8], Error> {
-        let start = self.enter_container()?;
-        let mut len = 0;
-
-        let mut tlv = start;
-
-        while !tlv.is_container_end()? {
-            len += tlv.tlv_len()?;
-            tlv = tlv.container_next()?;
-        }
-
-        Ok(&self.ptr()[..len])
-    }
-
-    /// Return the slice containing the tag of the first TLV in the slice.
-    ///
-    /// The tag is encoded right after the first control byte, and might be 0 for anonymous tags, or a single byte for
-    /// context tags.
-    #[inline(always)]
-    fn tag_slice(&self) -> Result<&'a [u8], Error> {
-        let tag_type = self.control()?.tag_type();
-
-        let slice = self
-            .ptr()
-            .get(1..1 + tag_type.size())
-            .ok_or(ErrorCode::TLVTypeMismatch)?;
-
-        Ok(slice)
+    pub fn control(&self) -> Result<TLVControl, Error> {
+        self.0.control()
     }
 
     /// Read, parse and return the tag of the first TLV in the slice.
-    fn tag(&self) -> Result<TLVTag, Error> {
-        let tag_type = self.control()?.tag_type();
+    /// #[inline(always)]
+    pub fn tag(&self) -> Result<TLVTag, Error> {
+        let tag_type = self.control()?.tag_type;
 
-        let slice = self.tag_slice()?;
+        let slice = self
+            .0
+            .tag_start()?
+            .get(..tag_type.size())
+            .ok_or(ErrorCode::TLVTypeMismatch)?;
 
         let tag = match tag_type {
             TLVTagType::Anonymous => TLVTag::Anonymous,
@@ -156,65 +117,13 @@ pub trait TLV<'a>: Clone {
         Ok(tag)
     }
 
-    /// Return the size of the value of the first TLV in the slice.
-    ///
-    /// The size of the value (for variable-sized TLVs, i.e. for octet and utf8 strings)
-    /// is encoded right after the tag, and will not be present for fixed-size TLVs.
-    ///
-    /// This method works for both fixed-size and variable-size TLVs and will return the size of the value in bytes.
-    #[inline(always)]
-    fn value_size(&self) -> Result<usize, Error> {
+    /// Read, parse and return the value of the first TLV in the slice.
+    pub fn value(&self) -> Result<TLVValue<'a>, Error> {
         let control = self.control()?;
 
-        let value_type = control.value_type();
-        if let Some(len) = value_type.fixed_size() {
-            Ok(len)
-        } else {
-            let tag_len = control.tag_type().size();
+        let slice = self.0.container_value(control)?;
 
-            let size_len = value_type.variable_size_len();
-            let len_slice = self
-                .ptr()
-                .get(1 + tag_len..1 + tag_len + size_len)
-                .ok_or(ErrorCode::TLVTypeMismatch)?;
-
-            let len = match size_len {
-                1 => u8::from_be_bytes(len_slice.try_into().unwrap()) as usize,
-                2 => u16::from_le_bytes(len_slice.try_into().unwrap()) as usize,
-                4 => u32::from_le_bytes(len_slice.try_into().unwrap()) as usize,
-                8 => u64::from_le_bytes(len_slice.try_into().unwrap()) as usize,
-                _ => unreachable!(),
-            };
-
-            Ok(len)
-        }
-    }
-
-    /// Return the slice of the value of the first TLV in the slice.
-    #[inline(always)]
-    fn value_slice(&self) -> Result<&'a [u8], Error> {
-        let tag_len = self.control()?.tag_type().size();
-        let value_len_size = self.control()?.value_type().variable_size_len();
-
-        let offset = 1 + tag_len + value_len_size;
-
-        let value_size = self.value_size()?;
-
-        let slice = self
-            .ptr()
-            .get(offset..offset + value_size)
-            .ok_or(ErrorCode::TLVTypeMismatch)?;
-
-        Ok(slice)
-    }
-
-    /// Read, parse and return the value of the first TLV in the slice.
-    fn value(&self) -> Result<TLVValue<'a>, Error> {
-        let value_type = self.control()?.value_type();
-
-        let slice = self.value_slice()?;
-
-        let value = match value_type {
+        let value = match control.value_type {
             TLVValueType::S8 => TLVValue::S8(i8::from_le_bytes(slice.try_into().unwrap())),
             TLVValueType::S16 => TLVValue::S16(i16::from_le_bytes(slice.try_into().unwrap())),
             TLVValueType::S32 => TLVValue::S32(i32::from_le_bytes(slice.try_into().unwrap())),
@@ -244,9 +153,9 @@ pub trait TLV<'a>: Clone {
             TLVValueType::Str32l => TLVValue::Str32l(slice),
             TLVValueType::Str64l => TLVValue::Str64l(slice),
             TLVValueType::Null => TLVValue::Null,
-            TLVValueType::Struct => TLVValue::Struct,
-            TLVValueType::Array => TLVValue::Array,
-            TLVValueType::List => TLVValue::List,
+            TLVValueType::Struct => TLVValue::Struct(TLVSequence(slice)),
+            TLVValueType::Array => TLVValue::Array(TLVSequence(slice)),
+            TLVValueType::List => TLVValue::List(TLVSequence(slice)),
             TLVValueType::EndCnt => TLVValue::EndCnt,
         };
 
@@ -255,9 +164,16 @@ pub trait TLV<'a>: Clone {
 
     /// Read, parse and return the value of the first TLV in the slice as an `i8`.
     /// If the first TLV does not represent a TLV S8 value, the method will return an error.
-    fn i8(&self) -> Result<i8, Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::S8) {
-            Ok(i8::from_le_bytes(self.value_slice()?.try_into().unwrap()))
+    pub fn i8(&self) -> Result<i8, Error> {
+        let control = self.control()?;
+
+        if matches!(control.value_type, TLVValueType::S8) {
+            Ok(i8::from_le_bytes(
+                self.0
+                    .value_start(control)?
+                    .try_into()
+                    .map_err(|_| ErrorCode::InvalidData)?,
+            ))
         } else {
             Err(ErrorCode::TLVTypeMismatch.into())
         }
@@ -265,9 +181,16 @@ pub trait TLV<'a>: Clone {
 
     /// Read, parse and return the value of the first TLV in the slice as a `u8`.
     /// If the first TLV does not represent a TLV U8 value, the method will return an error.
-    fn u8(&self) -> Result<u8, Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::U8) {
-            Ok(u8::from_le_bytes(self.value_slice()?.try_into().unwrap()))
+    pub fn u8(&self) -> Result<u8, Error> {
+        let control = self.control()?;
+
+        if matches!(control.value_type, TLVValueType::U8) {
+            Ok(u8::from_le_bytes(
+                self.0
+                    .value_start(control)?
+                    .try_into()
+                    .map_err(|_| ErrorCode::InvalidData)?,
+            ))
         } else {
             Err(ErrorCode::TLVTypeMismatch.into())
         }
@@ -275,9 +198,16 @@ pub trait TLV<'a>: Clone {
 
     /// Read, parse and return the value of the first TLV in the slice as an `i16`.
     /// If the first TLV does not represent a TLV S8 or S16 value, the method will return an error.
-    fn i16(&self) -> Result<i16, Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::S16) {
-            Ok(i16::from_le_bytes(self.value_slice()?.try_into().unwrap()))
+    pub fn i16(&self) -> Result<i16, Error> {
+        let control = self.control()?;
+
+        if matches!(control.value_type, TLVValueType::S16) {
+            Ok(i16::from_le_bytes(
+                self.0
+                    .value_start(control)?
+                    .try_into()
+                    .map_err(|_| ErrorCode::InvalidData)?,
+            ))
         } else {
             self.i8().map(|a| a.into())
         }
@@ -285,9 +215,16 @@ pub trait TLV<'a>: Clone {
 
     /// Read, parse and return the value of the first TLV in the slice as a `u16`.
     /// If the first TLV does not represent a TLV U8 or U16 value, the method will return an error.
-    fn u16(&self) -> Result<u16, Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::U16) {
-            Ok(u16::from_le_bytes(self.value_slice()?.try_into().unwrap()))
+    pub fn u16(&self) -> Result<u16, Error> {
+        let control = self.control()?;
+
+        if matches!(control.value_type, TLVValueType::U16) {
+            Ok(u16::from_le_bytes(
+                self.0
+                    .value(control)?
+                    .try_into()
+                    .map_err(|_| ErrorCode::InvalidData)?,
+            ))
         } else {
             self.u8().map(|a| a.into())
         }
@@ -295,9 +232,16 @@ pub trait TLV<'a>: Clone {
 
     /// Read, parse and return the value of the first TLV in the slice as an `i32`.
     /// If the first TLV does not represent a TLV S8, S16, S32 value, the method will return an error.
-    fn i32(&self) -> Result<i32, Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::S32) {
-            Ok(i32::from_le_bytes(self.value_slice()?.try_into().unwrap()))
+    pub fn i32(&self) -> Result<i32, Error> {
+        let control = self.control()?;
+
+        if matches!(control.value_type, TLVValueType::S32) {
+            Ok(i32::from_le_bytes(
+                self.0
+                    .value(control)?
+                    .try_into()
+                    .map_err(|_| ErrorCode::InvalidData)?,
+            ))
         } else {
             self.i16().map(|a| a.into())
         }
@@ -305,9 +249,16 @@ pub trait TLV<'a>: Clone {
 
     /// Read, parse and return the value of the first TLV in the slice as a `u32`.
     /// If the first TLV does not represent a TLV U8, U16, U32 value, the method will return an error.
-    fn u32(&self) -> Result<u32, Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::U32) {
-            Ok(u32::from_le_bytes(self.value_slice()?.try_into().unwrap()))
+    pub fn u32(&self) -> Result<u32, Error> {
+        let control = self.control()?;
+
+        if matches!(control.value_type, TLVValueType::U32) {
+            Ok(u32::from_le_bytes(
+                self.0
+                    .value(control)?
+                    .try_into()
+                    .map_err(|_| ErrorCode::InvalidData)?,
+            ))
         } else {
             self.u16().map(|a| a.into())
         }
@@ -315,9 +266,16 @@ pub trait TLV<'a>: Clone {
 
     /// Read, parse and return the value of the first TLV in the slice as an `i64`.
     /// If the first TLV does not represent a TLV S8, S16, S32, S64 value, the method will return an error.
-    fn i64(&self) -> Result<i64, Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::S64) {
-            Ok(i64::from_le_bytes(self.value_slice()?.try_into().unwrap()))
+    pub fn i64(&self) -> Result<i64, Error> {
+        let control = self.control()?;
+
+        if matches!(control.value_type, TLVValueType::S64) {
+            Ok(i64::from_le_bytes(
+                self.0
+                    .value(control)?
+                    .try_into()
+                    .map_err(|_| ErrorCode::InvalidData)?,
+            ))
         } else {
             self.i32().map(|a| a.into())
         }
@@ -325,9 +283,16 @@ pub trait TLV<'a>: Clone {
 
     /// Read, parse and return the value of the first TLV in the slice as a `u64`.
     /// If the first TLV does not represent a TLV U8, U16, U32, U64 value, the method will return an error.
-    fn u64(&self) -> Result<u64, Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::U64) {
-            Ok(u64::from_le_bytes(self.value_slice()?.try_into().unwrap()))
+    pub fn u64(&self) -> Result<u64, Error> {
+        let control = self.control()?;
+
+        if matches!(control.value_type, TLVValueType::U64) {
+            Ok(u64::from_le_bytes(
+                self.0
+                    .value(control)?
+                    .try_into()
+                    .map_err(|_| ErrorCode::InvalidData)?,
+            ))
         } else {
             self.u32().map(|a| a.into())
         }
@@ -335,39 +300,47 @@ pub trait TLV<'a>: Clone {
 
     /// Read, parse and return the value of the first TLV in the slice as a TLV Octet String.
     /// If the first TLV does not represent a TLV Octet String value (Strl8, Strl16, Strl32 or Strl64), the method will return an error.
-    fn str(&self) -> Result<&'a [u8], Error> {
-        if !self.control()?.value_type().is_str() {
+    pub fn str(&self) -> Result<&'a [u8], Error> {
+        let control = self.control()?;
+
+        if !control.value_type.is_str() {
             Err(ErrorCode::Invalid)?;
         }
 
-        self.value_slice()
+        self.0.value(control)
     }
 
     /// Read, parse and return the value of the first TLV in the slice as a TLV UTF-8 String.
     /// If the first TLV does not represent a TLV UTF-8 String value (Utf8l, Utf16l, Utf32l or Utf64l), the method will return an error.
-    fn utf8(&self) -> Result<&'a str, Error> {
-        if !self.control()?.value_type().is_utf8() {
+    pub fn utf8(&self) -> Result<&'a str, Error> {
+        let control = self.control()?;
+
+        if !control.value_type.is_utf8() {
             Err(ErrorCode::Invalid)?;
         }
 
-        core::str::from_utf8(self.value_slice()?).map_err(|_| ErrorCode::InvalidData.into())
+        core::str::from_utf8(self.0.value(control)?).map_err(|_| ErrorCode::InvalidData.into())
     }
 
     /// Read, parse and return the value of the first TLV in the slice as a byte slice.
     /// If the first TLV does not represent either a TLV Octet String or a TLV UTF-8 String,
     /// the method will return an error.
-    fn octets(&self) -> Result<&'a [u8], Error> {
-        if self.control()?.value_type().variable_size_len() == 0 {
+    pub fn octets(&self) -> Result<&'a [u8], Error> {
+        let control = self.control()?;
+
+        if control.value_type.variable_size_len() == 0 {
             Err(ErrorCode::Invalid)?;
         }
 
-        self.value_slice()
+        self.0.value(control)
     }
 
     /// Read, parse and return the value of the first TLV in the slice as a TLV boolean.
     /// If the first TLV does not represent a TLV boolean value (True or False), the method will return an error.
-    fn bool(&self) -> Result<bool, Error> {
-        match self.control()?.value_type() {
+    pub fn bool(&self) -> Result<bool, Error> {
+        let control = self.control()?;
+
+        match control.value_type {
             TLVValueType::False => Ok(false),
             TLVValueType::True => Ok(true),
             _ => Err(ErrorCode::TLVTypeMismatch.into()),
@@ -375,32 +348,19 @@ pub trait TLV<'a>: Clone {
     }
 
     /// Return `true` if the first TLV in the slice is a container (i.e. a TLV array, list or struct).
-    fn is_container(&self) -> Result<bool, Error> {
-        Ok(self.control()?.value_type().is_container())
+    pub fn is_container(&self) -> Result<bool, Error> {
+        Ok(self.control()?.value_type.is_container())
     }
 
     /// Return `true` if the first TLV in the slice is a container end.
-    fn is_container_end(&self) -> Result<bool, Error> {
-        Ok(self.control()?.value_type().is_container_end())
+    pub fn is_container_end(&self) -> Result<bool, Error> {
+        Ok(self.control()?.value_type.is_container_end())
     }
 
     /// Confirm that the first TLV in the slice is a null TLV.
     /// If the first TLV is not a null TLV, the method will return an error.
-    fn confirm_null(&self) -> Result<(), Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::Null) {
-            Ok(())
-        } else {
-            Err(ErrorCode::TLVTypeMismatch.into())
-        }
-    }
-
-    /// Confirm that the first TLV in the slice is a container.
-    /// If the first TLV is not a container, the method will return an error.
-    fn confirm_container(&self) -> Result<(), Error> {
-        if matches!(
-            self.control()?.value_type(),
-            TLVValueType::Struct | TLVValueType::Array | TLVValueType::List
-        ) {
+    pub fn confirm_null(&self) -> Result<(), Error> {
+        if matches!(self.control()?.value_type, TLVValueType::Null) {
             Ok(())
         } else {
             Err(ErrorCode::TLVTypeMismatch.into())
@@ -409,9 +369,9 @@ pub trait TLV<'a>: Clone {
 
     /// Confirm that the first TLV in the slice is a struct container.
     /// If the first TLV is not a struct container, the method will return an error.
-    fn confirm_struct(&self) -> Result<(), Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::Struct) {
-            Ok(())
+    pub fn enter_struct(&self) -> Result<TLVSequence<'a>, Error> {
+        if matches!(self.control()?.value_type, TLVValueType::Struct) {
+            self.0.next_enter()
         } else {
             Err(ErrorCode::TLVTypeMismatch.into())
         }
@@ -419,9 +379,9 @@ pub trait TLV<'a>: Clone {
 
     /// Confirm that the first TLV in the slice is an array container.
     /// If the first TLV is not an array container, the method will return an error.
-    fn confirm_array(&self) -> Result<(), Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::Array) {
-            Ok(())
+    pub fn enter_array(&self) -> Result<TLVSequence<'a>, Error> {
+        if matches!(self.control()?.value_type, TLVValueType::Array) {
+            self.0.next_enter()
         } else {
             Err(ErrorCode::TLVTypeMismatch.into())
         }
@@ -429,19 +389,23 @@ pub trait TLV<'a>: Clone {
 
     /// Confirm that the first TLV in the slice is a list container.
     /// If the first TLV is not a list container, the method will return an error.
-    fn confirm_list(&self) -> Result<(), Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::List) {
-            Ok(())
+    pub fn enter_list(&self) -> Result<TLVSequence<'a>, Error> {
+        if matches!(self.control()?.value_type, TLVValueType::List) {
+            self.0.next_enter()
         } else {
             Err(ErrorCode::TLVTypeMismatch.into())
         }
     }
 
-    /// Confirm that the first TLV in the slice is an end container TLV.
-    /// If the first TLV is not an end container TLV, the method will return an error.
-    fn confirm_end_container(&self) -> Result<(), Error> {
-        if matches!(self.control()?.value_type(), TLVValueType::EndCnt) {
-            Ok(())
+    /// Enter the first container in the slice by returning a TLV sub-slice positioned at the
+    /// first element in the container (or at the container end TLV, if the container is empty).
+    /// If the first TLV is not a container, the method will return an error.
+    pub fn enter(&self) -> Result<TLVSequence<'a>, Error> {
+        if matches!(
+            self.control()?.value_type,
+            TLVValueType::List | TLVValueType::Array | TLVValueType::Struct
+        ) {
+            self.0.next_enter()
         } else {
             Err(ErrorCode::TLVTypeMismatch.into())
         }
@@ -449,8 +413,8 @@ pub trait TLV<'a>: Clone {
 
     /// Confirm that the first TLV in the slice is tagged with an anonymous tag.
     /// If the first TLV is not tagged with an anonymous tag, the method will return an error.
-    fn confirm_anon(&self) -> Result<(), Error> {
-        if matches!(self.control()?.tag_type(), TLVTagType::Anonymous) {
+    pub fn confirm_anon(&self) -> Result<(), Error> {
+        if matches!(self.control()?.tag_type, TLVTagType::Anonymous) {
             Ok(())
         } else {
             Err(ErrorCode::InvalidData.into())
@@ -459,169 +423,236 @@ pub trait TLV<'a>: Clone {
 
     /// Retrieve the context ID of the first TLV in the slice.
     /// If the first TLV is not tagged with a context tag, the method will return `None`.
-    fn try_ctx(&self) -> Result<Option<u8>, Error> {
-        if matches!(self.control()?.tag_type(), TLVTagType::Context) {
-            Ok(Some(self.tag_slice()?[0]))
+    pub fn try_ctx(&self) -> Result<Option<u8>, Error> {
+        let control = self.control()?;
+
+        if matches!(control.tag_type, TLVTagType::Context) {
+            Ok(Some(
+                *self
+                    .0
+                    .tag(control.tag_type)?
+                    .get(0)
+                    .ok_or(ErrorCode::TLVTypeMismatch)?,
+            ))
         } else {
             Ok(None)
         }
     }
-
-    /// Enter the first container in the slice by returning a TLV sub-slice positioned at the
-    /// first element in the container (or at the container end TLV, if the container is empty).
-    /// If the first TLV is not a container, the method will return an error.
-    fn enter_container(&self) -> Result<Self, Error>
-    where
-        Self: Sized,
-    {
-        self.confirm_container()?;
-        self.next()
-    }
-
-    /// Enter the first struct container in the slice by returning a TLV sub-slice positioned at the
-    /// first element in the struct (or at the container end TLV, if the struct is empty).
-    /// If the first TLV is not a struct container, the method will return an error.
-    fn enter_struct(&self) -> Result<Self, Error>
-    where
-        Self: Sized,
-    {
-        self.confirm_struct()?;
-        self.next()
-    }
-
-    /// Enter the first array container in the slice by returning a TLV sub-slice positioned at the
-    /// first element in the array (or at the container end TLV, if the array is empty).
-    /// If the first TLV is not an array container, the method will return an error.
-    fn enter_array(&self) -> Result<Self, Error>
-    where
-        Self: Sized,
-    {
-        self.confirm_array()?;
-        self.next()
-    }
-
-    /// Enter the first list container in the slice by returning a TLV sub-slice positioned at the
-    /// first element in the list (or at the container end TLV, if the list is empty).
-    /// If the first TLV is not a list container, the method will return an error.
-    fn enter_list(&self) -> Result<Self, Error>
-    where
-        Self: Sized,
-    {
-        self.confirm_list()?;
-        self.next()
-    }
-
-    /// Find the first TLV in the slice tagged with a specific context ID.
-    /// If no such TLV is found, the method will return an empty TLV.
-    ///
-    /// This method is useful for finding a specific TLV in a container whose elements are
-    /// tagged with context tags (i.e. structs), because the TLV specification does not mandate
-    /// that the elements of a TLV struct arrive in an ordered manner.
-    fn find_ctx(&self, ctx: u8) -> Result<Self, Error>
-    where
-        Self: Sized,
-    {
-        let mut tlv = self.clone();
-
-        loop {
-            if tlv.is_container_end()? {
-                break Ok(Self::empty());
-            }
-
-            if tlv.try_ctx()? == Some(ctx) {
-                break Ok(tlv);
-            }
-
-            tlv = tlv.container_next()?;
-        }
-    }
-
-    /// Jumps to the next TLV in the slice
-    fn container_next(&self) -> Result<Self, Error>
-    where
-        Self: Sized,
-    {
-        if self.is_container_end()? {
-            return Ok(self.clone());
-        }
-
-        if !self.is_container()? {
-            return self.next();
-        }
-
-        let mut tlv = self.clone();
-        let mut level: usize = 1;
-
-        loop {
-            tlv = tlv.next()?;
-
-            if tlv.is_container()? {
-                level += 1;
-            } else if tlv.is_container_end()? {
-                level -= 1;
-            }
-
-            if level == 0 {
-                break;
-            }
-        }
-
-        if tlv.is_container_end()? {
-            tlv = tlv.next()?;
-        }
-
-        Ok(tlv)
-    }
-
-    /// Return the next TLV in the slice.
-    /// If the end of the slice is reached, returns a TLV for an empty slice.
-    ///
-    /// A TLV for an empty slice is not parseable, as it designates the end of the TLV stream,
-    /// i.e. all methods except `next` on an empty slice will return an error.
-    ///
-    /// A TLV slice can be checked for being empty by simply using `[u8]::is_empty()` or
-    /// `TLV::ptr().is_empty()`.
-    fn next(&self) -> Result<Self, Error>
-    where
-        Self: Sized;
-
-    /// Construct an empty TLV slice.
-    fn empty() -> Self
-    where
-        Self: Sized;
-
-    /// Return the whole slice itself as a `&[u8]`.
-    ///
-    /// Users are not expected to call this method directly.
-    /// It is only necessary so that the rest of the trait methods can get access to the underlying `[u8]` slice
-    /// for which the `TLV` trait is implemented.
-    fn ptr(&self) -> &'a [u8];
 }
 
-impl<'a> TLV<'a> for &'a [u8] {
+#[derive(Debug, Clone)]
+#[repr(transparent)]
+pub struct TLVSequence<'a>(pub(crate) &'a [u8]);
+
+impl<'a> TLVSequence<'a> {
+    pub const EMPTY: Self = Self(&[]);
+
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> TLVContainerIter<'a> {
+        TLVContainerIter::new(self.clone())
+    }
+
+    pub fn raw_value(&self) -> Result<&'a [u8], Error> {
+        let control = self.control()?;
+
+        self.container_value(control)
+    }
+
+    fn next_enter(&self) -> Result<Self, Error> {
+        if self.is_empty() {
+            return Ok(Self::EMPTY);
+        }
+
+        let control = self.control()?;
+
+        Ok(Self(self.next_start(control)?))
+    }
+
+    fn container_next(&self) -> Result<Self, Error> {
+        let control = self.control()?;
+
+        if control.value_type.is_container_end() {
+            control.confirm_container_end()?;
+
+            return Ok(Self::EMPTY);
+        }
+
+        let mut next = self.next_enter()?;
+
+        if control.value_type.is_container() {
+            let mut level = 1;
+
+            while level > 0 {
+                let control = next.control()?;
+
+                if control.value_type.is_container_end() {
+                    control.confirm_container_end()?;
+                    level -= 1;
+                } else if control.value_type.is_container() {
+                    level += 1;
+                }
+
+                next = next.next_enter()?;
+            }
+        }
+
+        Ok(next)
+    }
+
     #[inline(always)]
-    fn ptr(&self) -> &'a [u8] {
-        self
+    fn control(&self) -> Result<TLVControl, Error> {
+        TLVControl::parse(*self.0.get(0).ok_or(ErrorCode::TLVTypeMismatch)?)
     }
 
-    fn empty() -> Self {
-        &[]
+    #[inline(always)]
+    fn tag_start(&self) -> Result<&'a [u8], Error> {
+        self.0.get(1..).ok_or(ErrorCode::TLVTypeMismatch.into())
     }
 
-    fn next(&self) -> Result<Self, Error> {
-        Ok(self.get(self.tlv_len()?..).unwrap_or(&[]))
+    #[inline(always)]
+    fn tag(&self, tag_type: TLVTagType) -> Result<&'a [u8], Error> {
+        self.tag_start()?
+            .get(..tag_type.size())
+            .ok_or(ErrorCode::TLVTypeMismatch.into())
+    }
+
+    #[inline(always)]
+    fn value_len_start(&self, tag_type: TLVTagType) -> Result<&'a [u8], Error> {
+        self.tag_start()?
+            .get(tag_type.size()..)
+            .ok_or(ErrorCode::TLVTypeMismatch.into())
+    }
+
+    #[inline(always)]
+    fn value_start(&self, control: TLVControl) -> Result<&'a [u8], Error> {
+        self.value_len_start(control.tag_type)?
+            .get(control.value_type.variable_size_len()..)
+            .ok_or(ErrorCode::TLVTypeMismatch.into())
+    }
+
+    #[inline(always)]
+    fn value(&self, control: TLVControl) -> Result<&'a [u8], Error> {
+        let value_len = self.value_len(control)?;
+
+        self.value_start(control)?
+            .get(..value_len)
+            .ok_or(ErrorCode::TLVTypeMismatch.into())
+    }
+
+    #[inline(always)]
+    fn container_value(&self, control: TLVControl) -> Result<&'a [u8], Error> {
+        let value_len = self.container_value_len(control)?;
+
+        self.value_start(control)?
+            .get(..value_len)
+            .ok_or(ErrorCode::TLVTypeMismatch.into())
+    }
+
+    #[inline(always)]
+    fn value_len(&self, control: TLVControl) -> Result<usize, Error> {
+        if let Some(fixed_size) = control.value_type.fixed_size() {
+            return Ok(fixed_size);
+        }
+
+        let size_len = control.value_type.variable_size_len();
+
+        let value_len_slice = self
+            .value_len_start(control.tag_type)?
+            .get(..size_len)
+            .ok_or(ErrorCode::TLVTypeMismatch)?;
+
+        let len = match size_len {
+            1 => u8::from_be_bytes(value_len_slice.try_into().unwrap()) as usize,
+            2 => u16::from_le_bytes(value_len_slice.try_into().unwrap()) as usize,
+            4 => u32::from_le_bytes(value_len_slice.try_into().unwrap()) as usize,
+            8 => u64::from_le_bytes(value_len_slice.try_into().unwrap()) as usize,
+            _ => unreachable!(),
+        };
+
+        Ok(len)
+    }
+
+    #[inline(always)]
+    fn container_value_len(&self, control: TLVControl) -> Result<usize, Error> {
+        if control.value_type.is_container() {
+            let mut next = self.clone();
+            let mut len = 0;
+            let mut level = 1;
+
+            while level > 0 {
+                next = next.next_enter()?;
+                len += next.len()?;
+
+                let control = next.control()?;
+
+                if control.value_type.is_container_end() {
+                    control.confirm_container_end()?;
+                    level -= 1;
+                } else if control.value_type.is_container() {
+                    level += 1;
+                }
+            }
+
+            Ok(len)
+        } else {
+            self.value_len(control)
+        }
+    }
+
+    #[inline(always)]
+    fn len(&self) -> Result<usize, Error> {
+        let control = self.control()?;
+
+        self.value_len(control).map(|value_len| {
+            1 + control.tag_type.size() + control.value_type.variable_size_len() + value_len
+        })
+    }
+
+    #[inline(always)]
+    fn next_start(&self, control: TLVControl) -> Result<&'a [u8], Error> {
+        let value_len = self.value_len(control)?;
+
+        self.value_start(control)?
+            .get(value_len..)
+            .ok_or(ErrorCode::TLVTypeMismatch.into())
     }
 }
 
-//#[cfg(test)]
-mod test {
-    use super::TLV;
+#[derive(Debug, Clone)]
+#[repr(transparent)]
+pub struct TLVContainerIter<'a>(TLVSequence<'a>);
 
-    fn test1() {
-        test2(&[0, 1, 2]);
-    }
-
-    fn test2(tlv: &[u8]) {
-        tlv.control().unwrap();
+impl<'a> TLVContainerIter<'a> {
+    pub const fn new(seq: TLVSequence<'a>) -> Self {
+        Self(seq)
     }
 }
+
+impl<'a> Iterator for TLVContainerIter<'a> {
+    type Item = Result<TLVElement<'a>, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0
+            .container_next()
+            .map(|next_seq| (!next_seq.is_empty()).then(|| TLVElement(next_seq)))
+            .transpose()
+    }
+}
+
+// //#[cfg(test)]
+// mod test {
+//     use super::TLV;
+
+//     fn test1() {
+//         let slice: &[u8] = &[0, 1, 2];
+
+//         test2(&slice.into());
+//     }
+
+//     fn test2(tlv: &TLV) {
+//         tlv.control().unwrap();
+//     }
+// }

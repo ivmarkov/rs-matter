@@ -35,16 +35,16 @@ use crate::error::{Error, ErrorCode};
 use crate::utils::vec::Vec;
 
 use super::slice::into_tlv_array_iter;
-use super::{FromTLV, TLVArray, TLVTag, TLVWrite, ToTLV};
+use super::{FromTLV, TLVArray, TLVElement, TLVTag, TLVWriteStorage, ToTLV2};
 
 impl<'a, T, const N: usize> FromTLV<'a> for [T; N]
 where
     T: FromTLV<'a> + Default,
 {
-    fn from_tlv(tlv: &'a [u8]) -> Result<Self, Error> {
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
         let mut vec = Vec::<T, N>::new();
 
-        for item in TLVArray::new(tlv)? {
+        for item in TLVArray::new(tlv.clone())? {
             vec.push(item?).map_err(|_| ErrorCode::NoSpace)?;
         }
 
@@ -57,15 +57,15 @@ where
     }
 }
 
-impl<T, const N: usize> ToTLV for [T; N]
+impl<T, const N: usize> ToTLV2 for [T; N]
 where
-    T: ToTLV,
+    T: ToTLV2,
 {
-    fn to_tlv<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
     where
-        O: TLVWrite,
+        O: TLVWriteStorage,
     {
-        self.as_slice().to_tlv(tag, write)
+        self.as_slice().to_tlv2(tag, write)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {

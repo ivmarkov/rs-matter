@@ -21,7 +21,7 @@ use crate::error::Error;
 use crate::utils::init;
 
 use super::{
-    TLVElement, TLVSequence, TLVTag, TLVValue, TLVValueType, TLVWrite, TLVWriteStorage, TLVWriter,
+    flatten, TLVElement, TLVTag, TLVValue, TLVValueType, TLVWrite, TLVWriteStorage, TLVWriter,
     ToTLVIter,
 };
 
@@ -83,17 +83,10 @@ pub trait ToTLV2 {
 
     /// Serialize the type as an iterator of bytes by potentially borrowing
     /// data from the type.
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
-        core::iter::empty()
-    }
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>>;
 
     /// Serialize the type as an iterator of bytes by consuming the type.
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8>
-    where
-        Self: Sized,
-    {
-        core::iter::empty()
-    }
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>>;
 }
 
 impl<T> ToTLV2 for &T
@@ -107,12 +100,18 @@ where
         (*self).to_tlv2(tag, write)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         (*self).to_tlv_iter(tag)
     }
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         self.to_tlv_iter(tag)
+    }
+}
+
+impl<'a> FromTLV<'a> for TLVElement<'a> {
+    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
+        Ok(tlv.clone())
     }
 }
 
@@ -121,16 +120,35 @@ impl<'a> ToTLV2 for TLVElement<'a> {
     where
         O: TLVWriteStorage,
     {
-        let mut tw = TLVWrite::new(write);
-        tw.tlv(tag, self)
+        TLVWrite::new(write).raw_value(tag, self.control()?.value_type, self.raw_value()?)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
-        self.ptr().iter().copied()
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        flatten(
+            self.control()
+                .and_then(move |control| self.raw_value().map(|raw_value| (control, raw_value)))
+                .map(move |(control, raw_value)| {
+                    empty().raw_value(
+                        tag,
+                        control.value_type,
+                        raw_value.iter().copied().map(Result::Ok),
+                    )
+                }),
+        )
     }
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
-        self.into_slice().into_iter().copied()
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        flatten(
+            self.control()
+                .and_then(move |control| self.raw_value().map(|raw_value| (control, raw_value)))
+                .map(move |(control, raw_value)| {
+                    empty().raw_value(
+                        tag,
+                        control.value_type,
+                        raw_value.iter().copied().map(Result::Ok),
+                    )
+                }),
+        )
     }
 }
 
@@ -148,11 +166,11 @@ impl<'a> ToTLV2 for TLVValue<'a> {
         TLVWrite::new(write).tlv(tag, self)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         empty().tlv(tag, self.clone())
     }
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         empty().tlv(tag, self)
     }
 }

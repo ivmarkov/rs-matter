@@ -22,7 +22,7 @@
 use core::marker::PhantomData;
 
 use crate::error::Error;
-use crate::tlv2::Either;
+use crate::tlv2::{flatten, EitherIter};
 use crate::{tlv2::TLVContainerIter, utils::init};
 
 use super::{FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2, ToTLVIter};
@@ -44,7 +44,7 @@ where
 {
     /// Creates a new `TLVArray` from a TLV slice.
     pub fn new(tlv: TLVElement<'a>) -> Result<Self, Error> {
-        tlv.enter_array()?;
+        tlv.array()?;
 
         Ok(Self::new_unchecked(tlv))
     }
@@ -60,7 +60,7 @@ where
 
     /// Returns an iterator over the elements of the array.
     pub fn iter(&self) -> TLVArrayIter<'a, T> {
-        TLVArrayIter::new(self.tlv.enter_array().unwrap().iter())
+        TLVArrayIter::new(self.tlv.array().unwrap().iter())
     }
 }
 
@@ -94,38 +94,36 @@ impl<'a, T> ToTLV2 for TLVArray<'a, T> {
 
         tw.start_array(tag)?;
 
-        let seq = self.tlv.enter_array()?;
+        let seq = self.tlv.array()?;
 
-        tw.write_raw_data(seq.raw_value()?.into_iter().copied())
+        for byte in seq.raw_value()? {
+            tw.storage_mut().write(*byte)?;
+        }
+
+        Ok(())
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         core::iter::empty()
             .start_array(tag)
-            .chain(
+            .chain(flatten(
                 self.tlv
-                    .enter_array()
-                    .unwrap()
-                    .raw_value()
-                    .unwrap()
-                    .into_iter()
-                    .copied(),
-            )
+                    .array()
+                    .and_then(move |array| array.raw_value())
+                    .map(move |value| value.into_iter().copied().map(Result::Ok)),
+            ))
             .end_container()
     }
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         core::iter::empty()
             .start_array(tag)
-            .chain(
+            .chain(flatten(
                 self.tlv
-                    .enter_array()
-                    .unwrap()
-                    .raw_value()
-                    .unwrap()
-                    .into_iter()
-                    .copied(),
-            )
+                    .array()
+                    .and_then(move |array| array.raw_value())
+                    .map(move |value| value.into_iter().copied().map(Result::Ok)),
+            ))
             .end_container()
     }
 }
@@ -234,17 +232,17 @@ where
         }
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         match self {
-            Self::Array(array) => Either::First(array.to_tlv_iter(tag)),
-            Self::Slice(slice) => Either::Second(slice.to_tlv_iter(tag)),
+            Self::Array(array) => EitherIter::First(array.to_tlv_iter(tag)),
+            Self::Slice(slice) => EitherIter::Second(slice.to_tlv_iter(tag)),
         }
     }
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         match self {
-            Self::Array(array) => Either::First(array.into_tlv_iter(tag)),
-            Self::Slice(slice) => Either::Second(slice.into_tlv_iter(tag)),
+            Self::Array(array) => EitherIter::First(array.into_tlv_iter(tag)),
+            Self::Slice(slice) => EitherIter::Second(slice.into_tlv_iter(tag)),
         }
     }
 }

@@ -83,30 +83,19 @@ pub mod msg {
         pub min_int_floor: u16,
         pub max_int_ceil: u16,
         pub attr_requests: Option<TLVArray<'a, AttrPath>>,
-        event_requests: Option<TLVArray<'a, EventPath>>,
-        event_filters: Option<TLVArray<'a, EventFilter>>,
+        pub event_requests: Option<TLVArray<'a, EventPath>>,
+        pub event_filters: Option<TLVArray<'a, EventFilter>>,
         // The Context Tags are discontiguous for some reason
-        _dummy: Option<bool>,
+        pub _dummy: Option<bool>,
         pub fabric_filtered: bool,
         pub dataver_filters: Option<TLVArray<'a, DataVersionFilter>>,
-    }
-
-    impl<'a> SubscribeReq<'a> {
-        pub fn new(fabric_filtered: bool, min_int_floor: u16, max_int_ceil: u16) -> Self {
-            Self {
-                fabric_filtered,
-                min_int_floor,
-                max_int_ceil,
-                ..Default::default()
-            }
-        }
     }
 
     #[derive(Debug, FromTLV, ToTLV)]
     pub struct SubscribeResp {
         pub subs_id: u32,
         // The Context Tags are discontiguous for some reason
-        _dummy: Option<u32>,
+        pub _dummy: Option<u32>,
         pub max_int: u16,
     }
 
@@ -162,19 +151,10 @@ pub mod msg {
     #[tlvargs(lifetime = "'a")]
     pub struct ReadReq<'a> {
         pub attr_requests: Option<TLVArray<'a, AttrPath>>,
-        event_requests: Option<TLVArray<'a, EventPath>>,
-        event_filters: Option<TLVArray<'a, EventFilter>>,
+        pub event_requests: Option<TLVArray<'a, EventPath>>,
+        pub event_filters: Option<TLVArray<'a, EventFilter>>,
         pub fabric_filtered: bool,
         pub dataver_filters: Option<TLVArray<'a, DataVersionFilter>>,
-    }
-
-    impl<'a> ReadReq<'a> {
-        pub fn new(fabric_filtered: bool) -> Self {
-            Self {
-                fabric_filtered,
-                ..Default::default()
-            }
-        }
     }
 
     #[derive(FromTLV, ToTLV, Debug)]
@@ -184,21 +164,6 @@ pub mod msg {
         pub timed_request: Option<bool>,
         pub write_requests: TLVArray<'a, AttrData<'a>>,
         pub more_chunked: Option<bool>,
-    }
-
-    impl<'a> WriteReq<'a> {
-        pub fn new(supress_response: bool) -> Self {
-            let mut w = Self {
-                supress_response: None,
-                write_requests: TLVArray::new(&[]),
-                timed_request: None,
-                more_chunked: None,
-            };
-            if supress_response {
-                w.supress_response = Some(true);
-            }
-            w
-        }
     }
 
     // Report Data
@@ -237,11 +202,10 @@ pub mod ib {
     use core::fmt::Debug;
 
     use crate::{
-        data_model::objects::{AttrDetails, AttrId, ClusterId, CmdId, EncodeValue, EndptId},
+        data_model::objects::{AttrDetails, AttrId, ClusterId, CmdId, EndptId},
         error::{Error, ErrorCode},
         interaction_model::core::IMStatusCode,
-        tlv::{FromTLV, Nullable, TLVElement, TLVWriter, TagType, ToTLV},
-        tlv2::{TLVTag, TLVWrite},
+        tlv::{FromTLV, Nullable, TLVElement, TLVTag, TLVWriteStorage, ToTLV, ToTLV2},
     };
     use log::error;
 
@@ -303,11 +267,11 @@ pub mod ib {
     #[tlvargs(lifetime = "'a")]
     pub struct CmdData<'a> {
         pub path: CmdPath,
-        pub data: EncodeValue<'a>,
+        pub data: TLVElement<'a>,
     }
 
     impl<'a> CmdData<'a> {
-        pub fn new(path: CmdPath, data: EncodeValue<'a>) -> Self {
+        pub const fn new(path: CmdPath, data: TLVElement<'a>) -> Self {
             Self { path, data }
         }
     }
@@ -375,11 +339,11 @@ pub mod ib {
     pub struct AttrData<'a> {
         pub data_ver: Option<u32>,
         pub path: AttrPath,
-        pub data: EncodeValue<'a>,
+        pub data: TLVElement<'a>,
     }
 
     impl<'a> AttrData<'a> {
-        pub fn new(data_ver: Option<u32>, path: AttrPath, data: EncodeValue<'a>) -> Self {
+        pub fn new(data_ver: Option<u32>, path: AttrPath, data: TLVElement<'a>) -> Self {
             Self {
                 data_ver,
                 path,
@@ -421,15 +385,14 @@ pub mod ib {
             } else {
                 f(ListOperation::EditItem(index), data)
             }
-        } else if data.confirm_array().is_ok() {
+        } else if let Ok(array) = data.array() {
             // If data is list, this is either Delete List or OverWrite List operation
             // in either case, we have to first delete the whole list
             f(ListOperation::DeleteList, data)?;
             // Now the data must be a list, that should be added item by item
 
-            let container = data.enter().ok_or(ErrorCode::Invalid)?;
-            for d in container {
-                f(ListOperation::AddItem, &d)?;
+            for d in array.iter() {
+                f(ListOperation::AddItem, &d?)?;
             }
             Ok(())
         } else {
@@ -531,9 +494,20 @@ pub mod ib {
         }
     }
 
-    impl ToTLV for CmdPath {
-        fn to_tlv(&self, tw: &mut TLVWriter, tag_type: TagType) -> Result<(), Error> {
-            self.path.to_tlv(tw, tag_type)
+    impl ToTLV2 for CmdPath {
+        fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
+        where
+            O: TLVWriteStorage,
+        {
+            self.path.to_tlv2(tag, write)
+        }
+
+        fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+            self.path.to_tlv_iter(tag)
+        }
+
+        fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+            self.path.into_tlv_iter(tag)
         }
     }
 

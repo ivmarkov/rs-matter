@@ -44,11 +44,11 @@ where
         to_tlv_array(tag, self.iter(), &mut write)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         into_tlv_array_iter(tag, self.iter())
     }
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         into_tlv_array_iter(tag, self.into_iter())
     }
 }
@@ -70,7 +70,10 @@ where
     tw.end_container()
 }
 
-pub(crate) fn into_tlv_array_iter<I>(tag: TLVTag, iter: I) -> impl Iterator<Item = u8>
+pub(crate) fn into_tlv_array_iter<I>(
+    tag: TLVTag,
+    iter: I,
+) -> impl Iterator<Item = Result<u8, Error>>
 where
     I: Iterator,
     I::Item: ToTLV2,

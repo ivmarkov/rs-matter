@@ -17,7 +17,9 @@
 
 use crate::{
     error::{Error, ErrorCode},
-    tlv::{FromTLV, TLVElement, ToTLV},
+    tlv::{
+        FromTLV, TLVElement, TLVTag, TLVValueType, TLVWrite, TLVWriteStorage, ToTLV2, ToTLVIter,
+    },
 };
 use log::error;
 
@@ -36,6 +38,22 @@ bitflags! {
         const OPERATE = Self::V.bits() | Self::O.bits();
         const MANAGE = Self::V.bits() | Self::O.bits() | Self::M.bits();
         const ADMIN = Self::V.bits() | Self::O.bits() | Self::M.bits() | Self::A.bits();
+    }
+}
+
+impl Privilege {
+    pub fn raw_value(&self) -> u8 {
+        if self.contains(Privilege::ADMIN) {
+            5
+        } else if self.contains(Privilege::OPERATE) {
+            4
+        } else if self.contains(Privilege::MANAGE) {
+            3
+        } else if self.contains(Privilege::VIEW) {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -58,24 +76,27 @@ impl FromTLV<'_> for Privilege {
     }
 }
 
-impl ToTLV for Privilege {
-    #[allow(clippy::bool_to_int_with_if)]
-    fn to_tlv(
-        &self,
-        tw: &mut crate::tlv::TLVWriter,
-        tag: crate::tlv::TagType,
-    ) -> Result<(), Error> {
-        let val = if self.contains(Privilege::ADMIN) {
-            5
-        } else if self.contains(Privilege::OPERATE) {
-            4
-        } else if self.contains(Privilege::MANAGE) {
-            3
-        } else if self.contains(Privilege::VIEW) {
-            1
-        } else {
-            0
-        };
-        tw.u8(tag, val)
+impl ToTLV2 for Privilege {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
+    where
+        O: TLVWriteStorage,
+    {
+        TLVWrite::new(write).u8(tag, self.raw_value())
+    }
+
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        core::iter::empty().raw_value(
+            tag,
+            TLVValueType::U8,
+            core::iter::once(Ok(self.raw_value())),
+        )
+    }
+
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        core::iter::empty().raw_value(
+            tag,
+            TLVValueType::U8,
+            core::iter::once(Ok(self.raw_value())),
+        )
     }
 }

@@ -91,7 +91,7 @@ where
 
     /// Write a TLV tag and value to the TLV stream.
     pub fn tlv(&mut self, tag: &TLVTag, value: &TLVValue) -> Result<(), Error> {
-        self.write_tagged_raw_data(tag, value.value_type(), &[])?;
+        self.raw_value(tag, value.value_type(), &[])?;
 
         match value {
             TLVValue::Str8l(a) => self.write_raw_data((a.len() as u8).to_le_bytes()),
@@ -130,18 +130,17 @@ where
             TLVValue::Struct(seq) | TLVValue::Array(seq) | TLVValue::List(seq) => {
                 self.write_raw_data(seq.0.iter().copied())
             }
-            TLVValue::EndCnt => Ok(()),
         }
     }
 
     /// Write a tag and a TLV S8 value to the TLV stream.
     pub fn i8(&mut self, tag: &TLVTag, data: i8) -> Result<(), Error> {
-        self.write_tagged_raw_data(tag, TLVValueType::S8, &data.to_le_bytes())
+        self.raw_value(tag, TLVValueType::S8, &data.to_le_bytes())
     }
 
     /// Write a tag and a TLV U8 value to the TLV stream.
     pub fn u8(&mut self, tag: &TLVTag, data: u8) -> Result<(), Error> {
-        self.write_tagged_raw_data(tag, TLVValueType::U8, &data.to_le_bytes())
+        self.raw_value(tag, TLVValueType::U8, &data.to_le_bytes())
     }
 
     /// Write a tag and a TLV S16 or (if the data is small enough) S8 value to the TLV stream.
@@ -149,7 +148,7 @@ where
         if data >= i8::MIN as i16 && data <= i8::MAX as i16 {
             self.i8(tag, data as i8)
         } else {
-            self.write_tagged_raw_data(tag, TLVValueType::S16, &data.to_le_bytes())
+            self.raw_value(tag, TLVValueType::S16, &data.to_le_bytes())
         }
     }
 
@@ -158,7 +157,7 @@ where
         if data <= u8::MAX as u16 {
             self.u8(tag, data as u8)
         } else {
-            self.write_tagged_raw_data(tag, TLVValueType::U16, &data.to_le_bytes())
+            self.raw_value(tag, TLVValueType::U16, &data.to_le_bytes())
         }
     }
 
@@ -167,7 +166,7 @@ where
         if data >= i16::MIN as i32 && data <= i16::MAX as i32 {
             self.i16(tag, data as i16)
         } else {
-            self.write_tagged_raw_data(tag, TLVValueType::S32, &data.to_le_bytes())
+            self.raw_value(tag, TLVValueType::S32, &data.to_le_bytes())
         }
     }
 
@@ -176,7 +175,7 @@ where
         if data <= u16::MAX as u32 {
             self.u16(tag, data as u16)
         } else {
-            self.write_tagged_raw_data(tag, TLVValueType::U32, &data.to_le_bytes())
+            self.raw_value(tag, TLVValueType::U32, &data.to_le_bytes())
         }
     }
 
@@ -185,7 +184,7 @@ where
         if data >= i32::MIN as i64 && data <= i32::MAX as i64 {
             self.i32(tag, data as i32)
         } else {
-            self.write_tagged_raw_data(tag, TLVValueType::S64, &data.to_le_bytes())
+            self.raw_value(tag, TLVValueType::S64, &data.to_le_bytes())
         }
     }
 
@@ -194,7 +193,7 @@ where
         if data <= u32::MAX as u64 {
             self.u32(tag, data as u32)
         } else {
-            self.write_tagged_raw_data(tag, TLVValueType::U64, &data.to_le_bytes())
+            self.raw_value(tag, TLVValueType::U64, &data.to_le_bytes())
         }
     }
 
@@ -219,13 +218,13 @@ where
         I: IntoIterator<Item = u8>,
     {
         if len <= u8::MAX as usize {
-            self.write_tagged_raw_data(tag, TLVValueType::Str8l, &(len as u8).to_le_bytes())?;
+            self.raw_value(tag, TLVValueType::Str8l, &(len as u8).to_le_bytes())?;
         } else if len <= u16::MAX as usize {
-            self.write_tagged_raw_data(tag, TLVValueType::Str16l, &(len as u16).to_le_bytes())?;
+            self.raw_value(tag, TLVValueType::Str16l, &(len as u16).to_le_bytes())?;
         } else if len <= u32::MAX as usize {
-            self.write_tagged_raw_data(tag, TLVValueType::Str32l, &(len as u32).to_le_bytes())?;
+            self.raw_value(tag, TLVValueType::Str32l, &(len as u32).to_le_bytes())?;
         } else {
-            self.write_tagged_raw_data(tag, TLVValueType::Str64l, &(len as u64).to_le_bytes())?;
+            self.raw_value(tag, TLVValueType::Str64l, &(len as u64).to_le_bytes())?;
         }
 
         self.write_raw_data(data)
@@ -254,13 +253,13 @@ where
         I: IntoIterator<Item = u8>,
     {
         if len <= u8::MAX as usize {
-            self.write_tagged_raw_data(tag, TLVValueType::Utf8l, &(len as u8).to_le_bytes())?;
+            self.raw_value(tag, TLVValueType::Utf8l, &(len as u8).to_le_bytes())?;
         } else if len <= u16::MAX as usize {
-            self.write_tagged_raw_data(tag, TLVValueType::Utf16l, &(len as u16).to_le_bytes())?;
+            self.raw_value(tag, TLVValueType::Utf16l, &(len as u16).to_le_bytes())?;
         } else if len <= u32::MAX as usize {
-            self.write_tagged_raw_data(tag, TLVValueType::Utf32l, &(len as u32).to_le_bytes())?;
+            self.raw_value(tag, TLVValueType::Utf32l, &(len as u32).to_le_bytes())?;
         } else {
-            self.write_tagged_raw_data(tag, TLVValueType::Utf64l, &(len as u64).to_le_bytes())?;
+            self.raw_value(tag, TLVValueType::Utf64l, &(len as u64).to_le_bytes())?;
         }
 
         self.write_raw_data(data)
@@ -271,7 +270,7 @@ where
     /// NOTE: The user must call `end_container` after writing all the Struct fields
     /// to close the Struct container or else the generated TLV stream will be invalid.
     pub fn start_struct(&mut self, tag: &TLVTag) -> Result<(), Error> {
-        self.write_tagged_raw_data(tag, TLVValueType::Struct, &[])
+        self.raw_value(tag, TLVValueType::Struct, &[])
     }
 
     /// Write a tag and a value indicating the start of an Array TLV container.
@@ -279,7 +278,7 @@ where
     /// NOTE: The user must call `end_container` after writing all the Array elements
     /// to close the Array container or else the generated TLV stream will be invalid.
     pub fn start_array(&mut self, tag: &TLVTag) -> Result<(), Error> {
-        self.write_tagged_raw_data(tag, TLVValueType::Array, &[])
+        self.raw_value(tag, TLVValueType::Array, &[])
     }
 
     /// Write a tag and a value indicating the start of a List TLV container.
@@ -287,7 +286,7 @@ where
     /// NOTE: The user must call `end_container` after writing all the List elements
     /// to close the List container or else the generated TLV stream will be invalid.
     pub fn start_list(&mut self, tag: &TLVTag) -> Result<(), Error> {
-        self.write_tagged_raw_data(tag, TLVValueType::List, &[])
+        self.raw_value(tag, TLVValueType::List, &[])
     }
 
     /// Write a value indicating the end of a Struct, Array, or List TLV container.
@@ -300,12 +299,12 @@ where
 
     /// Write a tag and a TLV Null value to the TLV stream.
     pub fn null(&mut self, tag: &TLVTag) -> Result<(), Error> {
-        self.write_tagged_raw_data(tag, TLVValueType::Null, &[])
+        self.raw_value(tag, TLVValueType::Null, &[])
     }
 
     /// Write a tag and a TLV True or False value to the TLV stream.
     pub fn bool(&mut self, tag: &TLVTag, val: bool) -> Result<(), Error> {
-        self.write_tagged_raw_data(
+        self.raw_value(
             tag,
             if val {
                 TLVValueType::True
@@ -317,7 +316,7 @@ where
     }
 
     /// Write a tag and a raw, already-encoded TLV value represented as a byte slice.
-    fn write_tagged_raw_data(
+    pub(crate) fn raw_value(
         &mut self,
         tag: &TLVTag,
         value_type: TLVValueType,
@@ -338,7 +337,7 @@ where
     }
 
     /// Append multiple raw bytes to the TLV stream.
-    pub(crate) fn write_raw_data<I>(&mut self, bytes: I) -> Result<(), Error>
+    fn write_raw_data<I>(&mut self, bytes: I) -> Result<(), Error>
     where
         I: IntoIterator<Item = u8>,
     {

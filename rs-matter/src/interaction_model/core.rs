@@ -20,6 +20,7 @@ use core::time::Duration;
 use crate::{
     error::*,
     tlv::{FromTLV, TLVArray, TLVElement, TLVWriter, TagType, ToTLV},
+    tlv2::{TLVTag, TLVWrite, TLVWriteStorage, ToTLV2, ToTLVIter},
     transport::exchange::MessageMeta,
     utils::{epoch::Epoch, writebuf::WriteBuf},
 };
@@ -97,9 +98,20 @@ impl FromTLV<'_> for IMStatusCode {
     }
 }
 
-impl ToTLV for IMStatusCode {
-    fn to_tlv(&self, tw: &mut TLVWriter, tag_type: TagType) -> Result<(), Error> {
-        tw.u16(tag_type, *self as u16)
+impl ToTLV2 for IMStatusCode {
+    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
+    where
+        O: TLVWriteStorage,
+    {
+        TLVWrite::new(write).u16(tag, *self as _)
+    }
+
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        core::iter::empty().u16(tag, *self as _)
+    }
+
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        core::iter::empty().u16(tag, self as _)
     }
 }
 

@@ -293,7 +293,7 @@ impl EthNwCommCluster {
                 match attr.attr_id.try_into()? {
                     Attributes::MaxNetworks => AttrType::<u8>::new().encode(writer, 1),
                     Attributes::Networks => {
-                        writer.start_array(AttrDataWriter::TAG)?;
+                        writer.start_array(&AttrDataWriter::TAG)?;
                         info.nw_info.to_tlv(&mut writer, TagType::Anonymous)?;
                         writer.end_container()?;
                         writer.complete()
@@ -314,7 +314,7 @@ impl EthNwCommCluster {
                         writer.complete()
                     }
                     Attributes::LastConnectErrorValue => {
-                        writer.null(AttrDataWriter::TAG)?;
+                        writer.null(&AttrDataWriter::TAG)?;
                         writer.complete()
                     }
                     _ => Err(ErrorCode::AttributeNotFound.into()),

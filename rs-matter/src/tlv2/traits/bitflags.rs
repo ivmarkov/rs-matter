@@ -42,11 +42,17 @@ macro_rules! bitflags_tlv {
                 $crate::tlv2::TLVWrite::new(write).$type(tag, self.bits())
             }
 
-            fn to_tlv_iter(&self, tag: crate::tlv2::TLVTag) -> impl Iterator<Item = u8> {
+            fn to_tlv_iter(
+                &self,
+                tag: crate::tlv2::TLVTag,
+            ) -> impl Iterator<Item = Result<u8, Error>> {
                 $crate::tlv2::ToTLVIter::$type(core::iter::empty(), tag, self.bits())
             }
 
-            fn into_tlv_iter(self, tag: crate::tlv2::TLVTag) -> impl Iterator<Item = u8> {
+            fn into_tlv_iter(
+                self,
+                tag: crate::tlv2::TLVTag,
+            ) -> impl Iterator<Item = Result<u8, Error>> {
                 $crate::tlv2::ToTLVIter::$type(core::iter::empty(), tag, self.bits())
             }
         }

@@ -45,7 +45,7 @@ impl NocCommand {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
 pub struct NocState {

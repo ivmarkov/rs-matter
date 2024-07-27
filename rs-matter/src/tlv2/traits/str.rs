@@ -38,7 +38,13 @@ use super::{FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2};
 /// rather than as the native Rust `str` type. The reason for that is probably
 /// a misundersatanding that Utf16l, Utf32l and Utf64l are not UTF-8 strings,
 /// while they actually are. Simply their length prefix is encoded variably.
-pub type UtfStr<'a> = &'a str;
+pub type UtfStr<'a> = Utf8Str<'a>;
+
+/// Necessary because the `FromTLV` proc macro impl currently cannot handle
+/// reference types.
+///
+/// This restriction might be lifted in the future.
+pub type Utf8Str<'a> = &'a str;
 
 impl<'a> FromTLV<'a> for &'a str {
     fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
@@ -54,13 +60,13 @@ impl ToTLV2 for &str {
         TLVWrite::new(write).utf8(tag, self)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         use crate::tlv2::toiter::ToTLVIter;
 
         empty().utf8(tag, self)
     }
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         use crate::tlv2::toiter::ToTLVIter;
 
         empty().utf8(tag, self)
@@ -82,15 +88,19 @@ impl<const N: usize> ToTLV2 for String<N> {
         TLVWrite::new(write).utf8(tag, self)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         use crate::tlv2::toiter::ToTLVIter;
 
         empty().utf8(tag, self)
     }
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         use crate::tlv2::toiter::ToTLVIter;
 
-        empty().utf8i(tag, self.len(), self.into_bytes().into_iter())
+        empty().utf8i(
+            tag,
+            self.len(),
+            self.into_bytes().into_iter().map(Result::Ok),
+        )
     }
 }

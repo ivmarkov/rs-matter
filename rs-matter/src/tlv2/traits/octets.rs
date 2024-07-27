@@ -50,6 +50,12 @@ pub type OctetStrOwned<const N: usize> = OctetsOwned<N>;
 #[repr(transparent)]
 pub struct Octets<'a>(pub &'a [u8]);
 
+impl<'a> Octets<'a> {
+    pub const fn new(slice: &'a [u8]) -> Self {
+        Self(slice)
+    }
+}
+
 impl<'a> FromTLV<'a> for Octets<'a> {
     fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
         Ok(Octets(tlv.str()?))
@@ -64,13 +70,13 @@ impl<'a> ToTLV2 for Octets<'a> {
         TLVWrite::new(write).str(tag, self.0)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         use crate::tlv2::toiter::ToTLVIter;
 
         core::iter::empty().str(tag, self.0)
     }
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         use crate::tlv2::toiter::ToTLVIter;
 
         core::iter::empty().str(tag, self.0)
@@ -128,15 +134,15 @@ impl<const N: usize> ToTLV2 for OctetsOwned<N> {
         TLVWrite::new(write).str(tag, &self.vec)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         use crate::tlv2::toiter::ToTLVIter;
 
         core::iter::empty().str(tag, &self.vec)
     }
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         use crate::tlv2::toiter::ToTLVIter;
 
-        core::iter::empty().stri(tag, self.vec.len(), self.vec.into_iter())
+        core::iter::empty().stri(tag, self.vec.len(), self.vec.into_iter().map(Result::Ok))
     }
 }

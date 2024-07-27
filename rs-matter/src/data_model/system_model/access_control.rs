@@ -133,7 +133,7 @@ impl AccessControlCluster {
             } else {
                 match attr.attr_id.try_into()? {
                     Attributes::Acl(_) => {
-                        writer.start_array(AttrDataWriter::TAG)?;
+                        writer.start_array(&AttrDataWriter::TAG)?;
 
                         for fabric in fabric_mgr.iter() {
                             if !attr.fab_filter || attr.fab_idx == fabric.fabric_idx().get() {
@@ -150,7 +150,7 @@ impl AccessControlCluster {
                     }
                     Attributes::Extension(_) => {
                         // Empty for now
-                        writer.start_array(AttrDataWriter::TAG)?;
+                        writer.start_array(&AttrDataWriter::TAG)?;
                         writer.end_container()?;
 
                         writer.complete()

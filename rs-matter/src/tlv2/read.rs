@@ -65,19 +65,35 @@ pub type TLV<'a> = TLVElement<'a>;
 /// In practice, random access - and in general - representation of the TLV stream as a `&[u8]` slice should be natural and
 /// convenient, as the TLV stream usually comes from the network UDP/TCP memory buffers of the Matter transport protocol, and
 /// these can and are borrowed as `&[u8]` slices in the upper-layer code for direct reads.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct TLVElement<'a>(TLVSequence<'a>);
 
 impl<'a> TLVElement<'a> {
-    pub fn new(slice: &'a [u8]) -> Self {
-        Self(TLVSequence(slice))
+    #[inline(always)]
+    pub fn new(data: &'a [u8]) -> Self {
+        Self(TLVSequence::new(data))
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[inline(always)]
+    pub const fn raw_data(&self) -> &'a [u8] {
+        self.0.raw_data()
     }
 
     /// Parse and return the TLV control byte of the first TLV in the slice.
     #[inline(always)]
     pub fn control(&self) -> Result<TLVControl, Error> {
         self.0.control()
+    }
+
+    #[inline(always)]
+    pub fn raw_value(&self) -> Result<&'a [u8], Error> {
+        self.0.raw_value()
     }
 
     /// Read, parse and return the tag of the first TLV in the slice.
@@ -156,7 +172,7 @@ impl<'a> TLVElement<'a> {
             TLVValueType::Struct => TLVValue::Struct(TLVSequence(slice)),
             TLVValueType::Array => TLVValue::Array(TLVSequence(slice)),
             TLVValueType::List => TLVValue::List(TLVSequence(slice)),
-            TLVValueType::EndCnt => TLVValue::EndCnt,
+            TLVValueType::EndCnt => Err(ErrorCode::TLVTypeMismatch)?,
         };
 
         Ok(value)
@@ -359,7 +375,7 @@ impl<'a> TLVElement<'a> {
 
     /// Confirm that the first TLV in the slice is a null TLV.
     /// If the first TLV is not a null TLV, the method will return an error.
-    pub fn confirm_null(&self) -> Result<(), Error> {
+    pub fn null(&self) -> Result<(), Error> {
         if matches!(self.control()?.value_type, TLVValueType::Null) {
             Ok(())
         } else {
@@ -369,7 +385,11 @@ impl<'a> TLVElement<'a> {
 
     /// Confirm that the first TLV in the slice is a struct container.
     /// If the first TLV is not a struct container, the method will return an error.
-    pub fn enter_struct(&self) -> Result<TLVSequence<'a>, Error> {
+    pub fn structure(&self) -> Result<TLVSequence<'a>, Error> {
+        self.r#struct()
+    }
+
+    pub fn r#struct(&self) -> Result<TLVSequence<'a>, Error> {
         if matches!(self.control()?.value_type, TLVValueType::Struct) {
             self.0.next_enter()
         } else {
@@ -379,7 +399,7 @@ impl<'a> TLVElement<'a> {
 
     /// Confirm that the first TLV in the slice is an array container.
     /// If the first TLV is not an array container, the method will return an error.
-    pub fn enter_array(&self) -> Result<TLVSequence<'a>, Error> {
+    pub fn array(&self) -> Result<TLVSequence<'a>, Error> {
         if matches!(self.control()?.value_type, TLVValueType::Array) {
             self.0.next_enter()
         } else {
@@ -389,7 +409,7 @@ impl<'a> TLVElement<'a> {
 
     /// Confirm that the first TLV in the slice is a list container.
     /// If the first TLV is not a list container, the method will return an error.
-    pub fn enter_list(&self) -> Result<TLVSequence<'a>, Error> {
+    pub fn list(&self) -> Result<TLVSequence<'a>, Error> {
         if matches!(self.control()?.value_type, TLVValueType::List) {
             self.0.next_enter()
         } else {
@@ -400,7 +420,7 @@ impl<'a> TLVElement<'a> {
     /// Enter the first container in the slice by returning a TLV sub-slice positioned at the
     /// first element in the container (or at the container end TLV, if the container is empty).
     /// If the first TLV is not a container, the method will return an error.
-    pub fn enter(&self) -> Result<TLVSequence<'a>, Error> {
+    pub fn container(&self) -> Result<TLVSequence<'a>, Error> {
         if matches!(
             self.control()?.value_type,
             TLVValueType::List | TLVValueType::Array | TLVValueType::Struct
@@ -440,21 +460,48 @@ impl<'a> TLVElement<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct TLVSequence<'a>(pub(crate) &'a [u8]);
 
 impl<'a> TLVSequence<'a> {
     pub const EMPTY: Self = Self(&[]);
 
+    #[inline(always)]
+    const fn new(data: &'a [u8]) -> Self {
+        Self(data)
+    }
+
+    #[inline(always)]
     pub const fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    #[inline(always)]
+    pub const fn raw_data(&self) -> &'a [u8] {
+        self.0
+    }
+
+    #[inline(always)]
     pub fn iter(&self) -> TLVContainerIter<'a> {
         TLVContainerIter::new(self.clone())
     }
 
+    pub fn find_ctx(&self, ctx: u8) -> Result<TLVElement<'a>, Error> {
+        for elem in self.iter() {
+            let elem = elem?;
+
+            if let Some(elem_ctx) = elem.try_ctx()? {
+                if elem_ctx == ctx {
+                    return Ok(elem);
+                }
+            }
+        }
+
+        Ok(TLVElement(Self::EMPTY))
+    }
+
+    #[inline(always)]
     pub fn raw_value(&self) -> Result<&'a [u8], Error> {
         let control = self.control()?;
 

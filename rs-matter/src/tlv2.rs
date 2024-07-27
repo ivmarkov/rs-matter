@@ -350,7 +350,6 @@ pub enum TLVValue<'a> {
     Struct(TLVSequence<'a>),
     Array(TLVSequence<'a>),
     List(TLVSequence<'a>),
-    EndCnt,
 }
 
 impl<'a> TLVValue<'a> {
@@ -378,10 +377,9 @@ impl<'a> TLVValue<'a> {
             Self::Str32l(_) => TLVValueType::Str32l,
             Self::Str64l(_) => TLVValueType::Str64l,
             Self::Null => TLVValueType::Null,
-            Self::Struct => TLVValueType::Struct,
-            Self::Array => TLVValueType::Array,
-            Self::List => TLVValueType::List,
-            Self::EndCnt => TLVValueType::EndCnt,
+            Self::Struct(_) => TLVValueType::Struct,
+            Self::Array(_) => TLVValueType::Array,
+            Self::List(_) => TLVValueType::List,
         }
     }
 }
@@ -400,10 +398,9 @@ impl<'a> fmt::Display for TLVValue<'a> {
             Self::F32(a) => write!(f, "F32({})", a),
             Self::F64(a) => write!(f, "F64({})", a),
             Self::Null => write!(f, "Null"),
-            Self::Struct => write!(f, "{{"),
-            Self::Array => write!(f, "["),
-            Self::List => write!(f, "["),
-            Self::EndCnt => write!(f, ">"),
+            Self::Struct(_) => write!(f, "{{"),
+            Self::Array(_) => write!(f, "["),
+            Self::List(_) => write!(f, "["),
             Self::True => write!(f, "True"),
             Self::False => write!(f, "False"),
             Self::Utf8l(a) | Self::Utf16l(a) | Self::Utf32l(a) | Self::Utf64l(a) => {

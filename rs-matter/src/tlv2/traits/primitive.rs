@@ -56,13 +56,13 @@ macro_rules! totlv_for {
                     TLVWrite::new(write).$t(tag, *self)
                 }
 
-                fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+                fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
                     use $crate::tlv2::toiter::ToTLVIter;
 
                     core::iter::empty().$t(tag, *self)
                 }
 
-                fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+                fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
                     use $crate::tlv2::toiter::ToTLVIter;
 
                     core::iter::empty().$t(tag, self)
@@ -83,13 +83,13 @@ macro_rules! totlv_for_nonzero {
                     TLVWrite::new(write).$t(tag, self.get())
                 }
 
-                fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = u8> {
+                fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
                     use $crate::tlv2::toiter::ToTLVIter;
 
                     core::iter::empty().$t(tag, self.get())
                 }
 
-                fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = u8> {
+                fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
                     use $crate::tlv2::toiter::ToTLVIter;
 
                     core::iter::empty().$t(tag, self.get())

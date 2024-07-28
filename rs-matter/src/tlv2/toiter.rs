@@ -2,7 +2,7 @@ use crate::error::Error;
 
 use super::{TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType};
 
-pub type BE = Result<u8, Error>;
+type ByteResult = Result<u8, Error>;
 
 /// A decorator trait for serializing data as TLV in the form of an
 /// `Iterator` of `Result<u8, Error>` bytes.
@@ -31,10 +31,10 @@ pub type BE = Result<u8, Error>;
 /// For other cases, allocating a temporary memory buffer and serializing into it with `TLVWriter` might result
 /// in less memory overhead (and better performance when reading the raw serialized TLV data) by the code that
 /// opertates on it.
-pub trait ToTLVIter: Iterator<Item = BE> + Sized {
-    fn option<I>(self, value: Option<I>) -> impl Iterator<Item = BE>
+pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
+    fn option<I>(self, value: Option<I>) -> impl Iterator<Item = ByteResult>
     where
-        I: Iterator<Item = BE>,
+        I: Iterator<Item = ByteResult>,
     {
         self.chain(match value {
             Some(value) => EitherIter::First(value),
@@ -43,7 +43,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     }
 
     /// Serialize a TLV element with the given tag and value.
-    fn tlv(self, tag: TLVTag, value: TLVValue) -> impl Iterator<Item = BE> {
+    fn tlv(self, tag: TLVTag, value: TLVValue) -> impl Iterator<Item = ByteResult> {
         let tag = self._tag(tag, value.value_type());
 
         let size = match value {
@@ -103,19 +103,19 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     }
 
     /// Serialize the given tag and the provided value as an S8 TLV value.
-    fn i8(self, tag: TLVTag, data: i8) -> impl Iterator<Item = BE> {
+    fn i8(self, tag: TLVTag, data: i8) -> impl Iterator<Item = ByteResult> {
         self._tag(tag, TLVValueType::S8)
             ._raw_bytes(data.to_le_bytes())
     }
 
     /// Serialize the given tag and the provided value as a U8 TLV value.
-    fn u8(self, tag: TLVTag, data: u8) -> impl Iterator<Item = BE> {
+    fn u8(self, tag: TLVTag, data: u8) -> impl Iterator<Item = ByteResult> {
         self._tag(tag, TLVValueType::U8)._raw_byte(data)
     }
 
     /// Serialize the given tag and the provided value as an S16 TLV value,
     /// or as an S8 TLV value if the provided data can fit in the S8 domain range.
-    fn i16(self, tag: TLVTag, data: i16) -> impl Iterator<Item = BE> {
+    fn i16(self, tag: TLVTag, data: i16) -> impl Iterator<Item = ByteResult> {
         if data >= i8::MIN as _ && data <= i8::MAX as _ {
             EitherIter::First(
                 self._tag(tag, TLVValueType::S8)
@@ -131,7 +131,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
 
     /// Serialize the given tag and the provided value as a U16 TLV value,
     /// or as a U8 TLV value if the provided data can fit in the U8 domain range.
-    fn u16(self, tag: TLVTag, data: u16) -> impl Iterator<Item = BE> {
+    fn u16(self, tag: TLVTag, data: u16) -> impl Iterator<Item = ByteResult> {
         if data <= u8::MAX as _ {
             EitherIter::First(
                 self._tag(tag, TLVValueType::U8)
@@ -147,7 +147,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
 
     /// Serialize the given tag and the provided value as an S32 TLV value,
     /// or as an S16 / S8 TLV value if the provided data can fit in a smaller domain range.
-    fn i32(self, tag: TLVTag, data: i32) -> impl Iterator<Item = BE> {
+    fn i32(self, tag: TLVTag, data: i32) -> impl Iterator<Item = ByteResult> {
         if data >= i8::MIN as _ && data <= i8::MAX as _ {
             Either3Iter::First(
                 self._tag(tag, TLVValueType::S8)
@@ -168,7 +168,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
 
     /// Serialize the given tag and the provided value as a U32 TLV value,
     /// or as a U16 / U8 TLV value if the provided data can fit in a smaller domain range.
-    fn u32(self, tag: TLVTag, data: u32) -> impl Iterator<Item = BE> {
+    fn u32(self, tag: TLVTag, data: u32) -> impl Iterator<Item = ByteResult> {
         if data <= u8::MAX as _ {
             Either3Iter::First(
                 self._tag(tag, TLVValueType::U8)
@@ -189,7 +189,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
 
     /// Serialize the given tag and the provided value as an S64 TLV value,
     /// or as an S32 / S16 / S8 TLV value if the provided data can fit in a smaller domain range.
-    fn i64(self, tag: TLVTag, data: i64) -> impl Iterator<Item = BE> {
+    fn i64(self, tag: TLVTag, data: i64) -> impl Iterator<Item = ByteResult> {
         if data >= i8::MIN as _ && data <= i8::MAX as _ {
             Either4Iter::First(
                 self._tag(tag, TLVValueType::S8)
@@ -215,7 +215,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
 
     /// Serialize the given tag and the provided value as a U64 TLV value,
     /// or as a U32 / U16 / U8 TLV value if the provided data can fit in a smaller domain range.
-    fn u64(self, tag: TLVTag, data: u64) -> impl Iterator<Item = BE> {
+    fn u64(self, tag: TLVTag, data: u64) -> impl Iterator<Item = ByteResult> {
         if data <= u8::MAX as _ {
             Either4Iter::First(
                 self._tag(tag, TLVValueType::U8)
@@ -243,7 +243,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     ///
     /// The exact octet string type (Str8l, Str16l, Str32l, or Str64l) is chosen based on the length of the data,
     /// whereas the smallest type filling the provided data length is chosen.
-    fn str(self, tag: TLVTag, data: &[u8]) -> impl Iterator<Item = BE> {
+    fn str(self, tag: TLVTag, data: &[u8]) -> impl Iterator<Item = ByteResult> {
         self.stri(
             tag,
             data.len(),
@@ -258,9 +258,9 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     ///
     /// NOTE: The length of the Octet String must be provided by the user and it must match the
     /// number of bytes returned by the provided iterator, or else the generated TLV stream will be invalid.
-    fn stri<I>(self, tag: TLVTag, len: usize, iter: I) -> impl Iterator<Item = BE>
+    fn stri<I>(self, tag: TLVTag, len: usize, iter: I) -> impl Iterator<Item = ByteResult>
     where
-        I: Iterator<Item = BE>,
+        I: Iterator<Item = ByteResult>,
     {
         if len <= u8::MAX as usize {
             Either4Iter::First(
@@ -293,7 +293,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     ///
     /// The exact UTF-8 string type (Utf8l, Utf16l, Utf32l, or Utf64l) is chosen based on the length of the data,
     /// whereas the smallest type filling the provided data length is chosen.
-    fn utf8(self, tag: TLVTag, data: &str) -> impl Iterator<Item = BE> {
+    fn utf8(self, tag: TLVTag, data: &str) -> impl Iterator<Item = ByteResult> {
         self.utf8i(
             tag,
             data.len(),
@@ -310,9 +310,9 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     /// number of bytes returned by the provided iterator, or else the generated TLV stream will be invalid.
     ///
     /// NOTE 2: The provided iterator must return valid UTF-8 bytes, or else the generated TLV stream will be invalid.
-    fn utf8i<I>(self, tag: TLVTag, len: usize, iter: I) -> impl Iterator<Item = BE>
+    fn utf8i<I>(self, tag: TLVTag, len: usize, iter: I) -> impl Iterator<Item = ByteResult>
     where
-        I: Iterator<Item = BE>,
+        I: Iterator<Item = ByteResult>,
     {
         if len <= u8::MAX as usize {
             Either4Iter::First(
@@ -345,7 +345,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     ///
     /// NOTE: The user must call `end_container` after serializing all the Struct fields
     /// to close the Struct container or else the generated TLV stream will be invalid.
-    fn start_struct(self, tag: TLVTag) -> impl Iterator<Item = BE> {
+    fn start_struct(self, tag: TLVTag) -> impl Iterator<Item = ByteResult> {
         self._tag(tag, TLVValueType::Struct)
     }
 
@@ -353,7 +353,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     ///
     /// NOTE: The user must call `end_container` after serializing all the Array elements
     /// to close the Array container or else the generated TLV stream will be invalid.
-    fn start_array(self, tag: TLVTag) -> impl Iterator<Item = BE> {
+    fn start_array(self, tag: TLVTag) -> impl Iterator<Item = ByteResult> {
         self._tag(tag, TLVValueType::Array)
     }
 
@@ -361,7 +361,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     ///
     /// NOTE: The user must call `end_container` after serializing all the List elements
     /// to close the List container or else the generated TLV stream will be invalid.
-    fn start_list(self, tag: TLVTag) -> impl Iterator<Item = BE> {
+    fn start_list(self, tag: TLVTag) -> impl Iterator<Item = ByteResult> {
         self._tag(tag, TLVValueType::List)
     }
 
@@ -369,17 +369,17 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     ///
     /// NOTE: This method must be called only when the corresponding container has been opened
     /// using `start_struct`, `start_array`, or `start_list`, or else the generated TLV stream will be invalid.
-    fn end_container(self) -> impl Iterator<Item = BE> {
+    fn end_container(self) -> impl Iterator<Item = ByteResult> {
         self._raw_byte(TLVControl::new(TLVTagType::Anonymous, TLVValueType::EndCnt).as_raw())
     }
 
     /// Serialize the given tag and a value indicating a Null TLV value.
-    fn null(self, tag: TLVTag) -> impl Iterator<Item = BE> {
+    fn null(self, tag: TLVTag) -> impl Iterator<Item = ByteResult> {
         self._tag(tag, TLVValueType::Null)
     }
 
     /// Serialize the given tag and a value indicating a True or False TLV value.
-    fn bool(self, tag: TLVTag, val: bool) -> impl Iterator<Item = BE> {
+    fn bool(self, tag: TLVTag, val: bool) -> impl Iterator<Item = ByteResult> {
         self._tag(
             tag,
             if val {
@@ -395,9 +395,9 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
         tag: TLVTag,
         value_type: TLVValueType,
         raw_value: I,
-    ) -> impl Iterator<Item = BE>
+    ) -> impl Iterator<Item = ByteResult>
     where
-        I: Iterator<Item = BE>,
+        I: Iterator<Item = ByteResult>,
     {
         self._tag(tag, value_type).chain(raw_value)
     }
@@ -406,7 +406,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     /// the supplied TLV value type.
     ///
     /// Note that this is a low-level method which is not expected to be called directly by users.
-    fn _tag(self, tag: TLVTag, value_type: TLVValueType) -> impl Iterator<Item = BE> {
+    fn _tag(self, tag: TLVTag, value_type: TLVValueType) -> impl Iterator<Item = ByteResult> {
         let control = self._raw_byte(TLVControl::new(tag.tag_type(), value_type).as_raw());
 
         match tag {
@@ -426,7 +426,7 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     /// Serialize a raw byte array representing already-encoded TLV bytes.
     ///
     /// Note that this is a low-level method which is not expected to be called directly by users.
-    fn _raw_bytes<I>(self, bytes: I) -> impl Iterator<Item = BE>
+    fn _raw_bytes<I>(self, bytes: I) -> impl Iterator<Item = ByteResult>
     where
         I: IntoIterator<Item = u8>,
     {
@@ -436,12 +436,12 @@ pub trait ToTLVIter: Iterator<Item = BE> + Sized {
     /// Serialize a raw, already encoded TLV byte.
     ///
     /// Note that this is a low-level method which is not expected to be called directly by users.
-    fn _raw_byte(self, byte: u8) -> impl Iterator<Item = BE> {
+    fn _raw_byte(self, byte: u8) -> impl Iterator<Item = ByteResult> {
         self.chain(core::iter::once(Ok(byte)))
     }
 }
 
-impl<T> ToTLVIter for T where T: Iterator<Item = BE> {}
+impl<T> ToTLVIter for T where T: Iterator<Item = ByteResult> {}
 
 pub enum Either1Iter<F> {
     First(F),
@@ -590,9 +590,9 @@ where
     }
 }
 
-pub fn flatten<I>(value: Result<I, Error>) -> impl Iterator<Item = BE>
+pub fn flatten<I>(value: Result<I, Error>) -> impl Iterator<Item = ByteResult>
 where
-    I: Iterator<Item = BE>,
+    I: Iterator<Item = ByteResult>,
 {
     match value {
         Ok(value) => EitherIter::First(value),

@@ -28,7 +28,7 @@ type ByteResult = Result<u8, Error>;
 /// Therefore, the iterator TLV serialization is only useful when the serialized TLV data contains few but
 /// large non-container TLV elements, like octet strings or utf8 strings (typically, TLV-encoded certificates).
 ///
-/// For other cases, allocating a temporary memory buffer and serializing into it with `TLVWriter` might result
+/// For other cases, allocating a temporary memory buffer and serializing into it with `TLVWrite` might result
 /// in less memory overhead (and better performance when reading the raw serialized TLV data) by the code that
 /// opertates on it.
 pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {

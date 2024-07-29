@@ -471,7 +471,7 @@ fn gen_fromtlv_for_struct(
     //if !tlvargs.unordered {
     quote! {
         impl #generics #krate::tlv::FromTLV<#lifetime> for #struct_name #generics {
-            fn from_tlv(tlv: &#krate::tlv::TLV<#lifetime>) -> Result<Self, #krate::error::Error> {
+            fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
                 let tlv = tlv.#datatype()?;
 
                 #(
@@ -567,7 +567,7 @@ fn gen_fromtlv_for_enum(
 
         quote! {
                impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
-                   fn from_tlv(tlv: &#krate::tlv::TLV<#lifetime>) -> Result<Self, #krate::error::Error> {
+                   fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
                       Ok(match tlv.#read_func()? {
                         #( #tags => Self::#variant_names, )*
                         _ => return Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
@@ -621,7 +621,7 @@ fn gen_fromtlv_for_enum(
             // }
 
             impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
-                fn from_tlv(tlv: &#krate::tlv::TLV<#lifetime>) -> Result<Self, #krate::error::Error> {
+                fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
                     let tlv = tlv
                         .structure()?
                         .iter()

@@ -19,51 +19,69 @@ use crate::{error::Error, utils::writebuf::WriteBuf};
 
 use super::{TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType};
 
+/// A trait representing a storage where data can be serialized as a TLV stream.
+/// by synchronously emitting bytes to the storage.
+///
+/// The one method that needs to be implemented by user code is `write`.
+///
+/// The trait operates in an append-only manner without requiring access to the serialized
+/// TLV data, so it can be implemented with an in-memory storage, or a file storage, or anything
+/// that can output a byte to somewhere (like the `Write` Rust traits).
+///
+/// With that said, the trait has two additional methods that (optionally) allow for "rewinding"
+/// the storage. Implementing these is optional, and they currently exist only for backwards
+/// compatibility with code implemented prior to the introduction of this trait.
+///
+/// For iterator-style TLV serialization look at the `ToTLVIter` trait.
 pub trait TLVWriteStorage {
+    type Position;
+
     fn write(&mut self, byte: u8) -> Result<(), Error>;
 
-    fn get_tail(&self) -> usize {
-        0 // Unimplemented by default
-    }
+    fn get_tail(&self) -> Self::Position;
 
-    fn rewind_to(&mut self, _pos: usize) {
-        // Unimplemented by default
-    }
+    fn rewind_to(&mut self, _pos: Self::Position);
 }
 
 impl<T> TLVWriteStorage for &mut T
 where
     T: TLVWriteStorage,
 {
+    type Position = T::Position;
+
     fn write(&mut self, byte: u8) -> Result<(), Error> {
         (**self).write(byte)
+    }
+
+    fn get_tail(&self) -> Self::Position {
+        (**self).get_tail()
+    }
+
+    fn rewind_to(&mut self, pos: Self::Position) {
+        (**self).rewind_to(pos)
     }
 }
 
 impl<'a> TLVWriteStorage for WriteBuf<'a> {
+    type Position = usize;
+
     fn write(&mut self, byte: u8) -> Result<(), Error> {
         WriteBuf::append(self, &[byte])
     }
 
-    fn get_tail(&self) -> usize {
+    fn get_tail(&self) -> Self::Position {
         WriteBuf::get_tail(self)
     }
 
-    fn rewind_to(&mut self, pos: usize) {
+    fn rewind_to(&mut self, pos: Self::Position) {
         WriteBuf::rewind_tail_to(self, pos)
     }
 }
 
 pub type TLVWriter<'a, 'b> = TLVWrite<&'b mut WriteBuf<'a>>;
 
-/// A type for serializing data as TLV to a storage where bytes can be synchronously
-/// written to.
-///
-/// The trait operates in an append-only manner without requiring access to the serialized
-/// TLV data, so it can be implemented with an in-memory storage, or a file storage, or anything
-/// that can output a byte to somewhere (like the `Write` Rust traits).
-///
-/// The one method that needs to be implemented by user code is `TLVWrite::write`.
+/// A newtype around `TLVWriteStorage` implementations providing utility methods
+/// for serializing TLV elements.
 ///
 /// For iterator-style TLV serialization look at the `ToTLVIter` trait.
 #[derive(Debug)]
@@ -74,16 +92,19 @@ impl<T> TLVWrite<T>
 where
     T: TLVWriteStorage,
 {
+    /// Create a new TLVWrite instance with the provided storage.
     #[inline(always)]
     pub const fn new(storage: T) -> Self {
         TLVWrite(storage)
     }
 
+    /// Consume the TLVWrite instance and return the storage.
     #[inline(always)]
     pub fn into_storage(self) -> T {
         self.0
     }
 
+    /// Get a mutable reference to the storage.
     #[inline(always)]
     pub fn storage_mut(&mut self) -> &mut T {
         &mut self.0

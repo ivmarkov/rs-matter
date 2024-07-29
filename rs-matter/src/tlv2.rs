@@ -273,6 +273,7 @@ impl TLVControl {
     }
 }
 
+/// For backwards compatibility
 pub type TagType = TLVTag;
 
 /// A high-level representation of a TLV tag (tag type and tag value).
@@ -302,25 +303,32 @@ impl TLVTag {
             Self::FullQual64(_) => TLVTagType::FullQual64,
         }
     }
+
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TLVTag::Anonymous => Ok(()),
+            TLVTag::Context(tag) => write!(f, "{}", tag),
+            TLVTag::CommonPrf16(tag) => write!(f, "CommonPrf16({})", tag),
+            TLVTag::CommonPrf32(tag) => write!(f, "CommonPrf32({})", tag),
+            TLVTag::ImplPrf16(tag) => write!(f, "ImplPrf16({})", tag),
+            TLVTag::ImplPrf32(tag) => write!(f, "ImplPrf32({})", tag),
+            TLVTag::FullQual48(tag) => write!(f, "FullQual48({})", tag),
+            TLVTag::FullQual64(tag) => write!(f, "FullQual64({})", tag),
+        }
+    }
 }
 
 impl fmt::Display for TLVTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TLVTag::Anonymous => write!(f, "Anonymous")?,
-            TLVTag::Context(tag) => write!(f, "Context({})", tag)?,
-            TLVTag::CommonPrf16(tag) => write!(f, "CommonPrf16({})", tag)?,
-            TLVTag::CommonPrf32(tag) => write!(f, "CommonPrf32({})", tag)?,
-            TLVTag::ImplPrf16(tag) => write!(f, "ImplPrf16({})", tag)?,
-            TLVTag::ImplPrf32(tag) => write!(f, "ImplPrf32({})", tag)?,
-            TLVTag::FullQual48(tag) => write!(f, "FullQual48({})", tag)?,
-            TLVTag::FullQual64(tag) => write!(f, "FullQual64({})", tag)?,
+            TLVTag::Anonymous => write!(f, "Anonymous"),
+            TLVTag::Context(tag) => write!(f, "Context({})", tag),
+            _ => self.fmt(f),
         }
-
-        Ok(())
     }
 }
 
+/// For backwards compatibility
 pub type ElementType<'a> = TLVValue<'a>;
 
 /// A high-level representation of a TLV value.
@@ -382,10 +390,8 @@ impl<'a> TLVValue<'a> {
             Self::List(_) => TLVValueType::List,
         }
     }
-}
 
-impl<'a> fmt::Display for TLVValue<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, indent: usize, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::S8(a) => write!(f, "S8({})", a),
             Self::S16(a) => write!(f, "S16({})", a),
@@ -398,17 +404,74 @@ impl<'a> fmt::Display for TLVValue<'a> {
             Self::F32(a) => write!(f, "F32({})", a),
             Self::F64(a) => write!(f, "F64({})", a),
             Self::Null => write!(f, "Null"),
-            Self::Struct(_) => write!(f, "{{"),
-            Self::Array(_) => write!(f, "["),
-            Self::List(_) => write!(f, "["),
+            Self::Struct(elements) => {
+                write!(f, "{{\n")?;
+                elements.fmt(indent + 1, f)?;
+                pad(indent, f)?;
+                write!(f, "}}")
+            }
+            Self::Array(elements) => {
+                write!(f, "[\n")?;
+                elements.fmt(indent + 1, f)?;
+                pad(indent, f)?;
+                write!(f, "]")
+            }
+            Self::List(elements) => {
+                write!(f, "(\n")?;
+                elements.fmt(indent + 1, f)?;
+                pad(indent, f)?;
+                write!(f, ")")
+            }
             Self::True => write!(f, "True"),
             Self::False => write!(f, "False"),
             Self::Utf8l(a) | Self::Utf16l(a) | Self::Utf32l(a) | Self::Utf64l(a) => {
-                write!(f, "{}", a)
+                write!(f, "\"{}\"", a)
             }
             Self::Str8l(a) | Self::Str16l(a) | Self::Str32l(a) | Self::Str64l(a) => {
                 write!(f, "({}){:02X?}", a.len(), a)
             }
         }
     }
+}
+
+/// For backwards compatibility
+pub fn get_root_node_struct(data: &[u8]) -> Result<TLVElement<'_>, Error> {
+    list_single_elem(data)
+}
+
+/// Retrive the single TLV element from the provided TLV data slice.
+/// The slice is interpreted as a TLV list of TLV elements and is expected to have exactly one element.
+///
+/// Returns an error if the TLV data is malformed, if the data does not represent a TLV list, or if the
+/// list does not contain exactly one element.
+pub fn list_single_elem(data: &[u8]) -> Result<TLVElement<'_>, Error> {
+    // TODO: Check for trailing data
+
+    let element = TLVElement::new(data);
+
+    let seq = element.list()?;
+
+    let mut iter = seq.iter();
+
+    let list_element = iter.next().ok_or(ErrorCode::TLVNotFound)??;
+
+    if iter.next().is_some() {
+        return Err(ErrorCode::InvalidData.into());
+    }
+
+    Ok(list_element)
+}
+
+impl<'a> fmt::Display for TLVValue<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt(0, f)
+    }
+}
+
+pub(crate) fn pad(ident: usize, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    for _ in 0..ident {
+        write!(f, "  ")?;
+    }
+
+    Ok(())
 }

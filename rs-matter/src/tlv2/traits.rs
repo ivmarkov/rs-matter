@@ -21,8 +21,8 @@ use crate::error::Error;
 use crate::utils::init;
 
 use super::{
-    flatten, TLVElement, TLVTag, TLVValue, TLVValueType, TLVWrite, TLVWriteStorage, TLVWriter,
-    ToTLVIter,
+    EitherIter, TLVContainerIter, TLVElement, TLVTag, TLVValue, TLVValueType, TLVWrite,
+    TLVWriteStorage, TLVWriter, ToTLVIter,
 };
 
 pub use maybe::*;
@@ -124,7 +124,7 @@ impl<'a> ToTLV2 for TLVElement<'a> {
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        flatten(
+        ToTLVIter::flatten(
             self.control()
                 .and_then(move |control| self.raw_value().map(|raw_value| (control, raw_value)))
                 .map(move |(control, raw_value)| {
@@ -138,7 +138,7 @@ impl<'a> ToTLV2 for TLVElement<'a> {
     }
 
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        flatten(
+        ToTLVIter::flatten(
             self.control()
                 .and_then(move |control| self.raw_value().map(|raw_value| (control, raw_value)))
                 .map(move |(control, raw_value)| {

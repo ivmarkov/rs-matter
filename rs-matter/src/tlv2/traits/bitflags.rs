@@ -29,8 +29,10 @@
 macro_rules! bitflags_tlv {
     ($enum_name:ident, $type:ident) => {
         impl<'a> $crate::tlv2::FromTLV<'a> for $enum_name {
-            fn from_tlv(tlv: &$crate::tlv2::TLV<'a>) -> Result<Self, Error> {
-                Ok(Self::from_bits_retain($crate::tlv2::TLV::$type(tlv)?))
+            fn from_tlv(tlv: &$crate::tlv2::TLVElement<'a>) -> Result<Self, Error> {
+                Ok(Self::from_bits_retain($crate::tlv2::TLVElement::$type(
+                    tlv,
+                )?))
             }
         }
 

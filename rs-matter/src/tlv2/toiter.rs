@@ -32,14 +32,11 @@ type ByteResult = Result<u8, Error>;
 /// in less memory overhead (and better performance when reading the raw serialized TLV data) by the code that
 /// opertates on it.
 pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
-    fn option<I>(self, value: Option<I>) -> impl Iterator<Item = ByteResult>
-    where
-        I: Iterator<Item = ByteResult>,
-    {
-        self.chain(match value {
-            Some(value) => EitherIter::First(value),
-            None => EitherIter::Second(core::iter::empty()),
-        })
+    fn flatten(value: Result<Self, Error>) -> impl Iterator<Item = ByteResult> {
+        match value {
+            Ok(value) => EitherIter::First(value),
+            Err(err) => EitherIter::Second(core::iter::once(Err(err))),
+        }
     }
 
     /// Serialize a TLV element with the given tag and value.
@@ -443,6 +440,11 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
 
 impl<T> ToTLVIter for T where T: Iterator<Item = ByteResult> {}
 
+/// A newtype wrapping a single iterator and implementing
+/// the `Iterator` trait.
+///
+/// This type is not really that useful outside of the `ToTLV` proc macro
+/// implementation where it simplifies the implementation.
 pub enum Either1Iter<F> {
     First(F),
 }
@@ -460,6 +462,11 @@ where
     }
 }
 
+/// A decorator enum type wrapping two iterators and implementing
+/// the `Iterator` trait.
+///
+/// Useful when the "to-tlv-iter" implementation needs to return
+/// one of two iterators based on some condition.
 pub enum EitherIter<F, S> {
     First(F),
     Second(S),
@@ -480,6 +487,11 @@ where
     }
 }
 
+/// A decorator enum type wrapping three iterators and implementing
+/// the `Iterator` trait.
+///
+/// Useful when the "to-tlv-iter" implementation needs to return
+/// one of three iterators based on some condition.
 pub enum Either3Iter<F, S, T> {
     First(F),
     Second(S),
@@ -503,6 +515,11 @@ where
     }
 }
 
+/// A decorator enum type wrapping four iterators and implementing
+/// the `Iterator` trait.
+///
+/// Useful when the "to-tlv-iter" implementation needs to return
+/// one of four iterators based on some condition.
 pub enum Either4Iter<F, S, T, U> {
     First(F),
     Second(S),
@@ -529,6 +546,11 @@ where
     }
 }
 
+/// A decorator enum type wrapping five iterators and implementing
+/// the `Iterator` trait.
+///
+/// Useful when the "to-tlv-iter" implementation needs to return
+/// one of five iterators based on some condition.
 pub enum Either5Iter<F, S, T, U, I> {
     First(F),
     Second(S),
@@ -558,6 +580,11 @@ where
     }
 }
 
+/// A decorator enum type wrapping six iterators and implementing
+/// the `Iterator` trait.
+///
+/// Useful when the "to-tlv-iter" implementation needs to return
+/// one of six iterators based on some condition.
 pub enum Either6Iter<F, S, T, U, I, X> {
     First(F),
     Second(S),
@@ -587,15 +614,5 @@ where
             Self::Fifth(i) => i.next(),
             Self::Sixth(i) => i.next(),
         }
-    }
-}
-
-pub fn flatten<I>(value: Result<I, Error>) -> impl Iterator<Item = ByteResult>
-where
-    I: Iterator<Item = ByteResult>,
-{
-    match value {
-        Ok(value) => EitherIter::First(value),
-        Err(err) => EitherIter::Second(core::iter::once(Err(err))),
     }
 }

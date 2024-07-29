@@ -22,10 +22,12 @@
 use core::marker::PhantomData;
 
 use crate::error::Error;
-use crate::tlv2::{flatten, EitherIter};
-use crate::{tlv2::TLVContainerIter, utils::init};
+use crate::utils::init;
 
-use super::{FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2, ToTLVIter};
+use super::{
+    EitherIter, FromTLV, TLVContainerIter, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2,
+    ToTLVIter,
+};
 
 /// `TLVArray` is an efficient (memory-wise) way to represent a serialized TLV array, in that
 /// it does not materialize the array elements until the array is iterated over.
@@ -106,7 +108,7 @@ impl<'a, T> ToTLV2 for TLVArray<'a, T> {
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         core::iter::empty()
             .start_array(tag)
-            .chain(flatten(
+            .chain(ToTLVIter::flatten(
                 self.tlv
                     .array()
                     .and_then(move |array| array.raw_value())
@@ -118,7 +120,7 @@ impl<'a, T> ToTLV2 for TLVArray<'a, T> {
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
         core::iter::empty()
             .start_array(tag)
-            .chain(flatten(
+            .chain(ToTLVIter::flatten(
                 self.tlv
                     .array()
                     .and_then(move |array| array.raw_value())

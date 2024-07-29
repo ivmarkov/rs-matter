@@ -716,9 +716,7 @@ where
 
                 Ok(Some(OpCode::StatusResponse.into()))
             })
-            .await?;
-
-        Ok(())
+            .await
     }
 }
 

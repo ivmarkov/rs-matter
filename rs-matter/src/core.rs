@@ -17,6 +17,7 @@
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 
+use crate::acl::AclMgr;
 use crate::data_model::{
     cluster_basic_information::BasicInfoConfig,
     sdm::{dev_att::DevAttDataFetcher, failsafe::FailSafe},
@@ -52,6 +53,7 @@ pub struct CommissioningData {
 /// The primary Matter Object
 pub struct Matter<'a> {
     pub(crate) fabric_mgr: RefCell<FabricMgr>,
+    pub acl_mgr: RefCell<AclMgr>, // Public for tests
     pub(crate) pase_mgr: RefCell<PaseMgr>,
     pub(crate) failsafe: RefCell<FailSafe>,
     pub transport_mgr: TransportMgr<'a>, // Public for tests
@@ -112,6 +114,7 @@ impl<'a> Matter<'a> {
     ) -> Self {
         Self {
             fabric_mgr: RefCell::new(FabricMgr::new()),
+            acl_mgr: RefCell::new(AclMgr::new()),
             pase_mgr: RefCell::new(PaseMgr::new(epoch, rand)),
             failsafe: RefCell::new(FailSafe::new()),
             transport_mgr: TransportMgr::new(mdns, dev_det, port, epoch, rand),
@@ -172,6 +175,7 @@ impl<'a> Matter<'a> {
         init!(
             Self {
                 fabric_mgr <- RefCell::init(FabricMgr::init()),
+                acl_mgr <- RefCell::init(AclMgr::init()),
                 pase_mgr <- RefCell::init(PaseMgr::init(epoch, rand)),
                 failsafe: RefCell::new(FailSafe::new()),
                 transport_mgr <- TransportMgr::init(mdns, dev_det, port, epoch, rand),
@@ -247,12 +251,20 @@ impl<'a> Matter<'a> {
             .load(data, &self.transport_mgr.mdns)
     }
 
+    pub fn load_acls(&self, data: &[u8]) -> Result<(), Error> {
+        self.acl_mgr.borrow_mut().load(data)
+    }
+
     pub fn store_fabrics<'b>(&self, buf: &'b mut [u8]) -> Result<Option<&'b [u8]>, Error> {
         self.fabric_mgr.borrow_mut().store(buf)
     }
 
+    pub fn store_acls<'b>(&self, buf: &'b mut [u8]) -> Result<Option<&'b [u8]>, Error> {
+        self.acl_mgr.borrow_mut().store(buf)
+    }
+
     pub fn is_changed(&self) -> bool {
-        self.fabric_mgr.borrow().is_changed()
+        self.acl_mgr.borrow().is_changed() || self.fabric_mgr.borrow().is_changed()
     }
 
     /// Return `true` if there is at least one commissioned fabric

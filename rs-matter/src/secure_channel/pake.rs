@@ -285,9 +285,7 @@ impl Pake {
 
                 Ok(Some(OpCode::PASEPake2.into()))
             })
-            .await?;
-
-        Ok(())
+            .await
     }
 
     async fn handle_pbkdfparamrequest(
@@ -362,9 +360,7 @@ impl Pake {
 
                 Ok(Some(OpCode::PBKDFParamResponse.into()))
             })
-            .await?;
-
-        Ok(())
+            .await
     }
 
     async fn update_timeout(

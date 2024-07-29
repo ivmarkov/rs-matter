@@ -211,7 +211,9 @@ impl ExchangeId {
     }
 
     fn accessor<'a>(&self, matter: &'a Matter<'a>) -> Result<Accessor<'a>, Error> {
-        self.with_session(matter, |sess| Ok(Accessor::for_session(sess, matter)))
+        self.with_session(matter, |sess| {
+            Ok(Accessor::for_session(sess, &matter.acl_mgr))
+        })
     }
 
     fn with_session<'a, F, T>(&self, matter: &'a Matter<'a>, f: F) -> Result<T, Error>
@@ -1047,7 +1049,7 @@ impl<'a> Exchange<'a> {
     ///
     /// Note also that if the uderlying session or exchange tracked by the Matter stack is dropped
     /// (say, because of lack of resources or a hard networking error), the method will return an error.
-    pub async fn send_with<F>(&mut self, mut f: F) -> Result<bool, Error>
+    pub async fn send_with<F>(&mut self, mut f: F) -> Result<(), Error>
     where
         F: FnMut(&Exchange, &mut WriteBuf) -> Result<Option<MessageMeta>, Error>,
     {
@@ -1064,11 +1066,11 @@ impl<'a> Exchange<'a> {
                 tx.complete(payload_start, payload_end, meta)?;
             } else {
                 // Closure aborted sending
-                return Ok(false);
+                break;
             }
         }
 
-        Ok(true)
+        Ok(())
     }
 
     /// Send the provided exchange meta-data and payload as part of this exchange.
@@ -1089,9 +1091,7 @@ impl<'a> Exchange<'a> {
 
             Ok(Some(meta))
         })
-        .await?;
-
-        Ok(())
+        .await
     }
 
     pub(crate) fn accessor(&self) -> Result<Accessor<'a>, Error> {

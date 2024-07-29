@@ -16,24 +16,25 @@
  */
 
 use core::fmt::Write;
-use core::num::{NonZeroU8, Wrapping};
+use core::num::NonZeroU8;
+
+use byteorder::{BigEndian, ByteOrder, LittleEndian};
 
 use heapless::String;
 
-use log::{error, info};
+use log::info;
 
-use crate::acl::{AccessReq, AclEntry};
 use crate::cert::{Cert, MAX_CERT_TLV_LEN};
 use crate::crypto::{self, hkdf_sha256, HmacSha256, KeyPair};
 use crate::error::{Error, ErrorCode};
 use crate::group_keys::KeySet;
 use crate::mdns::{Mdns, ServiceMode};
-use crate::tlv::{
-    self, FromTLV, OctetStr, OctetStrOwned, TLVList, TLVWriter, TagType, ToTLV, UtfStr,
+use crate::tlv::{self, FromTLV, OctetStr, TLVList, TLVWriter, TagType, ToTLV, UtfStr};
+use crate::utils::{
+    init::{init, Init},
+    vec::Vec,
+    writebuf::WriteBuf,
 };
-use crate::utils::init::{init, ApplyInit, AsFallibleInit, Init};
-use crate::utils::vec::Vec;
-use crate::utils::writebuf::WriteBuf;
 
 const COMPRESSED_FABRIC_ID_LEN: usize = 8;
 
@@ -50,254 +51,138 @@ pub struct FabricDescriptor<'a> {
     pub fab_idx: NonZeroU8,
 }
 
-// pub enum FabricState {
-//     New,
-//     Active,
-//     Committed,
-//     Updated,
-// }
-
-// impl FabricState {
-//     pub const fn is_active(&self) -> bool {
-
-//     }
-// }
-
 #[derive(Debug, ToTLV, FromTLV)]
 pub struct Fabric {
-    updating: bool,
     node_id: u64,
     fabric_id: u64,
-    fabric_idx: NonZeroU8,
     vendor_id: u16,
-    key_pair: Option<KeyPair>,
-    pub root_ca: OctetStrOwned<MAX_CERT_TLV_LEN>,
-    pub icac: OctetStrOwned<MAX_CERT_TLV_LEN>,
-    pub noc: OctetStrOwned<MAX_CERT_TLV_LEN>,
+    key_pair: KeyPair,
+    pub root_ca: Vec<u8, { MAX_CERT_TLV_LEN }>,
+    pub icac: Option<Vec<u8, { MAX_CERT_TLV_LEN }>>,
+    pub noc: Vec<u8, { MAX_CERT_TLV_LEN }>,
     pub ipk: KeySet,
     label: String<32>,
     mdns_service_name: String<33>,
-    acls: Vec<AclEntry, 3>,
 }
 
 impl Fabric {
-    pub const fn new0(fabric_idx: NonZeroU8) -> Self {
-        Self {
-            updating: true,
-            node_id: 0,
-            fabric_id: 0,
-            fabric_idx,
-            vendor_id: 0,
-            key_pair: None,
-            root_ca: OctetStrOwned::new(),
-            icac: OctetStrOwned::new(),
-            noc: OctetStrOwned::new(),
-            ipk: KeySet::new0(),
-            label: String::new(),
-            mdns_service_name: String::new(),
-            acls: Vec::new(),
-        }
-    }
-
-    pub fn init(fabric_idx: NonZeroU8) -> impl Init<Self> {
-        init!(Self {
-            updating: true,
-            node_id: 0,
-            fabric_id: 0,
-            fabric_idx,
-            vendor_id: 0,
-            key_pair: None,
-            root_ca <- OctetStrOwned::init(),
-            icac <- OctetStrOwned::init(),
-            noc <- OctetStrOwned::init(),
-            ipk <- KeySet::init(),
-            label: String::new(),
-            mdns_service_name: String::new(),
-            acls <- Vec::init(),
-        })
-    }
-
-    pub fn update_root_ca(&mut self, root_ca: &[u8]) {
-        self.root_ca.array.clear();
-        self.root_ca.array.extend_from_slice(root_ca);
-    }
-
-    pub fn update_noc(
-        &mut self,
-        noc: &[u8],
-        icac: &[u8],
+    pub fn new(
+        key_pair: KeyPair,
+        root_ca: Vec<u8, { MAX_CERT_TLV_LEN }>,
+        icac: Option<Vec<u8, { MAX_CERT_TLV_LEN }>>,
+        noc: Vec<u8, { MAX_CERT_TLV_LEN }>,
         ipk: &[u8],
         vendor_id: u16,
         label: &str,
-    ) -> Result<(), Error> {
-        self.noc.array.clear();
-        self.noc.array.extend_from_slice(noc);
-
-        self.icac.array.clear();
-        self.icac.array.extend_from_slice(icac);
+    ) -> Result<Self, Error> {
+        let (node_id, fabric_id) = {
+            let noc_p = Cert::new(&noc)?;
+            (noc_p.get_node_id()?, noc_p.get_fabric_id()?)
+        };
 
         let mut compressed_id = [0_u8; COMPRESSED_FABRIC_ID_LEN];
 
-        self.ipk = {
-            self.compressed_id(&mut compressed_id)?;
-
+        let ipk = {
+            let root_ca_p = Cert::new(&root_ca)?;
+            Fabric::get_compressed_id(root_ca_p.get_pubkey(), fabric_id, &mut compressed_id)?;
             KeySet::new(ipk, &compressed_id)?
         };
 
-        self.vendor_id = vendor_id;
-
-        self.label.clear();
-        self.label.push_str(label).unwrap();
-
-        self.update_mdns_service_name()?;
-
-        Ok(())
-    }
-
-    fn update_mdns_service_name(&mut self) -> Result<(), Error> {
-        let mut compressed_id = [0_u8; COMPRESSED_FABRIC_ID_LEN];
-
-        self.compressed_id(&mut compressed_id)?;
-
-        self.mdns_service_name.clear();
-
+        let mut mdns_service_name = heapless::String::<33>::new();
         for c in compressed_id {
             let mut hex = heapless::String::<4>::new();
             write!(&mut hex, "{:02X}", c).unwrap();
-            self.mdns_service_name.push_str(&hex).unwrap();
+            mdns_service_name.push_str(&hex).unwrap();
         }
-
-        self.mdns_service_name.push('-').unwrap();
-
-        for c in self.node_id.to_be_bytes() {
+        mdns_service_name.push('-').unwrap();
+        let mut node_id_be: [u8; 8] = [0; 8];
+        BigEndian::write_u64(&mut node_id_be, node_id);
+        for c in node_id_be {
             let mut hex = heapless::String::<4>::new();
             write!(&mut hex, "{:02X}", c).unwrap();
-            self.mdns_service_name.push_str(&hex).unwrap();
+            mdns_service_name.push_str(&hex).unwrap();
         }
+        info!("MDNS Service Name: {}", mdns_service_name);
 
-        info!("MDNS Service Name: {}", self.mdns_service_name);
-
-        Ok(())
+        Ok(Self {
+            node_id,
+            fabric_id,
+            vendor_id,
+            key_pair,
+            root_ca,
+            icac,
+            noc,
+            ipk,
+            label: label.try_into().unwrap(),
+            mdns_service_name,
+        })
     }
 
-    fn compressed_id(&self, out: &mut [u8]) -> Result<(), Error> {
+    fn get_compressed_id(root_pubkey: &[u8], fabric_id: u64, out: &mut [u8]) -> Result<(), Error> {
+        let root_pubkey = &root_pubkey[1..];
+        let mut fabric_id_be: [u8; 8] = [0; 8];
+        BigEndian::write_u64(&mut fabric_id_be, fabric_id);
         const COMPRESSED_FABRIC_ID_INFO: [u8; 16] = [
             0x43, 0x6f, 0x6d, 0x70, 0x72, 0x65, 0x73, 0x73, 0x65, 0x64, 0x46, 0x61, 0x62, 0x72,
             0x69, 0x63,
         ];
-
-        let cert = Cert::new(&self.root_ca.array)?;
-
-        hkdf_sha256(
-            &self.fabric_id.to_be_bytes(),
-            &cert.get_pubkey()[1..],
-            &COMPRESSED_FABRIC_ID_INFO,
-            out,
-        )
-        .map_err(|_| Error::from(ErrorCode::NoSpace))
+        hkdf_sha256(&fabric_id_be, root_pubkey, &COMPRESSED_FABRIC_ID_INFO, out)
+            .map_err(|_| Error::from(ErrorCode::NoSpace))
     }
 
-    pub fn matches_dest_id(&self, random: &[u8], target: &[u8]) -> Result<bool, Error> {
+    pub fn match_dest_id(&self, random: &[u8], target: &[u8]) -> Result<(), Error> {
         let mut mac = HmacSha256::new(self.ipk.op_key())?;
 
         mac.update(random)?;
-        mac.update(self.root_ca()?.get_pubkey())?;
-        mac.update(&self.fabric_id.to_le_bytes())?;
-        mac.update(&self.node_id.to_le_bytes())?;
+        mac.update(self.get_root_ca()?.get_pubkey())?;
+
+        let mut buf: [u8; 8] = [0; 8];
+        LittleEndian::write_u64(&mut buf, self.fabric_id);
+        mac.update(&buf)?;
+
+        LittleEndian::write_u64(&mut buf, self.node_id);
+        mac.update(&buf)?;
 
         let mut id = [0_u8; crypto::SHA256_HASH_LEN_BYTES];
         mac.finish(&mut id)?;
-
-        Ok(id.as_slice() == target)
+        if id.as_slice() == target {
+            Ok(())
+        } else {
+            Err(ErrorCode::NotFound.into())
+        }
     }
 
-    pub fn key_pair(&self) -> &KeyPair {
-        self.key_pair.as_ref().unwrap()
+    pub fn sign_msg(&self, msg: &[u8], signature: &mut [u8]) -> Result<usize, Error> {
+        self.key_pair.sign_msg(msg, signature)
     }
 
-    pub fn node_id(&self) -> u64 {
+    pub fn get_node_id(&self) -> u64 {
         self.node_id
     }
 
-    pub fn fabric_id(&self) -> u64 {
+    pub fn get_fabric_id(&self) -> u64 {
         self.fabric_id
     }
 
-    pub fn fabric_idx(&self) -> NonZeroU8 {
-        self.fabric_idx
+    pub fn get_root_ca(&self) -> Result<Cert<'_>, Error> {
+        Cert::new(&self.root_ca)
     }
 
-    pub fn root_ca(&self) -> Result<Cert<'_>, Error> {
-        Cert::new(&self.root_ca.array)
-    }
-
-    pub fn with_fabric_desc<F, R>(&self, f: F) -> Result<R, Error>
-    where
-        F: FnOnce(&FabricDescriptor) -> Result<R, Error>,
-    {
-        let root_ca = self.root_ca()?;
-
+    pub fn get_fabric_desc<'a>(
+        &'a self,
+        fab_idx: NonZeroU8,
+        root_ca_cert: &'a Cert,
+    ) -> Result<FabricDescriptor<'a>, Error> {
         let desc = FabricDescriptor {
-            root_public_key: OctetStr::new(root_ca.get_pubkey()),
+            root_public_key: OctetStr::new(root_ca_cert.get_pubkey()),
             vendor_id: self.vendor_id,
             fabric_id: self.fabric_id,
             node_id: self.node_id,
             label: UtfStr(self.label.as_bytes()),
-            fab_idx: self.fabric_idx,
+            fab_idx,
         };
 
-        f(&desc)
-    }
-
-    pub fn acl_iter(&self) -> impl Iterator<Item = &AclEntry> {
-        self.acls.iter()
-    }
-
-    pub fn acl_add<I: Init<AclEntry, Error>>(&mut self, acl: I) -> Result<(), Error> {
-        self.acls.push_init(acl, || ErrorCode::NoSpace.into())
-    }
-
-    pub fn acl_edit<I: Init<AclEntry, Error>>(
-        &mut self,
-        index: usize,
-        acl: I,
-    ) -> Result<(), Error> {
-        if self.acls.len() >= index {
-            Err(ErrorCode::NotFound)?;
-        }
-
-        acl.apply(&mut self.acls[index])
-    }
-
-    pub fn acl_remove(&mut self, index: usize) -> Result<(), Error> {
-        if self.acls.len() >= index {
-            Err(ErrorCode::NotFound)?;
-        }
-
-        self.acls.remove(index);
-
-        Ok(())
-    }
-
-    pub fn acl_remove_all(&mut self) {
-        self.acls.clear();
-    }
-
-    pub fn acl_allow(&self, req: &AccessReq) -> bool {
-        for e in &self.acls {
-            if e.allow(req) {
-                return true;
-            }
-        }
-
-        // error!(
-        //     "ACL Disallow for subjects {} fab idx {}",
-        //     req.accessor.subjects, req.accessor.fab_idx
-        // );
-
-        // error!("{}", self);
-
-        false
+        Ok(desc)
     }
 }
 
@@ -306,8 +191,7 @@ pub const MAX_SUPPORTED_FABRICS: usize = 3;
 type FabricEntries = Vec<Option<Fabric>, MAX_SUPPORTED_FABRICS>;
 
 pub struct FabricMgr {
-    fabric_idx_ctr: u8,
-    fabrics: crate::utils::vec::Vec<Fabric, MAX_SUPPORTED_FABRICS>,
+    fabrics: FabricEntries,
     changed: bool,
 }
 
@@ -321,24 +205,20 @@ impl FabricMgr {
     #[inline(always)]
     pub const fn new() -> Self {
         Self {
-            fabric_idx_ctr: 0,
-            fabrics: crate::utils::vec::Vec::new(),
+            fabrics: FabricEntries::new(),
             changed: false,
         }
     }
 
     pub fn init() -> impl Init<Self> {
         init!(Self {
-            fabric_idx_ctr: 0,
-            fabrics <- crate::utils::vec::Vec::init(),
+            fabrics <- FabricEntries::init(),
             changed: false,
         })
     }
 
     pub fn load(&mut self, data: &[u8], mdns: &dyn Mdns) -> Result<(), Error> {
-        // TODO: next_fabric_idx
-
-        for fabric in &self.fabrics {
+        for fabric in self.fabrics.iter().flatten() {
             mdns.remove(&fabric.mdns_service_name)?;
         }
 
@@ -346,7 +226,7 @@ impl FabricMgr {
 
         tlv::vec_from_tlv(&mut self.fabrics, &root)?;
 
-        for fabric in &self.fabrics {
+        for fabric in self.fabrics.iter().flatten() {
             mdns.add(&fabric.mdns_service_name, ServiceMode::Commissioned)?;
         }
 
@@ -378,85 +258,105 @@ impl FabricMgr {
         self.changed
     }
 
-    pub fn add(&mut self) -> Result<&mut Fabric, Error> {
-        let mut next_fabric_idx = Wrapping(self.fabric_idx_ctr);
+    pub fn add(&mut self, f: Fabric, mdns: &dyn Mdns) -> Result<NonZeroU8, Error> {
+        // Do not re-use slots (if possible) because currently we use the
+        // position of the fabric in the array as a `fabric_index` as per the Matter Core spec
+        // TODO: In future introduce a new field in Fabric to store the fabric index, as
+        // we do for session indexes.
+        let slot = (self.fabrics.len() == MAX_SUPPORTED_FABRICS)
+            .then(|| self.fabrics.iter().position(|x| x.is_none()))
+            .flatten();
 
-        loop {
-            next_fabric_idx += Wrapping(1);
+        if slot.is_some() || self.fabrics.len() < MAX_SUPPORTED_FABRICS {
+            mdns.add(&f.mdns_service_name, ServiceMode::Commissioned)?;
+            self.changed = true;
 
-            if next_fabric_idx.0 == self.fabric_idx_ctr {
-                Err(ErrorCode::NoSpace)?;
+            if let Some(index) = slot {
+                self.fabrics[index] = Some(f);
+
+                // Unwrapping is safe because we explicitly add + 1 here
+                Ok(NonZeroU8::new(index as u8 + 1).unwrap())
+            } else {
+                self.fabrics
+                    .push(Some(f))
+                    .map_err(|_| ErrorCode::NoSpace)
+                    .unwrap();
+
+                // Unwrapping is safe because we just added the entry
+                Ok(NonZeroU8::new(self.fabrics.len() as u8).unwrap())
             }
-
-            if next_fabric_idx.0 == 0 {
-                next_fabric_idx += Wrapping(1);
-            }
-
-            if self
-                .fabrics
-                .iter()
-                .all(|fabric| fabric.fabric_idx.get() != next_fabric_idx.0)
-            {
-                break;
-            }
+        } else {
+            Err(ErrorCode::NoSpace.into())
         }
-
-        self.fabrics.push_init(
-            Fabric::init(NonZeroU8::new(next_fabric_idx.0).unwrap()).as_fallible(),
-            || ErrorCode::NoSpace,
-        )?;
-
-        Ok(self.fabrics.last_mut().unwrap())
     }
 
     pub fn remove(&mut self, fab_idx: NonZeroU8, mdns: &dyn Mdns) -> Result<(), Error> {
-        self.fabrics.retain(|fabric| fabric.fabric_idx != fab_idx);
-
-        Ok(())
+        if fab_idx.get() as usize <= self.fabrics.len() {
+            if let Some(f) = self.fabrics[(fab_idx.get() - 1) as usize].take() {
+                mdns.remove(&f.mdns_service_name)?;
+                self.changed = true;
+                Ok(())
+            } else {
+                Err(ErrorCode::NotFound.into())
+            }
+        } else {
+            Err(ErrorCode::NotFound.into())
+        }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Fabric> {
-        self.fabrics.iter()
+    pub fn match_dest_id(&self, random: &[u8], target: &[u8]) -> Result<NonZeroU8, Error> {
+        for (index, fabric) in self.fabrics.iter().enumerate() {
+            if let Some(fabric) = fabric {
+                if fabric.match_dest_id(random, target).is_ok() {
+                    // Unwrapping is safe because we explicitly add + 1 here
+                    return Ok(NonZeroU8::new(index as u8 + 1).unwrap());
+                }
+            }
+        }
+        Err(ErrorCode::NotFound.into())
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Fabric> {
-        self.fabrics.iter_mut()
-    }
-
-    pub fn get_by_dest_id(&self, random: &[u8], target: &[u8]) -> Option<&Fabric> {
-        self.fabrics
-            .iter()
-            .find(|fabric| fabric.matches_dest_id(random, target).unwrap_or(false))
-    }
-
-    pub fn get(&self, idx: NonZeroU8) -> Option<&Fabric> {
-        self.iter().find(|fabric| fabric.fabric_idx == idx)
-    }
-
-    pub fn get_mut(&mut self, idx: NonZeroU8) -> Option<&mut Fabric> {
-        self.iter_mut().find(|fabric| fabric.fabric_idx == idx)
+    pub fn get_fabric(&self, idx: NonZeroU8) -> Option<&Fabric> {
+        self.fabrics[idx.get() as usize - 1].as_ref()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.fabrics.is_empty()
+        !self.fabrics.iter().any(Option::is_some)
     }
 
     pub fn used_count(&self) -> usize {
-        self.fabrics.len()
+        self.fabrics.iter().filter(|f| f.is_some()).count()
+    }
+
+    // Parameters to T are the Fabric and its Fabric Index
+    pub fn for_each<T>(&self, mut f: T) -> Result<(), Error>
+    where
+        T: FnMut(&Fabric, NonZeroU8) -> Result<(), Error>,
+    {
+        for (index, fabric) in self.fabrics.iter().enumerate() {
+            if let Some(fabric) = fabric {
+                f(fabric, NonZeroU8::new(index as u8 + 1).unwrap())?;
+            }
+        }
+        Ok(())
     }
 
     pub fn set_label(&mut self, index: NonZeroU8, label: &str) -> Result<(), Error> {
-        if !label.is_empty() && self.iter().any(|f| f.label == label) {
-            Err(ErrorCode::Invalid)?;
+        if !label.is_empty()
+            && self
+                .fabrics
+                .iter()
+                .filter_map(|f| f.as_ref())
+                .any(|f| f.label == label)
+        {
+            return Err(ErrorCode::Invalid.into());
         }
 
-        let Some(fabric) = self.get_mut(index) else {
-            return Err(ErrorCode::NotFound.into());
-        };
-
-        fabric.label = label.try_into().unwrap();
-        self.changed = true;
-
+        let index = (index.get() - 1) as usize;
+        if let Some(fabric) = &mut self.fabrics[index] {
+            fabric.label = label.try_into().unwrap();
+            self.changed = true;
+        }
         Ok(())
     }
 }

@@ -21,6 +21,7 @@ use core::time::Duration;
 
 use log::{error, info, trace, warn};
 
+use crate::data_model::sdm::noc::NocData;
 use crate::error::*;
 use crate::transport::exchange::ExchangeId;
 use crate::transport::mrp::ReliableMessage;
@@ -89,6 +90,7 @@ pub struct Session {
     msg_ctr: u32,
     rx_ctr_state: RxCtrState,
     mode: SessionMode,
+    data: Option<NocData>,
     pub(crate) exchanges: heapless::Vec<Option<ExchangeState>, MAX_EXCHANGES>,
     last_use: Duration,
     reserved: bool,
@@ -117,9 +119,26 @@ impl Session {
             msg_ctr: Self::rand_msg_ctr(rand),
             rx_ctr_state: RxCtrState::new(0),
             mode: SessionMode::PlainText,
+            data: None,
             exchanges: heapless::Vec::new(),
             last_use: epoch(),
         }
+    }
+
+    pub fn set_noc_data(&mut self, data: NocData) {
+        self.data = Some(data);
+    }
+
+    pub fn clear_noc_data(&mut self) {
+        self.data = None;
+    }
+
+    pub fn get_noc_data(&mut self) -> Option<&mut NocData> {
+        self.data.as_mut()
+    }
+
+    pub fn take_noc_data(&mut self) -> Option<NocData> {
+        self.data.take()
     }
 
     pub fn get_local_sess_id(&self) -> u16 {

@@ -23,7 +23,10 @@ use num_derive::FromPrimitive;
 
 use crate::crypto::KeyPair;
 use crate::error::{Error, ErrorCode};
-use crate::tlv::{self, FromTLV, OctetStr, TLVArray, TLVElement, TLVWriter, TagType, ToTLV};
+use crate::tlv::{
+    self, FromTLV, OctetStr, TLVArray, TLVElement, TLVTag, TLVWrite, TLVWriter, TagType, ToTLV,
+    ToTLV2,
+};
 use crate::utils::epoch::MATTER_CERT_DOESNT_EXPIRE;
 use crate::utils::init::Init;
 use crate::utils::writebuf::WriteBuf;
@@ -148,7 +151,7 @@ fn encode_key_usage(key_usage: u16, w: &mut dyn CertConsumer) -> Result<(), Erro
 }
 
 fn encode_extended_key_usage(
-    list: impl Iterator<Item = u8>,
+    list: impl Iterator<Item = Result<u8, Error>>,
     w: &mut dyn CertConsumer,
 ) -> Result<(), Error> {
     const OID_SERVER_AUTH: [u8; 8] = [0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01];
@@ -169,7 +172,7 @@ fn encode_extended_key_usage(
 
     w.start_seq("")?;
     for t in list {
-        let t = t as usize;
+        let t = t? as usize;
         if t > 0 && t <= encoding.len() {
             w.oid(encoding[t].0, encoding[t].1)?;
         } else {
@@ -240,13 +243,9 @@ impl<'a> Extensions<'a> {
     }
 
     fn iter(&self) -> Result<impl Iterator<Item = Result<Extension<'a>, Error>>, Error> {
-        let tlv_iter = self
-            .0
-            .confirm_list()?
-            .enter()
-            .ok_or(ErrorCode::Invalid)?
-            .map(|item| {
-                let TagType::Context(tag) = item.get_tag() else {
+        let tlv_iter = self.0.list()?.iter().map(|item| {
+            item.and_then(|item| {
+                let TagType::Context(tag) = item.tag()? else {
                     return Err(ErrorCode::Invalid.into());
                 };
 
@@ -261,7 +260,8 @@ impl<'a> Extensions<'a> {
                 };
 
                 Ok(extension)
-            });
+            })
+        });
 
         Ok(tlv_iter)
     }
@@ -273,26 +273,36 @@ impl<'a> FromTLV<'a> for Extensions<'a> {
     }
 }
 
-impl<'a> ToTLV for Extensions<'a> {
-    fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
-        tw.start_list(tag)?;
+impl<'a> ToTLV2 for Extensions<'a> {
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+        tw.start_list(&tag)?;
 
         for extension in self.iter()? {
             match extension? {
-                Extension::BasicConstraints(t) => t.to_tlv(tw, TagType::Context(1))?,
-                Extension::KeyUsage(t) => tw.u16(TagType::Context(2), t)?,
-                Extension::ExtKeyUsage(t) => t.to_tlv(tw, TagType::Context(3))?,
-                Extension::SubjectKeyId(t) => t.to_tlv(tw, TagType::Context(4))?,
-                Extension::AuthorityKeyId(t) => t.to_tlv(tw, TagType::Context(5))?,
-                Extension::FutureExtensions(t) => t.to_tlv(tw, TagType::Context(6))?,
+                Extension::BasicConstraints(t) => t.to_tlv2(&TLVTag::Context(1), &mut tw)?,
+                Extension::KeyUsage(t) => tw.u16(&TLVTag::Context(2), t)?,
+                Extension::ExtKeyUsage(t) => t.to_tlv2(&TLVTag::Context(3), &mut tw)?,
+                Extension::SubjectKeyId(t) => tw.str(&TLVTag::Context(4), &t)?,
+                Extension::AuthorityKeyId(t) => tw.str(&TLVTag::Context(5), &t)?,
+                Extension::FutureExtensions(t) => tw.str(&TLVTag::Context(6), &t)?,
             }
         }
 
         tw.end_container()
     }
+
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        todo!();
+        core::iter::empty()
+    }
+
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        todo!();
+        core::iter::empty()
+    }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 enum Extension<'a> {
     BasicConstraints(BasicConstraints),
     KeyUsage(u16),
@@ -381,11 +391,9 @@ enum DnTags {
 #[derive(Debug, PartialEq)]
 enum DistNameValue<'a> {
     Uint(u64),
-    Utf8Str(&'a [u8]),
-    PrintableStr(&'a [u8]),
+    Utf8Str(&'a str),
+    PrintableStr(&'a str),
 }
-
-const MAX_DN_ENTRIES: usize = 5;
 
 #[derive(Debug, PartialEq)]
 struct DistNames<'a>(TLVElement<'a>);
@@ -425,29 +433,26 @@ impl<'a> DistNames<'a> {
     }
 
     fn iter(&self) -> Result<impl Iterator<Item = Result<(u8, DistNameValue<'a>), Error>>, Error> {
-        let tlv_iter = self
-            .0
-            .confirm_list()?
-            .enter()
-            .ok_or(ErrorCode::Invalid)?
-            .map(|item| {
-                let TagType::Context(tag) = item.get_tag() else {
+        let tlv_iter = self.0.list()?.iter().map(|item| {
+            item.and_then(|item| {
+                let TagType::Context(tag) = item.tag()? else {
                     return Err(ErrorCode::Invalid.into());
                 };
 
-                let value = match item.slice() {
-                    Ok(slice) => {
+                let value = match item.utf8() {
+                    Ok(str) => {
                         if tag > PRINTABLE_STR_THRESHOLD {
-                            DistNameValue::PrintableStr(slice)
+                            DistNameValue::PrintableStr(str)
                         } else {
-                            DistNameValue::Utf8Str(slice)
+                            DistNameValue::Utf8Str(str)
                         }
                     }
                     Err(_) => DistNameValue::Uint(item.u64()?),
                 };
 
                 Ok((tag, value))
-            });
+            })
+        });
 
         Ok(tlv_iter)
     }
@@ -461,21 +466,31 @@ impl<'a> FromTLV<'a> for DistNames<'a> {
     }
 }
 
-impl<'a> ToTLV for DistNames<'a> {
-    fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
-        tw.start_list(tag)?;
+impl<'a> ToTLV2 for DistNames<'a> {
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+        tw.start_list(&tag)?;
         for dn in self.iter()? {
             let (name, value) = dn?;
 
             match value {
-                DistNameValue::Uint(v) => tw.u64(TagType::Context(name), v)?,
-                DistNameValue::Utf8Str(v) => tw.utf8(TagType::Context(name), v)?,
+                DistNameValue::Uint(v) => tw.u64(&TagType::Context(name), v)?,
+                DistNameValue::Utf8Str(v) => tw.utf8(&TagType::Context(name), v)?,
                 DistNameValue::PrintableStr(v) => {
-                    tw.utf8(TagType::Context(name + PRINTABLE_STR_THRESHOLD), v)?
+                    tw.utf8(&TagType::Context(name + PRINTABLE_STR_THRESHOLD), v)?
                 }
             }
         }
         tw.end_container()
+    }
+
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        todo!();
+        core::iter::empty()
+    }
+
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        todo!();
+        core::iter::empty()
     }
 }
 
@@ -627,10 +642,10 @@ fn encode_dn_value(
             }
         },
         DistNameValue::Utf8Str(v) => {
-            w.utf8str("", core::str::from_utf8(v)?)?;
+            w.utf8str("", v)?;
         }
         DistNameValue::PrintableStr(v) => {
-            w.printstr("", core::str::from_utf8(v)?)?;
+            w.printstr("", v)?;
         }
     }
     w.end_seq()?;
@@ -653,10 +668,28 @@ pub struct Cert<'a> {
     signature: OctetStr<'a>,
 }
 
+pub struct Cert2<'a>(TLVElement<'a>);
+
+impl<'a> Cert2<'a> {
+    fn serial_no(&self) -> Result<&[u8], Error> {
+        self.0.structure()?.find_ctx(0)?.str()
+    }
+
+    fn sign_algo(&self) -> Result<u8, Error> {
+        self.0.structure()?.find_ctx(1)?.u8()
+    }
+
+    fn issuer(&self) -> Result<DistNames<'a>, Error> {
+        DistNames::from_tlv(&self.0.structure()?.find_ctx(2)?)
+    }
+}
+
 // TODO: Instead of parsing the TLVs everytime, we should just cache this, but the encoding
 // rules in terms of sequence may get complicated. Need to look into this
 impl<'a> Cert<'a> {
     pub fn new(cert_bin: &'a [u8]) -> Result<Self, Error> {
+        //let x: CertRef = CertRef {};
+
         let root = tlv::get_root_node(cert_bin)?;
         Cert::from_tlv(&root)
     }
@@ -864,7 +897,6 @@ pub trait CertConsumer {
 }
 
 const MAX_DEPTH: usize = 10;
-const MAX_ASN1_CERT_SIZE: usize = 1000;
 
 mod asn1_writer;
 mod printer;

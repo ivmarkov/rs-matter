@@ -205,7 +205,7 @@ pub mod ib {
         data_model::objects::{AttrDetails, AttrId, ClusterId, CmdId, EndptId},
         error::{Error, ErrorCode},
         interaction_model::core::IMStatusCode,
-        tlv::{FromTLV, Nullable, TLVElement, TLVTag, TLVWriteStorage, ToTLV, ToTLV2},
+        tlv::{FromTLV, Nullable, TLVElement, TLVTag, TLVWrite, ToTLV, ToTLV2},
     };
     use log::error;
 
@@ -495,11 +495,8 @@ pub mod ib {
     }
 
     impl ToTLV2 for CmdPath {
-        fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-        where
-            O: TLVWriteStorage,
-        {
-            self.path.to_tlv2(tag, write)
+        fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error> {
+            self.path.to_tlv2(tag, tw)
         }
 
         fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {

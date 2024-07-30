@@ -47,7 +47,7 @@ use crate::error::Error;
 use crate::utils::init;
 use crate::utils::maybe::Maybe;
 
-use super::{FromTLV, TLVElement, TLVTag, TLVValueType, TLVWrite, TLVWriteStorage, ToTLV2};
+use super::{FromTLV, TLVElement, TLVTag, TLVValueType, TLVWrite, ToTLV2};
 
 /// A tag for `Maybe` that makes it behave as an optional struct value per the TLV spec.
 pub type AsOptional = ();
@@ -90,13 +90,10 @@ impl<'a, T: FromTLV<'a>> FromTLV<'a> for Maybe<T, AsNullable> {
 }
 
 impl<T: ToTLV2> ToTLV2 for Maybe<T, AsNullable> {
-    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-    where
-        O: TLVWriteStorage,
-    {
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         match self.as_ref() {
-            None => TLVWrite::new(write).null(tag),
-            Some(s) => s.to_tlv2(tag, write),
+            None => tw.null(tag),
+            Some(s) => s.to_tlv2(tag, tw),
         }
     }
 
@@ -143,13 +140,10 @@ impl<'a, T: FromTLV<'a> + 'a> FromTLV<'a> for Maybe<T, AsOptional> {
 }
 
 impl<T: ToTLV2> ToTLV2 for Maybe<T, AsOptional> {
-    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-    where
-        O: TLVWriteStorage,
-    {
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error> {
         match self.as_ref() {
             None => Ok(()),
-            Some(s) => s.to_tlv2(tag, write),
+            Some(s) => s.to_tlv2(tag, tw),
         }
     }
 
@@ -186,13 +180,10 @@ impl<'a, T: FromTLV<'a>> FromTLV<'a> for Option<T> {
 }
 
 impl<T: ToTLV2> ToTLV2 for Option<T> {
-    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-    where
-        O: TLVWriteStorage,
-    {
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error> {
         match self.as_ref() {
             None => Ok(()),
-            Some(s) => s.to_tlv2(tag, write),
+            Some(s) => s.to_tlv2(tag, tw),
         }
     }
 

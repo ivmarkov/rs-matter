@@ -19,6 +19,7 @@ use crate::{
     acl::Accessor,
     alloc,
     data_model::objects::Endpoint,
+    error::Error,
     interaction_model::{
         core::{IMStatusCode, ReportDataReq},
         messages::{
@@ -27,7 +28,6 @@ use crate::{
             GenericPath,
         },
     },
-    // TODO: This layer shouldn't really depend on the TLV layer, should create an abstraction layer
     tlv::{TLVArray, TLVElement},
 };
 use core::{
@@ -65,15 +65,12 @@ pub struct Node<'a> {
 }
 
 impl<'a> Node<'a> {
-    pub fn read<'s, 'm>(
-        &'s self,
+    pub fn read<'m>(
+        &'m self,
         req: &'m ReportDataReq,
         from: Option<GenericPath>,
         accessor: &'m Accessor<'m>,
-    ) -> impl Iterator<Item = Result<AttrDetails, AttrStatus>> + 'm
-    where
-        's: 'm,
-    {
+    ) -> impl Iterator<Item = Result<Result<AttrDetails, AttrStatus>, Error>> + 'm {
         self.read_attr_requests(
             req.attr_requests()
                 .iter()
@@ -85,19 +82,23 @@ impl<'a> Node<'a> {
         )
     }
 
-    fn read_attr_requests<'s, 'm, P>(
-        &'s self,
+    fn read_attr_requests<'m, P>(
+        &'m self,
         attr_requests: P,
         dataver_filters: Option<&'m TLVArray<DataVersionFilter>>,
         fabric_filtered: bool,
         accessor: &'m Accessor<'m>,
         from: Option<GenericPath>,
-    ) -> impl Iterator<Item = Result<AttrDetails, AttrStatus>> + 'm
+    ) -> impl Iterator<Item = Result<Result<AttrDetails, AttrStatus>, Error>> + 'm
     where
-        's: 'm,
-        P: Iterator<Item = AttrPath> + 'm,
+        P: Iterator<Item = Result<AttrPath, Error>> + 'm,
     {
         alloc!(attr_requests.flat_map(move |path| {
+            let path = match path {
+                Ok(path) => path,
+                Err(e) => return WildcardIter::Single(once(Err(e))),
+            };
+
             if path.to_gp().is_wildcard() {
                 let from = from.clone();
 
@@ -116,16 +117,9 @@ impl<'a> Node<'a> {
                         .is_ok()
                     })
                     .map(move |(ep, cl, attr)| {
-                        let dataver = if let Some(dataver_filters) = dataver_filters {
-                            dataver_filters.iter().find_map(|filter| {
-                                (filter.path.endpoint == ep.id && filter.path.cluster == cl.id)
-                                    .then_some(filter.data_ver)
-                            })
-                        } else {
-                            None
-                        };
+                        let dataver = Self::dataver(dataver_filters, ep.id, cl.id)?;
 
-                        Ok(AttrDetails {
+                        Ok(Ok(AttrDetails {
                             node: self,
                             endpoint_id: ep.id,
                             cluster_id: cl.id,
@@ -135,7 +129,7 @@ impl<'a> Node<'a> {
                             fab_filter: fabric_filtered,
                             dataver,
                             wildcard: true,
-                        })
+                        }))
                     });
 
                 WildcardIter::Wildcard(iter)
@@ -145,16 +139,7 @@ impl<'a> Node<'a> {
                 let attr = path.attr.unwrap();
 
                 let result = match self.check_attribute(accessor, ep, cl, attr, false) {
-                    Ok(()) => {
-                        let dataver = if let Some(dataver_filters) = dataver_filters {
-                            dataver_filters.iter().find_map(|filter| {
-                                (filter.path.endpoint == ep && filter.path.cluster == cl)
-                                    .then_some(filter.data_ver)
-                            })
-                        } else {
-                            None
-                        };
-
+                    Ok(()) => Self::dataver(dataver_filters, ep, cl).map(|dataver| {
                         Ok(AttrDetails {
                             node: self,
                             endpoint_id: ep,
@@ -166,8 +151,8 @@ impl<'a> Node<'a> {
                             dataver,
                             wildcard: false,
                         })
-                    }
-                    Err(err) => Err(AttrStatus::new(&path.to_gp(), err, 0)),
+                    }),
+                    Err(err) => Ok(Err(AttrStatus::new(&path.to_gp(), err, 0))),
                 };
 
                 WildcardIter::Single(once(result))
@@ -179,20 +164,26 @@ impl<'a> Node<'a> {
         &'m self,
         req: &'m WriteReq,
         accessor: &'m Accessor<'m>,
-    ) -> impl Iterator<Item = Result<(AttrDetails, TLVElement<'m>), AttrStatus>> + 'm {
+    ) -> impl Iterator<Item = Result<Result<(AttrDetails, TLVElement<'m>), AttrStatus>, Error>> + 'm
+    {
         alloc!(req.write_requests.iter().flat_map(move |attr_data| {
+            let attr_data = match attr_data {
+                Ok(attr_data) => attr_data,
+                Err(e) => return WildcardIter::Single(once(Err(e))),
+            };
+
             if attr_data.path.cluster.is_none() {
-                WildcardIter::Single(once(Err(AttrStatus::new(
+                WildcardIter::Single(once(Ok(Err(AttrStatus::new(
                     &attr_data.path.to_gp(),
                     IMStatusCode::UnsupportedCluster,
                     0,
-                ))))
+                )))))
             } else if attr_data.path.attr.is_none() {
-                WildcardIter::Single(once(Err(AttrStatus::new(
+                WildcardIter::Single(once(Ok(Err(AttrStatus::new(
                     &attr_data.path.to_gp(),
                     IMStatusCode::UnsupportedAttribute,
                     0,
-                ))))
+                )))))
             } else if attr_data.path.to_gp().is_wildcard() {
                 let iter = self
                     .match_attributes(
@@ -210,7 +201,7 @@ impl<'a> Node<'a> {
                         .is_ok()
                     })
                     .map(move |(ep, cl, attr)| {
-                        Ok((
+                        Ok(Ok((
                             AttrDetails {
                                 node: self,
                                 endpoint_id: ep.id,
@@ -222,8 +213,8 @@ impl<'a> Node<'a> {
                                 dataver: attr_data.data_ver,
                                 wildcard: true,
                             },
-                            attr_data.data.clone().unwrap_tlv().unwrap(),
-                        ))
+                            attr_data.data.clone(),
+                        )))
                     });
 
                 WildcardIter::Wildcard(iter)
@@ -233,7 +224,7 @@ impl<'a> Node<'a> {
                 let attr = attr_data.path.attr.unwrap();
 
                 let result = match self.check_attribute(accessor, ep, cl, attr, true) {
-                    Ok(()) => Ok((
+                    Ok(()) => Ok(Ok((
                         AttrDetails {
                             node: self,
                             endpoint_id: ep,
@@ -245,9 +236,9 @@ impl<'a> Node<'a> {
                             dataver: attr_data.data_ver,
                             wildcard: false,
                         },
-                        attr_data.data.unwrap_tlv().unwrap(),
-                    )),
-                    Err(err) => Err(AttrStatus::new(&attr_data.path.to_gp(), err, 0)),
+                        attr_data.data,
+                    ))),
+                    Err(err) => Ok(Err(AttrStatus::new(&attr_data.path.to_gp(), err, 0))),
                 };
 
                 WildcardIter::Single(once(result))
@@ -259,12 +250,18 @@ impl<'a> Node<'a> {
         &'m self,
         req: &'m InvReq,
         accessor: &'m Accessor<'m>,
-    ) -> impl Iterator<Item = Result<(CmdDetails, TLVElement<'m>), CmdStatus>> + 'm {
+    ) -> impl Iterator<Item = Result<Result<(CmdDetails, TLVElement<'m>), CmdStatus>, Error>> + 'm
+    {
         alloc!(req
             .inv_requests
             .iter()
             .flat_map(|inv_requests| inv_requests.iter())
             .flat_map(move |cmd_data| {
+                let cmd_data = match cmd_data {
+                    Ok(cmd_data) => cmd_data,
+                    Err(e) => return WildcardIter::Single(once(Err(e))),
+                };
+
                 if cmd_data.path.path.is_wildcard() {
                     let iter = self
                         .match_commands(
@@ -280,7 +277,7 @@ impl<'a> Node<'a> {
                             .is_ok()
                         })
                         .map(move |(ep, cl, cmd)| {
-                            Ok((
+                            Ok(Ok((
                                 CmdDetails {
                                     node: self,
                                     endpoint_id: ep.id,
@@ -288,8 +285,8 @@ impl<'a> Node<'a> {
                                     cmd_id: cmd,
                                     wildcard: true,
                                 },
-                                cmd_data.data.clone().unwrap_tlv().unwrap(),
-                            ))
+                                cmd_data.data.clone(),
+                            )))
                         });
 
                     WildcardIter::Wildcard(iter)
@@ -299,7 +296,7 @@ impl<'a> Node<'a> {
                     let cmd = cmd_data.path.path.leaf.unwrap();
 
                     let result = match self.check_command(accessor, ep, cl, cmd) {
-                        Ok(()) => Ok((
+                        Ok(()) => Ok(Ok((
                             CmdDetails {
                                 node: self,
                                 endpoint_id: cmd_data.path.path.endpoint.unwrap(),
@@ -307,9 +304,9 @@ impl<'a> Node<'a> {
                                 cmd_id: cmd_data.path.path.leaf.unwrap(),
                                 wildcard: false,
                             },
-                            cmd_data.data.unwrap_tlv().unwrap(),
-                        )),
-                        Err(err) => Err(CmdStatus::new(cmd_data.path, err, 0)),
+                            cmd_data.data,
+                        ))),
+                        Err(err) => Ok(Err(CmdStatus::new(cmd_data.path, err, 0))),
                     };
 
                     WildcardIter::Single(once(result))
@@ -387,6 +384,26 @@ impl<'a> Node<'a> {
             .iter()
             .find(|endpoint| endpoint.id == ep)
             .ok_or(IMStatusCode::UnsupportedEndpoint)
+    }
+
+    fn dataver(
+        dataver_filters: Option<&TLVArray<DataVersionFilter>>,
+        ep: EndptId,
+        cl: ClusterId,
+    ) -> Result<Option<u32>, Error> {
+        let Some(dataver_filters) = dataver_filters else {
+            return Ok(None);
+        };
+
+        for filter in dataver_filters {
+            let filter = filter?;
+
+            if filter.path.endpoint == ep && filter.path.cluster == cl {
+                return Ok(Some(filter.data_ver));
+            }
+        }
+
+        Ok(None)
     }
 }
 

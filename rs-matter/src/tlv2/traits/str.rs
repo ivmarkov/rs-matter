@@ -29,7 +29,7 @@ use heapless::String;
 
 use crate::error::{Error, ErrorCode};
 
-use super::{FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV2};
 
 /// For (partial) backwards compatibility
 ///
@@ -53,11 +53,8 @@ impl<'a> FromTLV<'a> for &'a str {
 }
 
 impl ToTLV2 for &str {
-    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-    where
-        O: TLVWriteStorage,
-    {
-        TLVWrite::new(write).utf8(tag, self)
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+        tw.utf8(tag, self)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
@@ -81,11 +78,8 @@ impl<'a, const N: usize> FromTLV<'a> for String<N> {
 }
 
 impl<const N: usize> ToTLV2 for String<N> {
-    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-    where
-        O: TLVWriteStorage,
-    {
-        TLVWrite::new(write).utf8(tag, self)
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+        tw.utf8(tag, self)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {

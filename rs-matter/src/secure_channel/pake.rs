@@ -23,7 +23,7 @@ use crate::crypto;
 use crate::error::{Error, ErrorCode};
 use crate::mdns::{Mdns, ServiceMode};
 use crate::secure_channel::common::{complete_with_status, OpCode};
-use crate::tlv::{self, get_root_node_struct, FromTLV, OctetStr, TLVWriter, TagType, ToTLV};
+use crate::tlv::{self, get_root_node_struct, FromTLV, OctetStr, TagType, ToTLV, ToTLV2};
 use crate::transport::{
     exchange::{Exchange, ExchangeId},
     session::{ReservedSession, SessionMode},
@@ -278,10 +278,10 @@ impl Pake {
         exchange
             .send_with(|_, wb| {
                 let resp = Pake1Resp {
-                    pb: OctetStr(&pB),
-                    cb: OctetStr(&cB),
+                    pb: OctetStr::new(&pB),
+                    cb: OctetStr::new(&cB),
                 };
-                resp.to_tlv(&mut TLVWriter::new(wb), TagType::Anonymous)?;
+                resp.to_tlv2(&TagType::Anonymous, wb)?;
 
                 Ok(Some(OpCode::PASEPake2.into()))
             })
@@ -330,14 +330,14 @@ impl Pake {
             // Generate response
             let mut resp = PBKDFParamResp {
                 init_random: OctetStr::new(initiator_random),
-                our_random: OctetStr(&our_random),
+                our_random: OctetStr::new(&our_random),
                 local_sessid,
                 params: None,
             };
             if !a.has_params {
                 let params_resp = PBKDFParamRespParams {
                     count: session.verifier.count,
-                    salt: OctetStr(&salt),
+                    salt: OctetStr::new(&salt),
                 };
                 resp.params = Some(params_resp);
             }
@@ -350,8 +350,8 @@ impl Pake {
 
         let mut context_set = false;
         exchange
-            .send_with(|_, wb| {
-                resp.to_tlv(&mut TLVWriter::new(wb), TagType::Anonymous)?;
+            .send_with(|_, mut wb| {
+                resp.to_tlv2(&TagType::Anonymous, &mut wb)?;
 
                 if !context_set {
                     spake2p.update_context(wb.as_slice())?;
@@ -455,7 +455,7 @@ struct PBKDFParamResp<'a> {
 #[allow(non_snake_case)]
 fn extract_pasepake_1_or_3_params(buf: &[u8]) -> Result<&[u8], Error> {
     let root = get_root_node_struct(buf)?;
-    let pA = root.find_tag(1)?.slice()?;
+    let pA = root.structure()?.ctx(1)?.str()?;
     Ok(pA)
 }
 

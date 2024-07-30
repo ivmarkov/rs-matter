@@ -37,7 +37,7 @@ use crate::interaction_model::messages::msg::{
     WriteReq, WriteRespTag,
 };
 use crate::respond::ExchangeHandler;
-use crate::tlv::{get_root_node_struct, FromTLV, TLVWriter, TagType};
+use crate::tlv::{get_root_node_struct, FromTLV, TLVTag, TLVWrite, TLVWriter};
 use crate::transport::exchange::{Exchange, MAX_EXCHANGE_RX_BUF_SIZE, MAX_EXCHANGE_TX_BUF_SIZE};
 use crate::utils::writebuf::WriteBuf;
 
@@ -155,10 +155,17 @@ where
         let accessor = exchange.accessor()?;
 
         // Will the clusters that are to be invoked await?
-        let awaits = metadata.node().read(&req, None, &accessor).any(|item| {
-            item.map(|attr| self.handler.read_awaits(exchange, &attr))
+        let mut awaits = false;
+
+        for item in metadata.node().read(&req, None, &exchange.accessor()?) {
+            if item?
+                .map(|attr| self.handler.read_awaits(exchange, &attr))
                 .unwrap_or(false)
-        });
+            {
+                awaits = true;
+                break;
+            }
+        }
 
         if !awaits {
             // No, they won't. Answer the request by directly using the RX packet
@@ -251,13 +258,17 @@ where
         let req = WriteReq::from_tlv(&get_root_node_struct(exchange.rx()?.payload())?)?;
 
         // Will the clusters that are to be invoked await?
-        let awaits = metadata
-            .node()
-            .write(&req, &exchange.accessor()?)
-            .any(|item| {
-                item.map(|(attr, _)| self.handler.write_awaits(exchange, &attr))
-                    .unwrap_or(false)
-            });
+        let mut awaits = false;
+
+        for item in metadata.node().write(&req, &exchange.accessor()?) {
+            if item?
+                .map(|(attr, _)| self.handler.write_awaits(exchange, &attr))
+                .unwrap_or(false)
+            {
+                awaits = true;
+                break;
+            }
+        }
 
         let more_chunks = if awaits {
             // Yes, they will
@@ -311,13 +322,17 @@ where
         let req = InvReq::from_tlv(&get_root_node_struct(exchange.rx()?.payload())?)?;
 
         // Will the clusters that are to be invoked await?
-        let awaits = metadata
-            .node()
-            .invoke(&req, &exchange.accessor()?)
-            .any(|item| {
-                item.map(|(cmd, _)| self.handler.invoke_awaits(exchange, &cmd))
-                    .unwrap_or(false)
-            });
+        let mut awaits = false;
+
+        for item in metadata.node().invoke(&req, &exchange.accessor()?) {
+            if item?
+                .map(|(cmd, _)| self.handler.invoke_awaits(exchange, &cmd))
+                .unwrap_or(false)
+            {
+                awaits = true;
+                break;
+            }
+        }
 
         if awaits {
             // Yes, they will
@@ -746,19 +761,17 @@ impl<'a> ReportDataReq<'a> {
     ) -> Result<bool, Error>
     where
         T: DataModelHandler,
-        I: Iterator<Item = Result<AttrDetails<'a>, AttrStatus>>,
+        I: Iterator<Item = Result<Result<AttrDetails<'a>, AttrStatus>, Error>>,
     {
         wb.reset();
         wb.shrink(Self::LONG_READS_TLV_RESERVE_SIZE)?;
 
         let mut tw = TLVWriter::new(wb);
 
-        tw.start_struct(TagType::Anonymous)?;
-
         if let Some(subscription_id) = subscription_id {
             assert!(matches!(self, ReportDataReq::Subscribe(_)));
             tw.u32(
-                TagType::Context(ReportDataTag::SubscriptionId as u8),
+                &TLVTag::Context(ReportDataTag::SubscriptionId as u8),
                 subscription_id,
             )?;
         } else {
@@ -768,19 +781,26 @@ impl<'a> ReportDataReq<'a> {
         let has_requests = self.attr_requests().is_some();
 
         if has_requests {
-            tw.start_array(TagType::Context(ReportDataTag::AttributeReports as u8))?;
+            tw.start_array(&TLVTag::Context(ReportDataTag::AttributeReports as u8))?;
         }
 
         while let Some(item) = attrs.peek() {
-            if AttrDataEncoder::handle_read(exchange, item, &handler, &mut tw).await? {
-                attrs.next();
-            } else {
-                break;
+            match item {
+                Ok(item) => {
+                    if AttrDataEncoder::handle_read(exchange, item, &handler, &mut tw).await? {
+                        attrs.next();
+                    } else {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    attrs.next().transpose()?;
+                }
             }
         }
 
         wb.expand(Self::LONG_READS_TLV_RESERVE_SIZE)?;
-        let mut tw = TLVWriter::new(wb);
+        let tw = wb;
 
         if has_requests {
             tw.end_container()?;
@@ -789,11 +809,11 @@ impl<'a> ReportDataReq<'a> {
         let more_chunks = attrs.peek().is_some();
 
         if more_chunks {
-            tw.bool(TagType::Context(ReportDataTag::MoreChunkedMsgs as u8), true)?;
+            tw.bool(&TLVTag::Context(ReportDataTag::MoreChunkedMsgs as u8), true)?;
         }
 
         if !more_chunks && suppress_resp {
-            tw.bool(TagType::Context(ReportDataTag::SupressResponse as u8), true)?;
+            tw.bool(&TLVTag::Context(ReportDataTag::SupressResponse as u8), true)?;
         }
 
         tw.end_container()?;
@@ -819,8 +839,8 @@ impl<'a> WriteReq<'a> {
 
         let mut tw = TLVWriter::new(wb);
 
-        tw.start_struct(TagType::Anonymous)?;
-        tw.start_array(TagType::Context(WriteRespTag::WriteResponses as u8))?;
+        tw.start_struct(&TLVTag::Anonymous)?;
+        tw.start_array(&TLVTag::Context(WriteRespTag::WriteResponses as u8))?;
 
         // The spec expects that a single write request like DeleteList + AddItem
         // should cause all ACLs of that fabric to be deleted and the new one to be added (Case 1).
@@ -836,7 +856,7 @@ impl<'a> WriteReq<'a> {
             node.write(self, &accessor).collect();
 
         for item in write_attrs {
-            AttrDataEncoder::handle_write(exchange, &item, &handler, &mut tw).await?;
+            AttrDataEncoder::handle_write(exchange, &item?, &handler, &mut tw).await?;
         }
 
         tw.end_container()?;
@@ -852,30 +872,30 @@ impl<'a> InvReq<'a> {
         handler: T,
         exchange: &Exchange<'_>,
         node: &Node<'_>,
-        wb: &mut WriteBuf<'_>,
+        mut wb: &mut WriteBuf<'_>,
     ) -> Result<(), Error>
     where
         T: DataModelHandler,
     {
         wb.reset();
 
-        let mut tw = TLVWriter::new(wb);
+        let mut tw = TLVWriter::new(&mut wb);
 
-        tw.start_struct(TagType::Anonymous)?;
+        tw.start_struct(&TLVTag::Anonymous)?;
 
         // Suppress Response -> TODO: Need to revisit this for cases where we send a command back
-        tw.bool(TagType::Context(InvRespTag::SupressResponse as u8), false)?;
+        tw.bool(&TLVTag::Context(InvRespTag::SupressResponse as u8), false)?;
 
         let has_requests = self.inv_requests.is_some();
 
         if has_requests {
-            tw.start_array(TagType::Context(InvRespTag::InvokeResponses as u8))?;
+            tw.start_array(&TLVTag::Context(InvRespTag::InvokeResponses as u8))?;
         }
 
         let accessor = exchange.accessor()?;
 
         for item in node.invoke(self, &accessor) {
-            CmdDataEncoder::handle(&item, &handler, &mut tw, exchange).await?;
+            CmdDataEncoder::handle(&item?, &handler, &mut tw, exchange).await?;
         }
 
         if has_requests {

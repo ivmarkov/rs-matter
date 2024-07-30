@@ -31,17 +31,14 @@ use core::iter::empty;
 
 use crate::error::Error;
 
-use super::{TLVTag, TLVWrite, TLVWriteStorage, ToTLV2};
+use super::{TLVTag, TLVWrite, ToTLV2};
 
 impl<'a, T: ToTLV2> ToTLV2 for &'a [T]
 where
     T: ToTLV2,
 {
-    fn to_tlv2<O>(&self, tag: &TLVTag, mut write: O) -> Result<(), Error>
-    where
-        O: TLVWriteStorage,
-    {
-        to_tlv_array(tag, self.iter(), &mut write)
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error> {
+        to_tlv_array(tag, self.iter(), tw)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
@@ -53,18 +50,16 @@ where
     }
 }
 
-pub(crate) fn to_tlv_array<I, O>(tag: &TLVTag, iter: I, write: O) -> Result<(), Error>
+pub(crate) fn to_tlv_array<I, W>(tag: &TLVTag, iter: I, mut tw: W) -> Result<(), Error>
 where
     I: Iterator,
     I::Item: ToTLV2,
-    O: TLVWriteStorage,
+    W: TLVWrite,
 {
-    let mut tw = TLVWrite::new(write);
-
     tw.start_array(tag)?;
 
     for i in iter {
-        i.to_tlv2(&TLVTag::Anonymous, tw.storage_mut())?;
+        i.to_tlv2(&TLVTag::Anonymous, &mut tw)?;
     }
 
     tw.end_container()

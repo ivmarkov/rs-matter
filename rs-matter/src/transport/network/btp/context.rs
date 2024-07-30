@@ -22,7 +22,7 @@ use log::{error, info, trace, warn};
 use crate::error::{Error, ErrorCode};
 use crate::transport::network::BtAddr;
 use crate::utils::blmutex::Mutex;
-use crate::utils::init::{init, Init};
+use crate::utils::init::{init, AsFallibleInit, Init};
 use crate::utils::notification::Notification;
 use crate::utils::refcell::RefCell;
 
@@ -265,7 +265,7 @@ where
                     warn!("Too many BTP sessions, dropping a handshake request from address {address}");
                 } else {
                     // Unwrap is safe because we checked the length above
-                    sessions.push_init_unchecked(Session::process_rx_handshake(address, data, gatt_mtu)?);
+                    sessions.push_init(Session::process_rx_handshake(address, data, gatt_mtu)?.as_fallible(), || ErrorCode::NoSpace)?;
                 }
 
                 Ok(())

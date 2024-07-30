@@ -22,7 +22,7 @@ use strum::FromRepr;
 use crate::attribute_enum;
 use crate::data_model::objects::*;
 use crate::error::Error;
-use crate::tlv::{TLVWriter, TagType, ToTLV};
+use crate::tlv::{TLVWrite, TLVWriter, TagType, ToTLV2};
 use crate::tlv2::TLVTag;
 use crate::transport::exchange::Exchange;
 
@@ -143,7 +143,7 @@ impl<'a> DescriptorCluster<'a> {
                             attr.node,
                             attr.endpoint_id,
                             &AttrDataWriter::TAG,
-                            &mut writer,
+                            &mut *writer,
                         )?;
                         writer.complete()
                     }
@@ -152,7 +152,7 @@ impl<'a> DescriptorCluster<'a> {
                             attr.node,
                             attr.endpoint_id,
                             &AttrDataWriter::TAG,
-                            &mut writer,
+                            &mut *writer,
                         )?;
                         writer.complete()
                     }
@@ -161,7 +161,7 @@ impl<'a> DescriptorCluster<'a> {
                             attr.node,
                             attr.endpoint_id,
                             &AttrDataWriter::TAG,
-                            &mut writer,
+                            &mut *writer,
                         )?;
                         writer.complete()
                     }
@@ -177,13 +177,13 @@ impl<'a> DescriptorCluster<'a> {
         node: &Node,
         endpoint_id: u16,
         tag: &TLVTag,
-        tw: &mut TLVWriter,
+        mut tw: &mut TLVWriter,
     ) -> Result<(), Error> {
         tw.start_array(tag)?;
         for endpoint in node.endpoints {
             if endpoint.id == endpoint_id {
                 let dev_type = endpoint.device_type;
-                dev_type.to_tlv(tw, TagType::Anonymous)?;
+                dev_type.to_tlv2(&TagType::Anonymous, &mut tw)?;
             }
         }
 

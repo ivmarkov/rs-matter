@@ -17,9 +17,7 @@
 
 use crate::{
     error::{Error, ErrorCode},
-    tlv::{
-        FromTLV, TLVElement, TLVTag, TLVValueType, TLVWrite, TLVWriteStorage, ToTLV2, ToTLVIter,
-    },
+    tlv::{FromTLV, TLVElement, TLVTag, TLVValueType, TLVWrite, ToTLV2, ToTLVIter},
 };
 use log::error;
 
@@ -77,11 +75,8 @@ impl FromTLV<'_> for Privilege {
 }
 
 impl ToTLV2 for Privilege {
-    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-    where
-        O: TLVWriteStorage,
-    {
-        TLVWrite::new(write).u8(tag, self.raw_value())
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+        tw.u8(tag, self.raw_value())
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {

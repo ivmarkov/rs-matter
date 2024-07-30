@@ -25,7 +25,7 @@ use strum::{EnumDiscriminants, FromRepr};
 
 use crate::data_model::objects::*;
 use crate::error::{Error, ErrorCode};
-use crate::tlv::{TLVElement, TLVTag};
+use crate::tlv::{TLVElement, TLVTag, TLVWrite};
 use crate::transport::exchange::Exchange;
 use crate::{attribute_enum, command_enum};
 

@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::error::{Error, ErrorCode};
 
 use super::{TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType};
 
@@ -360,6 +360,22 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
     /// to close the List container or else the generated TLV stream will be invalid.
     fn start_list(self, tag: TLVTag) -> impl Iterator<Item = ByteResult> {
         self._tag(tag, TLVValueType::List)
+    }
+
+    /// Serialize the given tag and a value indicating the start of a TLV container.
+    ///
+    /// NOTE: The user must call `end_container` after serializing all the container fields
+    /// to close the Struct container or else the generated TLV stream will be invalid.
+    fn start_container(
+        self,
+        tag: TLVTag,
+        container_type: TLVValueType,
+    ) -> impl Iterator<Item = ByteResult> {
+        if container_type.is_container() {
+            EitherIter::First(self._tag(tag, container_type))
+        } else {
+            EitherIter::Second(core::iter::once(Err(ErrorCode::TLVTypeMismatch.into())))
+        }
     }
 
     /// Serialize a value indicating the end of a Struct, Array, or List TLV container.

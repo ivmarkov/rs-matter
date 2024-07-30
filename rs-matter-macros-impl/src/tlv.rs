@@ -151,18 +151,17 @@ fn gen_totlv_for_struct(
 
     quote! {
         impl #generics #krate::tlv::ToTLV2 for #struct_name #generics {
-            fn to_tlv2<O: #krate::tlv::TLVWriteStorage>(&self, tag: &#krate::tlv::TLVTag, mut write: O) -> Result<(), #krate::error::Error> {
-                let anchor = write.get_tail();
+            fn to_tlv2<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
+                let anchor = tw.get_tail();
 
                 if let Err(err) = (|| {
-                    let mut tw = #krate::tlv::TLVWrite::new(&mut write);
                     tw.#datatype(tag)?;
                     #(
-                        self.#idents.to_tlv2(&#krate::tlv::TLVTag::Context(#tags), tw.storage_mut())?;
+                        self.#idents.to_tlv2(&#krate::tlv::TLVTag::Context(#tags), &mut tw)?;
                     )*
                     tw.end_container()
                 })() {
-                    write.rewind_to(anchor);
+                    tw.rewind_to(anchor);
                     Err(err)
                 } else {
                     Ok(())
@@ -172,19 +171,21 @@ fn gen_totlv_for_struct(
             fn to_tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
                 use #krate::tlv::ToTLVIter;
 
-                core::iter::empty()
-                    .start_struct(tag)
-                    #(.chain(self.#idents.to_tlv_iter(#krate::tlv::TLVTag::Context(#tags))))*
-                    .end_container()
+                let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+
+                #(let iter = Iterator::chain(iter, self.#idents.to_tlv_iter(#krate::tlv::TLVTag::Context(#tags)));)*
+
+                ToTLVIter::end_container(iter)
             }
 
             fn into_tlv_iter(self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
                 use #krate::tlv::ToTLVIter;
 
-                core::iter::empty()
-                    .start_struct(tag)
-                    #(.chain(self.#idents.into_tlv_iter(#krate::tlv::TLVTag::Context(#tags))))*
-                    .end_container()
+                let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+
+                #(let iter = Iterator::chain(iter, self.#idents.into_tlv_iter(#krate::tlv::TLVTag::Context(#tags)));)*
+
+                ToTLVIter::end_container(iter)
             }
         }
     }
@@ -249,16 +250,15 @@ fn gen_totlv_for_enum(
 
         quote! {
             impl #generics #krate::tlv::ToTLV2 for #enum_name #generics {
-                fn to_tlv2<O: #krate::tlv::TLVWriteStorage>(&self, tag: &#krate::tlv::TLVTag, mut write: O) -> Result<(), #krate::error::Error> {
-                    let anchor = write.get_tail();
+                fn to_tlv2<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
+                    let anchor = tw.get_tail();
 
                     if let Err(err) = (|| {
-                        let mut tw = #krate::tlv::TLVWrite::new(&mut write);
                         match self {
                             #( Self::#variant_names => tw.#write_func(tag, #tags), )*
                         }
                     })() {
-                        write.rewind_to(anchor);
+                        tw.rewind_to(anchor);
                         Err(err)
                     } else {
                         Ok(())
@@ -269,7 +269,7 @@ fn gen_totlv_for_enum(
                     use #krate::tlv::ToTLVIter;
 
                     match self {
-                        #( Self::#variant_names => core::iter::empty().#write_func(tag, #tags), )*
+                        #( Self::#variant_names => ToTLVIter::#write_func(core::iter::empty(), tag, #tags), )*
                     }
                 }
 
@@ -277,7 +277,7 @@ fn gen_totlv_for_enum(
                     use #krate::tlv::ToTLVIter;
 
                     match self {
-                        #( Self::#variant_names => core::iter::empty().#write_func(tag, #tags), )*
+                        #( Self::#variant_names => ToTLVIter::#write_func(core::iter::empty(), tag, #tags), )*
                     }
                 }
             }
@@ -321,20 +321,19 @@ fn gen_totlv_for_enum(
 
         quote! {
             impl #generics #krate::tlv::ToTLV2 for #enum_name #generics {
-                fn to_tlv2<O: #krate::tlv::TLVWriteStorage>(&self, tag: &#krate::tlv::TLVTag, mut write: O) -> Result<(), #krate::error::Error> {
-                    let anchor = write.get_tail();
+                fn to_tlv2<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
+                    let anchor = tw.get_tail();
 
                     if let Err(err) = (|| {
-                        let mut tw = #krate::tlv::TLVWrite::new(&mut write);
                         tw.start_struct(tag)?;
                         match self {
                             #(
-                                Self::#variant_names(c) => c.to_tlv2(&#krate::tlv::TagType::Context(#tags), tw.storage_mut()),
+                                Self::#variant_names(c) => c.to_tlv2(&#krate::tlv::TagType::Context(#tags), &mut tw),
                             )*
                         }?;
                         tw.end_container()
                     })() {
-                        write.rewind_to(anchor);
+                        tw.rewind_to(anchor);
                         Err(err)
                     } else {
                         Ok(())
@@ -344,27 +343,29 @@ fn gen_totlv_for_enum(
                 fn to_tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
                     use #krate::tlv::ToTLVIter;
 
-                    core::iter::empty()
-                        .start_struct(tag)
-                        .chain(match self {
-                            #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TagType::Context(#tags))),
-                            )*
-                        })
-                        .end_container()
+                    let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+
+                    let iter = Iterator::chain(iter, match self {
+                        #(
+                            Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TagType::Context(#tags))),
+                        )*
+                    });
+
+                    ToTLVIter::end_container(iter)
                 }
 
                 fn into_tlv_iter(self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
                     use #krate::tlv::ToTLVIter;
 
-                    core::iter::empty()
-                        .start_struct(tag)
-                        .chain(match self {
-                            #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TagType::Context(#tags))),
-                            )*
-                        })
-                        .end_container()
+                    let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+
+                    let iter = Iterator::chain(iter, match self {
+                        #(
+                            Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TagType::Context(#tags))),
+                        )*
+                    });
+
+                    ToTLVIter::end_container(iter)
                 }
             }
         }
@@ -470,6 +471,15 @@ fn gen_fromtlv_for_struct(
     // instead
     //if !tlvargs.unordered {
     quote! {
+        // #[repr(transparent)]
+        // pub struct #struct_name_ref #generics (#krate::tlv::TLVElement<#lifetime>);
+
+        // impl #generics #krate::tlv::FromTLV<#lifetime> for #struct_name_ref #generics {
+        //     fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
+        //         Ok(Self(tlv.clone()))
+        //     }
+        // }
+
         impl #generics #krate::tlv::FromTLV<#lifetime> for #struct_name #generics {
             fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
                 let tlv = tlv.#datatype()?;
@@ -482,6 +492,16 @@ fn gen_fromtlv_for_struct(
                     #(#idents,
                     )*
                 })
+            }
+        }
+
+        impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #struct_name #generics {
+            type Error = #krate::error::Error;
+
+            fn try_from(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
+                use #krate::tlv::FromTLV;
+
+                Self::from_tlv(tlv)
             }
         }
     }
@@ -566,14 +586,24 @@ fn gen_fromtlv_for_enum(
             get_unit_enum_func_and_tags(enum_name, tlvargs.datatype.as_str(), tags);
 
         quote! {
-               impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
-                   fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
-                      Ok(match tlv.#read_func()? {
-                        #( #tags => Self::#variant_names, )*
-                        _ => return Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
-                      })
-                   }
-               }
+            impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
+                fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
+                    Ok(match tlv.#read_func()? {
+                    #( #tags => Self::#variant_names, )*
+                    _ => return Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
+                    })
+                }
+            }
+
+            impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #enum_name #generics {
+                type Error = #krate::error::Error;
+
+                fn try_from(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
+                    use #krate::tlv::FromTLV;
+
+                    Self::from_tlv(tlv)
+                }
+            }
         }
     } else {
         // tags MUST be context-tags (up to u8 range)
@@ -638,6 +668,16 @@ fn gen_fromtlv_for_enum(
                         )*
                         _ => Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
                     }
+                }
+            }
+
+            impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #enum_name #generics {
+                type Error = #krate::error::Error;
+
+                fn try_from(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
+                    use #krate::tlv::FromTLV;
+
+                    Self::from_tlv(tlv)
                 }
             }
         }

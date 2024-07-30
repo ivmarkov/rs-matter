@@ -16,7 +16,7 @@
  */
 use crate::{
     error::{Error, ErrorCode},
-    tlv::{FromTLV, TLVWriter, TagType, ToTLV},
+    tlv::{FromTLV, TLVTag, TLVWrite, ToTLV2},
 };
 
 pub const SYMM_KEY_LEN_BITS: usize = 128;
@@ -67,28 +67,37 @@ impl<'a> FromTLV<'a> for KeyPair {
     where
         Self: Sized,
     {
-        t.confirm_array()?.enter();
+        let array = t.array()?;
+        let mut iter = array.iter();
 
-        if let Some(mut array) = t.enter() {
-            let pub_key = array.next().ok_or(ErrorCode::Invalid)?.slice()?;
-            let priv_key = array.next().ok_or(ErrorCode::Invalid)?.slice()?;
+        let pub_key = iter.next().ok_or(ErrorCode::Invalid)??.str()?;
+        let priv_key = iter.next().ok_or(ErrorCode::Invalid)??.str()?;
 
-            KeyPair::new_from_components(pub_key, priv_key)
-        } else {
-            Err(ErrorCode::Invalid.into())
-        }
+        KeyPair::new_from_components(pub_key, priv_key)
     }
 }
 
-impl ToTLV for KeyPair {
-    fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
+impl ToTLV2 for KeyPair {
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.start_array(tag)?;
 
-        self.with_public_key(|key| tw.str16(TagType::Anonymous, key))?;
+        self.with_public_key(|key| tw.str(&TLVTag::Anonymous, key))?;
 
-        self.with_private_key(|key| tw.str16(TagType::Anonymous, key))?;
+        self.with_private_key(|key| tw.str(&TLVTag::Anonymous, key))?;
 
         tw.end_container()
+    }
+
+    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        todo!();
+
+        core::iter::empty()
+    }
+
+    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+        todo!();
+
+        core::iter::empty()
     }
 }
 

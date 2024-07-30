@@ -30,7 +30,7 @@ use crate::error::{Error, ErrorCode};
 use crate::mdns::{MdnsImpl, MdnsService};
 use crate::secure_channel::common::{sc_write, OpCode, SCStatusCodes, PROTO_ID_SECURE_CHANNEL};
 use crate::secure_channel::status_report::StatusReport;
-use crate::tlv::TLVList;
+use crate::tlv::TLVElement;
 use crate::utils::buf::BufferAccess;
 use crate::utils::{
     epoch::Epoch,
@@ -1127,7 +1127,7 @@ impl<const N: usize> Packet<N> {
             write!(
                 f,
                 "; TLV:\n----------------\n{}\n----------------\n",
-                TLVList::new(buf)
+                TLVElement::new(buf)
             )?;
         } else {
             write!(

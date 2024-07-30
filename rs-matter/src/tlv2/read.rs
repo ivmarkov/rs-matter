@@ -205,6 +205,10 @@ impl<'a> TLVElement<'a> {
         Ok(value)
     }
 
+    pub fn len(&self) -> Result<usize, Error> {
+        todo!()
+    }
+
     /// Return the value of this TLV element as an `i8`.
     ///
     /// Returns an error with code `ErrorCode::TLVTypeMismatch` if the wrapped TLV byte slice
@@ -624,8 +628,24 @@ impl<'a> TLVSequence<'a> {
 
     /// Return an iterator over the `TLVElement` instances in this `TLVSequence`.
     #[inline(always)]
-    pub fn iter(&self) -> TLVContainerIter<'a> {
-        TLVContainerIter::new(self.clone())
+    pub fn iter(&self) -> TLVSequenceIter<'a> {
+        TLVSequenceIter::new(self.clone())
+    }
+
+    /// A convenience utility that returns the first `TLVElement` in the sequence
+    /// which is tagged with a context tag (`TLVTag::Context`) where the context ID
+    /// is matching the ID passed in the `ctx` parameter.
+    ///
+    /// If there is no TLV element tagged with a context tag with the matching ID, the method
+    /// will return an error.
+    pub fn ctx(&self, ctx: u8) -> Result<TLVElement<'a>, Error> {
+        let element = self.find_ctx(ctx)?;
+
+        if element.is_empty() {
+            Err(ErrorCode::NotFound.into())
+        } else {
+            Ok(element)
+        }
     }
 
     /// A convenience utility that returns the first `TLVElement` in the sequence
@@ -916,16 +936,16 @@ impl<'a> fmt::Display for TLVSequence<'a> {
 /// A type representing an iterator over the elements of a `TLVSequence`.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct TLVContainerIter<'a>(TLVSequence<'a>);
+pub struct TLVSequenceIter<'a>(TLVSequence<'a>);
 
-impl<'a> TLVContainerIter<'a> {
+impl<'a> TLVSequenceIter<'a> {
     /// Create a new `TLVContainerIter` instance.
     const fn new(seq: TLVSequence<'a>) -> Self {
         Self(seq)
     }
 }
 
-impl<'a> Iterator for TLVContainerIter<'a> {
+impl<'a> Iterator for TLVSequenceIter<'a> {
     type Item = Result<TLVElement<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {

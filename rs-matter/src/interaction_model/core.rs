@@ -19,8 +19,8 @@ use core::time::Duration;
 
 use crate::{
     error::*,
-    tlv::{FromTLV, TLVArray, TLVElement, TLVWriter, TagType, ToTLV},
-    tlv2::{TLVTag, TLVWrite, TLVWriteStorage, ToTLV2, ToTLVIter},
+    tlv::{FromTLV, TLVArray, TLVElement, TagType},
+    tlv2::{TLVTag, TLVWrite, ToTLV2, ToTLVIter},
     transport::exchange::MessageMeta,
     utils::{epoch::Epoch, writebuf::WriteBuf},
 };
@@ -99,11 +99,8 @@ impl FromTLV<'_> for IMStatusCode {
 }
 
 impl ToTLV2 for IMStatusCode {
-    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-    where
-        O: TLVWriteStorage,
-    {
-        TLVWrite::new(write).u16(tag, *self as _)
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+        tw.u16(tag, *self as _)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
@@ -185,10 +182,8 @@ impl<'a> ReportDataReq<'a> {
 
 impl StatusResp {
     pub fn write(wb: &mut WriteBuf, status: IMStatusCode) -> Result<(), Error> {
-        let mut tw = TLVWriter::new(wb);
-
         let status = Self { status };
-        status.to_tlv(&mut tw, TagType::Anonymous)
+        status.to_tlv2(&TagType::Anonymous, wb)
     }
 }
 
@@ -202,14 +197,12 @@ impl TimedReq {
 
 impl SubscribeResp {
     pub fn write<'a>(
-        wb: &'a mut WriteBuf,
+        mut wb: &'a mut WriteBuf,
         subscription_id: u32,
         max_int: u16,
     ) -> Result<&'a [u8], Error> {
-        let mut tw = TLVWriter::new(wb);
-
         let resp = Self::new(subscription_id, max_int);
-        resp.to_tlv(&mut tw, TagType::Anonymous)?;
+        resp.to_tlv2(&TagType::Anonymous, &mut wb)?;
 
         Ok(wb.as_slice())
     }

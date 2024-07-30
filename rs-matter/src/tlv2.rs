@@ -435,8 +435,18 @@ impl<'a> TLVValue<'a> {
 }
 
 /// For backwards compatibility
+pub fn get_root_node(data: &[u8]) -> Result<TLVElement<'_>, Error> {
+    // TODO: Check for trailing data
+    TLVList::new(TLVElement::new(data))?.single_child()
+}
+
+/// For backwards compatibility
 pub fn get_root_node_struct(data: &[u8]) -> Result<TLVElement<'_>, Error> {
-    list_single_elem(data)
+    let element = get_root_node(data)?;
+
+    element.structure()?;
+
+    Ok(element)
 }
 
 /// Retrive the single TLV element from the provided TLV data slice.
@@ -447,11 +457,7 @@ pub fn get_root_node_struct(data: &[u8]) -> Result<TLVElement<'_>, Error> {
 pub fn list_single_elem(data: &[u8]) -> Result<TLVElement<'_>, Error> {
     // TODO: Check for trailing data
 
-    let element = TLVElement::new(data);
-
-    let seq = element.list()?;
-
-    let mut iter = seq.iter();
+    let mut iter = TLVList::new(TLVElement::new(data))?.into_iter();
 
     let list_element = iter.next().ok_or(ErrorCode::TLVNotFound)??;
 

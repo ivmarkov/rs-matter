@@ -24,7 +24,7 @@ use log::{error, info};
 use crate::acl::{self, AclEntry, AclMgr};
 use crate::data_model::objects::*;
 use crate::interaction_model::messages::ib::{attr_list_write, ListOperation};
-use crate::tlv::{FromTLV, TLVElement, TagType, ToTLV};
+use crate::tlv::{FromTLV, TLVElement, TLVWrite, TagType, ToTLV};
 use crate::transport::exchange::Exchange;
 use crate::{attribute_enum, error::*};
 
@@ -132,7 +132,7 @@ impl AccessControlCluster {
             } else {
                 match attr.attr_id.try_into()? {
                     Attributes::Acl(_) => {
-                        writer.start_array(AttrDataWriter::TAG)?;
+                        writer.start_array(&AttrDataWriter::TAG)?;
                         acl_mgr.for_each_acl(|entry| {
                             if !attr.fab_filter || attr.fab_idx == entry.fab_idx.get() {
                                 entry.to_tlv(&mut writer, TagType::Anonymous)?;
@@ -146,7 +146,7 @@ impl AccessControlCluster {
                     }
                     Attributes::Extension(_) => {
                         // Empty for now
-                        writer.start_array(AttrDataWriter::TAG)?;
+                        writer.start_array(&AttrDataWriter::TAG)?;
                         writer.end_container()?;
 
                         writer.complete()
@@ -319,7 +319,7 @@ mod tests {
         }
         let acl = AccessControlCluster::new(Dataver::new(0));
         // data is don't-care actually
-        let data = TLVElement::new(TagType::Anonymous, ElementType::True);
+        let data = TLVElement::new(&[TLVControl::new(TLVTagType::Anonymous, TLVElementType::Null)]);
 
         // Test , Delete Fabric 1's index 0
         let result = acl.write_acl_attr(&mut acl_mgr, &ListOperation::DeleteItem(0), &data, FAB_1);

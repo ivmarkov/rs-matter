@@ -155,7 +155,7 @@ impl<T, G> Maybe<T, G> {
     }
 
     /// Return whether the `Maybe` value is empty.
-    pub fn is_empty(&self) -> bool {
+    pub fn is_none(&self) -> bool {
         !self.some
     }
 

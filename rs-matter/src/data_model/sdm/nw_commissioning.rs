@@ -24,7 +24,7 @@ use crate::data_model::objects::{
     Cluster, Dataver, Handler, NonBlockingHandler, Quality, ATTRIBUTE_LIST, FEATURE_MAP,
 };
 use crate::error::{Error, ErrorCode};
-use crate::tlv::{OctetStr, TLVArray, TagType, ToTLV};
+use crate::tlv::{OctetStr, TLVArray, TLVWrite, TagType, ToTLV};
 use crate::transport::exchange::Exchange;
 use crate::{attribute_enum, command_enum};
 

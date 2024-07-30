@@ -37,11 +37,12 @@ macro_rules! bitflags_tlv {
         }
 
         impl $crate::tlv2::ToTLV2 for $enum_name {
-            fn to_tlv2<O>(&self, tag: &$crate::tlv2::TLVTag, write: O) -> Result<(), Error>
-            where
-                O: $crate::tlv2::TLVWriteStorage,
-            {
-                $crate::tlv2::TLVWrite::new(write).$type(tag, self.bits())
+            fn to_tlv2<W: $crate::tlv2::TLVWrite>(
+                &self,
+                tag: &$crate::tlv2::TLVTag,
+                mut tw: W,
+            ) -> Result<(), Error> {
+                tw.$type(tag, self.bits())
             }
 
             fn to_tlv_iter(

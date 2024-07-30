@@ -29,7 +29,9 @@ use crate::crypto::{self, hkdf_sha256, HmacSha256, KeyPair};
 use crate::error::{Error, ErrorCode};
 use crate::group_keys::KeySet;
 use crate::mdns::{Mdns, ServiceMode};
-use crate::tlv::{self, FromTLV, OctetStr, TLVList, TLVWriter, TagType, ToTLV, UtfStr};
+use crate::tlv::{
+    FromTLV, OctetStr, TLVElement, TLVWrite, TLVWriter, TagType, ToTLV, ToTLV2, UtfStr,
+};
 use crate::utils::{
     init::{init, Init},
     vec::Vec,
@@ -153,7 +155,7 @@ impl Fabric {
     }
 
     pub fn sign_msg(&self, msg: &[u8], signature: &mut [u8]) -> Result<usize, Error> {
-        self.key_pair.sign_msg(msg, signature)
+        self.key_pair.sign_msg(msg.iter().copied(), signature)
     }
 
     pub fn get_node_id(&self) -> u64 {
@@ -178,7 +180,7 @@ impl Fabric {
             vendor_id: self.vendor_id,
             fabric_id: self.fabric_id,
             node_id: self.node_id,
-            label: UtfStr(self.label.as_bytes()),
+            label: self.label.as_str(),
             fab_idx,
         };
 
@@ -218,13 +220,19 @@ impl FabricMgr {
     }
 
     pub fn load(&mut self, data: &[u8], mdns: &dyn Mdns) -> Result<(), Error> {
+        let entries = TLVElement::new(data).array()?.iter();
+
         for fabric in self.fabrics.iter().flatten() {
             mdns.remove(&fabric.mdns_service_name)?;
         }
 
-        let root = TLVList::new(data).iter().next().ok_or(ErrorCode::Invalid)?;
+        for entry in entries {
+            let entry = entry?;
 
-        tlv::vec_from_tlv(&mut self.fabrics, &root)?;
+            self.fabrics
+                .push(Option::<Fabric>::from_tlv(&entry)?)
+                .map_err(|_| ErrorCode::NoSpace)?;
+        }
 
         for fabric in self.fabrics.iter().flatten() {
             mdns.add(&fabric.mdns_service_name, ServiceMode::Commissioned)?;
@@ -242,7 +250,7 @@ impl FabricMgr {
 
             self.fabrics
                 .as_slice()
-                .to_tlv(&mut tw, TagType::Anonymous)?;
+                .to_tlv2(&TagType::Anonymous, &mut tw)?;
 
             self.changed = false;
 

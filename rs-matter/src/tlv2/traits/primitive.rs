@@ -19,7 +19,7 @@
 
 use crate::error::{Error, ErrorCode};
 
-use super::{FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV2};
 
 macro_rules! fromtlv_for {
     ($($t:ident)*) => {
@@ -49,11 +49,8 @@ macro_rules! totlv_for {
     ($($t:ident)*) => {
         $(
             impl ToTLV2 for $t {
-                fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-                where
-                    O: TLVWriteStorage,
-                {
-                    TLVWrite::new(write).$t(tag, *self)
+                fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+                    tw.$t(tag, *self)
                 }
 
                 fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
@@ -76,11 +73,8 @@ macro_rules! totlv_for_nonzero {
     ($($t:ident:$n:ty)*) => {
         $(
             impl ToTLV2 for $n {
-                fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-                where
-                    O: TLVWriteStorage,
-                {
-                    TLVWrite::new(write).$t(tag, self.get())
+                fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+                    tw.$t(tag, self.get())
                 }
 
                 fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {

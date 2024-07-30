@@ -27,14 +27,16 @@
 //! I.e. serializing `[0; 3]` will result in a TLV array with 3 elements of type u8 and value 0, rather than a TLV
 //! octet string containing 3 zero bytes.
 
+use core::borrow::{Borrow, BorrowMut};
 use core::fmt::Debug;
 use core::hash::Hash;
+use core::ops::{Deref, DerefMut};
 
 use crate::error::{Error, ErrorCode};
 use crate::utils::init::{self, init, AsFallibleInit};
 use crate::utils::vec::Vec;
 
-use super::{FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriteStorage, ToTLV2};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV2};
 
 /// For backwards compatibility
 pub type OctetStr<'a> = Octets<'a>;
@@ -56,6 +58,14 @@ impl<'a> Octets<'a> {
     }
 }
 
+impl<'a> Deref for Octets<'a> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
 impl<'a> FromTLV<'a> for Octets<'a> {
     fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
         Ok(Octets(tlv.str()?))
@@ -63,11 +73,8 @@ impl<'a> FromTLV<'a> for Octets<'a> {
 }
 
 impl<'a> ToTLV2 for Octets<'a> {
-    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-    where
-        O: TLVWriteStorage,
-    {
-        TLVWrite::new(write).str(tag, self.0)
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+        tw.str(tag, self.0)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
@@ -107,6 +114,32 @@ impl<const N: usize> OctetsOwned<N> {
     }
 }
 
+impl<const N: usize> Borrow<[u8]> for OctetsOwned<N> {
+    fn borrow(&self) -> &[u8] {
+        &self.vec
+    }
+}
+
+impl<const N: usize> BorrowMut<[u8]> for OctetsOwned<N> {
+    fn borrow_mut(&mut self) -> &mut [u8] {
+        &mut self.vec
+    }
+}
+
+impl<const N: usize> Deref for OctetsOwned<N> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.vec
+    }
+}
+
+impl<const N: usize> DerefMut for OctetsOwned<N> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.vec
+    }
+}
+
 impl<'a, const N: usize> FromTLV<'a> for OctetsOwned<N> {
     fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
         Ok(Self {
@@ -127,11 +160,8 @@ impl<'a, const N: usize> FromTLV<'a> for OctetsOwned<N> {
 }
 
 impl<const N: usize> ToTLV2 for OctetsOwned<N> {
-    fn to_tlv2<O>(&self, tag: &TLVTag, write: O) -> Result<(), Error>
-    where
-        O: TLVWriteStorage,
-    {
-        TLVWrite::new(write).str(tag, &self.vec)
+    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+        tw.str(tag, &self.vec)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {

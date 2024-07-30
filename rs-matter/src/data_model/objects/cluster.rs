@@ -31,7 +31,7 @@ use crate::{
         },
     },
     // TODO: This layer shouldn't really depend on the TLV layer, should create an abstraction layer
-    tlv::{Nullable, TLVTag, TLVWriter},
+    tlv::{Nullable, TLVTag, TLVWrite},
 };
 use core::fmt::{self, Debug};
 
@@ -311,7 +311,7 @@ impl<'a> Cluster<'a> {
     pub fn read(&self, attr: AttrId, mut writer: AttrDataWriter) -> Result<(), Error> {
         match attr.try_into()? {
             GlobalElements::AttributeList => {
-                self.encode_attribute_ids(&AttrDataWriter::TAG, &mut writer)?;
+                self.encode_attribute_ids(&AttrDataWriter::TAG, &mut *writer)?;
                 writer.complete()
             }
             GlobalElements::FeatureMap => writer.set(self.feature_map),
@@ -322,7 +322,7 @@ impl<'a> Cluster<'a> {
         }
     }
 
-    fn encode_attribute_ids(&self, tag: &TLVTag, tw: &mut TLVWriter) -> Result<(), Error> {
+    fn encode_attribute_ids<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.start_array(tag)?;
         for a in self.attributes {
             tw.u16(&TLVTag::Anonymous, a.id)?;

@@ -15,9 +15,37 @@
  *    limitations under the License.
  */
 
-use crate::{error::Error, utils::writebuf::WriteBuf};
+use crate::{
+    error::{Error, ErrorCode},
+    utils::writebuf::WriteBuf,
+};
 
 use super::{TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType};
+
+/// For backwards compatibility
+pub struct TLVWriter<'a, 'b>(&'a mut WriteBuf<'b>);
+
+impl<'a, 'b> TLVWriter<'a, 'b> {
+    pub fn new(buf: &'a mut WriteBuf<'b>) -> Self {
+        Self(buf)
+    }
+}
+
+impl<'a, 'b> TLVWrite for TLVWriter<'a, 'b> {
+    type Position = usize;
+
+    fn write(&mut self, byte: u8) -> Result<(), Error> {
+        WriteBuf::append(self.0, &[byte])
+    }
+
+    fn get_tail(&self) -> Self::Position {
+        WriteBuf::get_tail(self.0)
+    }
+
+    fn rewind_to(&mut self, pos: Self::Position) {
+        WriteBuf::rewind_tail_to(self.0, pos)
+    }
+}
 
 /// A trait representing a storage where data can be serialized as a TLV stream.
 /// by synchronously emitting bytes to the storage.
@@ -33,85 +61,11 @@ use super::{TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType};
 /// compatibility with code implemented prior to the introduction of this trait.
 ///
 /// For iterator-style TLV serialization look at the `ToTLVIter` trait.
-pub trait TLVWriteStorage {
+pub trait TLVWrite {
     type Position;
 
-    fn write(&mut self, byte: u8) -> Result<(), Error>;
-
-    fn get_tail(&self) -> Self::Position;
-
-    fn rewind_to(&mut self, _pos: Self::Position);
-}
-
-impl<T> TLVWriteStorage for &mut T
-where
-    T: TLVWriteStorage,
-{
-    type Position = T::Position;
-
-    fn write(&mut self, byte: u8) -> Result<(), Error> {
-        (**self).write(byte)
-    }
-
-    fn get_tail(&self) -> Self::Position {
-        (**self).get_tail()
-    }
-
-    fn rewind_to(&mut self, pos: Self::Position) {
-        (**self).rewind_to(pos)
-    }
-}
-
-impl<'a> TLVWriteStorage for WriteBuf<'a> {
-    type Position = usize;
-
-    fn write(&mut self, byte: u8) -> Result<(), Error> {
-        WriteBuf::append(self, &[byte])
-    }
-
-    fn get_tail(&self) -> Self::Position {
-        WriteBuf::get_tail(self)
-    }
-
-    fn rewind_to(&mut self, pos: Self::Position) {
-        WriteBuf::rewind_tail_to(self, pos)
-    }
-}
-
-pub type TLVWriter<'a, 'b> = TLVWrite<&'b mut WriteBuf<'a>>;
-
-/// A newtype around `TLVWriteStorage` implementations providing utility methods
-/// for serializing TLV elements.
-///
-/// For iterator-style TLV serialization look at the `ToTLVIter` trait.
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct TLVWrite<T>(T);
-
-impl<T> TLVWrite<T>
-where
-    T: TLVWriteStorage,
-{
-    /// Create a new TLVWrite instance with the provided storage.
-    #[inline(always)]
-    pub const fn new(storage: T) -> Self {
-        TLVWrite(storage)
-    }
-
-    /// Consume the TLVWrite instance and return the storage.
-    #[inline(always)]
-    pub fn into_storage(self) -> T {
-        self.0
-    }
-
-    /// Get a mutable reference to the storage.
-    #[inline(always)]
-    pub fn storage_mut(&mut self) -> &mut T {
-        &mut self.0
-    }
-
     /// Write a TLV tag and value to the TLV stream.
-    pub fn tlv(&mut self, tag: &TLVTag, value: &TLVValue) -> Result<(), Error> {
+    fn tlv(&mut self, tag: &TLVTag, value: &TLVValue) -> Result<(), Error> {
         self.raw_value(tag, value.value_type(), &[])?;
 
         match value {
@@ -155,17 +109,17 @@ where
     }
 
     /// Write a tag and a TLV S8 value to the TLV stream.
-    pub fn i8(&mut self, tag: &TLVTag, data: i8) -> Result<(), Error> {
+    fn i8(&mut self, tag: &TLVTag, data: i8) -> Result<(), Error> {
         self.raw_value(tag, TLVValueType::S8, &data.to_le_bytes())
     }
 
     /// Write a tag and a TLV U8 value to the TLV stream.
-    pub fn u8(&mut self, tag: &TLVTag, data: u8) -> Result<(), Error> {
+    fn u8(&mut self, tag: &TLVTag, data: u8) -> Result<(), Error> {
         self.raw_value(tag, TLVValueType::U8, &data.to_le_bytes())
     }
 
     /// Write a tag and a TLV S16 or (if the data is small enough) S8 value to the TLV stream.
-    pub fn i16(&mut self, tag: &TLVTag, data: i16) -> Result<(), Error> {
+    fn i16(&mut self, tag: &TLVTag, data: i16) -> Result<(), Error> {
         if data >= i8::MIN as i16 && data <= i8::MAX as i16 {
             self.i8(tag, data as i8)
         } else {
@@ -174,7 +128,7 @@ where
     }
 
     /// Write a tag and a TLV U16 or (if the data is small enough) U8 value to the TLV stream.
-    pub fn u16(&mut self, tag: &TLVTag, data: u16) -> Result<(), Error> {
+    fn u16(&mut self, tag: &TLVTag, data: u16) -> Result<(), Error> {
         if data <= u8::MAX as u16 {
             self.u8(tag, data as u8)
         } else {
@@ -183,7 +137,7 @@ where
     }
 
     /// Write a tag and a TLV S32 or (if the data is small enough) S16 or S8 value to the TLV stream.
-    pub fn i32(&mut self, tag: &TLVTag, data: i32) -> Result<(), Error> {
+    fn i32(&mut self, tag: &TLVTag, data: i32) -> Result<(), Error> {
         if data >= i16::MIN as i32 && data <= i16::MAX as i32 {
             self.i16(tag, data as i16)
         } else {
@@ -192,7 +146,7 @@ where
     }
 
     /// Write a tag and a TLV U32 or (if the data is small enough) U16 or U8 value to the TLV stream.
-    pub fn u32(&mut self, tag: &TLVTag, data: u32) -> Result<(), Error> {
+    fn u32(&mut self, tag: &TLVTag, data: u32) -> Result<(), Error> {
         if data <= u16::MAX as u32 {
             self.u16(tag, data as u16)
         } else {
@@ -201,7 +155,7 @@ where
     }
 
     /// Write a tag and a TLV S64 or (if the data is small enough) S32, S16, or S8 value to the TLV stream.
-    pub fn i64(&mut self, tag: &TLVTag, data: i64) -> Result<(), Error> {
+    fn i64(&mut self, tag: &TLVTag, data: i64) -> Result<(), Error> {
         if data >= i32::MIN as i64 && data <= i32::MAX as i64 {
             self.i32(tag, data as i32)
         } else {
@@ -210,7 +164,7 @@ where
     }
 
     /// Write a tag and a TLV U64 or (if the data is small enough) U32, U16, or U8 value to the TLV stream.
-    pub fn u64(&mut self, tag: &TLVTag, data: u64) -> Result<(), Error> {
+    fn u64(&mut self, tag: &TLVTag, data: u64) -> Result<(), Error> {
         if data <= u32::MAX as u64 {
             self.u32(tag, data as u32)
         } else {
@@ -222,7 +176,7 @@ where
     ///
     /// The exact octet string type (Str8l, Str16l, Str32l, or Str64l) is chosen based on the length of the data,
     /// whereas the smallest type filling the provided data length is chosen.
-    pub fn str(&mut self, tag: &TLVTag, data: &[u8]) -> Result<(), Error> {
+    fn str(&mut self, tag: &TLVTag, data: &[u8]) -> Result<(), Error> {
         self.stri(tag, data.len(), data.into_iter().copied())
     }
 
@@ -234,7 +188,7 @@ where
     ///
     /// NOTE: The length of the Octet String must be provided by the user and it must match the
     /// number of bytes returned by the provided iterator, or else the generated TLV stream will be invalid.
-    pub fn stri<I>(&mut self, tag: &TLVTag, len: usize, data: I) -> Result<(), Error>
+    fn stri<I>(&mut self, tag: &TLVTag, len: usize, data: I) -> Result<(), Error>
     where
         I: IntoIterator<Item = u8>,
     {
@@ -255,7 +209,7 @@ where
     ///
     /// The exact UTF-8 string type (Utf8l, Utf16l, Utf32l, or Utf64l) is chosen based on the length of the data,
     /// whereas the smallest type filling the provided data length is chosen.
-    pub fn utf8(&mut self, tag: &TLVTag, data: &str) -> Result<(), Error> {
+    fn utf8(&mut self, tag: &TLVTag, data: &str) -> Result<(), Error> {
         self.utf8i(tag, data.len(), data.as_bytes().into_iter().copied())
     }
 
@@ -269,7 +223,7 @@ where
     /// number of bytes returned by the provided iterator, or else the generated TLV stream will be invalid.
     ///
     /// NOTE 2: The provided iterator must return valid UTF-8 bytes, or else the generated TLV stream will be invalid.
-    pub fn utf8i<I>(&mut self, tag: &TLVTag, len: usize, data: I) -> Result<(), Error>
+    fn utf8i<I>(&mut self, tag: &TLVTag, len: usize, data: I) -> Result<(), Error>
     where
         I: IntoIterator<Item = u8>,
     {
@@ -290,7 +244,7 @@ where
     ///
     /// NOTE: The user must call `end_container` after writing all the Struct fields
     /// to close the Struct container or else the generated TLV stream will be invalid.
-    pub fn start_struct(&mut self, tag: &TLVTag) -> Result<(), Error> {
+    fn start_struct(&mut self, tag: &TLVTag) -> Result<(), Error> {
         self.raw_value(tag, TLVValueType::Struct, &[])
     }
 
@@ -298,7 +252,7 @@ where
     ///
     /// NOTE: The user must call `end_container` after writing all the Array elements
     /// to close the Array container or else the generated TLV stream will be invalid.
-    pub fn start_array(&mut self, tag: &TLVTag) -> Result<(), Error> {
+    fn start_array(&mut self, tag: &TLVTag) -> Result<(), Error> {
         self.raw_value(tag, TLVValueType::Array, &[])
     }
 
@@ -306,25 +260,37 @@ where
     ///
     /// NOTE: The user must call `end_container` after writing all the List elements
     /// to close the List container or else the generated TLV stream will be invalid.
-    pub fn start_list(&mut self, tag: &TLVTag) -> Result<(), Error> {
+    fn start_list(&mut self, tag: &TLVTag) -> Result<(), Error> {
         self.raw_value(tag, TLVValueType::List, &[])
+    }
+
+    /// Write a tag and a value indicating the start of a Struct TLV container.
+    ///
+    /// NOTE: The user must call `end_container` after writing all the Struct fields
+    /// to close the Struct container or else the generated TLV stream will be invalid.
+    fn start_container(&mut self, tag: &TLVTag, container_type: TLVValueType) -> Result<(), Error> {
+        if !container_type.is_container() {
+            Err(ErrorCode::TLVTypeMismatch)?;
+        }
+
+        self.raw_value(tag, container_type, &[])
     }
 
     /// Write a value indicating the end of a Struct, Array, or List TLV container.
     ///
     /// NOTE: This method must be called only when the corresponding container has been opened
     /// using `start_struct`, `start_array`, or `start_list`, or else the generated TLV stream will be invalid.
-    pub fn end_container(&mut self) -> Result<(), Error> {
+    fn end_container(&mut self) -> Result<(), Error> {
         self.write(TLVControl::new(TLVTagType::Anonymous, TLVValueType::EndCnt).as_raw())
     }
 
     /// Write a tag and a TLV Null value to the TLV stream.
-    pub fn null(&mut self, tag: &TLVTag) -> Result<(), Error> {
+    fn null(&mut self, tag: &TLVTag) -> Result<(), Error> {
         self.raw_value(tag, TLVValueType::Null, &[])
     }
 
     /// Write a tag and a TLV True or False value to the TLV stream.
-    pub fn bool(&mut self, tag: &TLVTag, val: bool) -> Result<(), Error> {
+    fn bool(&mut self, tag: &TLVTag, val: bool) -> Result<(), Error> {
         self.raw_value(
             tag,
             if val {
@@ -337,7 +303,7 @@ where
     }
 
     /// Write a tag and a raw, already-encoded TLV value represented as a byte slice.
-    pub(crate) fn raw_value(
+    fn raw_value(
         &mut self,
         tag: &TLVTag,
         value_type: TLVValueType,
@@ -369,29 +335,47 @@ where
         Ok(())
     }
 
-    /// Append a single raw byte to the TLV stream.
-    fn write(&mut self, byte: u8) -> Result<(), Error> {
-        self.0.write(byte)
-    }
+    fn write(&mut self, byte: u8) -> Result<(), Error>;
+
+    fn get_tail(&self) -> Self::Position;
+
+    fn rewind_to(&mut self, _pos: Self::Position);
 }
 
-impl<T> From<T> for TLVWrite<T>
+impl<T> TLVWrite for &mut T
 where
-    T: TLVWriteStorage,
+    T: TLVWrite,
 {
-    fn from(storage: T) -> Self {
-        TLVWrite::new(storage)
+    type Position = T::Position;
+
+    fn write(&mut self, byte: u8) -> Result<(), Error> {
+        (**self).write(byte)
+    }
+
+    fn get_tail(&self) -> Self::Position {
+        (**self).get_tail()
+    }
+
+    fn rewind_to(&mut self, pos: Self::Position) {
+        (**self).rewind_to(pos)
     }
 }
 
-// impl<T> From<TLVWrite<T>> for T
-// where
-//     T: TLVWriteStorage,
-// {
-//     fn from(tlv_write: TLVWrite<T>) -> T {
-//         tlv_write.into_storage()
-//     }
-// }
+impl<'a> TLVWrite for WriteBuf<'a> {
+    type Position = usize;
+
+    fn write(&mut self, byte: u8) -> Result<(), Error> {
+        WriteBuf::append(self, &[byte])
+    }
+
+    fn get_tail(&self) -> Self::Position {
+        WriteBuf::get_tail(self)
+    }
+
+    fn rewind_to(&mut self, pos: Self::Position) {
+        WriteBuf::rewind_tail_to(self, pos)
+    }
+}
 
 #[cfg(test)]
 mod tests {

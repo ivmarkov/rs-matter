@@ -76,9 +76,13 @@ where
         }
     }
 
+    pub fn element(&self) -> &TLVElement<'a> {
+        &self.tlv
+    }
+
     /// Returns an iterator over the elements of the array.
     pub fn iter(&self) -> TLVContainerIter<'a, T> {
-        TLVContainerIter::new(self.tlv.array().unwrap().iter())
+        TLVContainerIter::new(self.tlv.container().unwrap().iter())
     }
 
     /// Return the single child of the container.
@@ -248,13 +252,13 @@ where
     pub fn try_next(&mut self) -> Option<Result<T, Error>> {
         let tlv = self.iter.next()?;
 
-        Some(tlv.and_then(|tlv| tlv.confirm_anon().and_then(|_| T::from_tlv(&tlv))))
+        Some(tlv.and_then(|tlv| T::from_tlv(&tlv)))
     }
 
     pub fn try_next_init(&mut self) -> Option<Result<impl init::Init<T, Error> + 'a, Error>> {
         let tlv = self.iter.next()?;
 
-        Some(tlv.and_then(|tlv| tlv.confirm_anon().map(move |_| T::init_from_tlv(tlv))))
+        Some(tlv.map(|tlv| T::init_from_tlv(tlv)))
     }
 }
 

@@ -429,10 +429,26 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
             TLVTag::CommonPrf32(v) => Either6Iter::Fourth(control._raw_bytes(v.to_le_bytes())),
             TLVTag::ImplPrf16(v) => Either6Iter::Third(control._raw_bytes(v.to_le_bytes())),
             TLVTag::ImplPrf32(v) => Either6Iter::Fourth(control._raw_bytes(v.to_le_bytes())),
-            TLVTag::FullQual48(v) => {
-                Either6Iter::Fifth(control._raw_bytes(v.to_le_bytes().into_iter().take(6)))
-            }
-            TLVTag::FullQual64(v) => Either6Iter::Sixth(control._raw_bytes(v.to_be_bytes())),
+            TLVTag::FullQual48 {
+                vendor_id,
+                profile,
+                tag,
+            } => Either6Iter::Fifth(
+                control
+                    ._raw_bytes(vendor_id.to_le_bytes())
+                    ._raw_bytes(profile.to_le_bytes())
+                    ._raw_bytes(tag.to_le_bytes()),
+            ),
+            TLVTag::FullQual64 {
+                vendor_id,
+                profile,
+                tag,
+            } => Either6Iter::Sixth(
+                control
+                    ._raw_bytes(vendor_id.to_le_bytes())
+                    ._raw_bytes(profile.to_le_bytes())
+                    ._raw_bytes(tag.to_le_bytes()),
+            ),
         }
     }
 

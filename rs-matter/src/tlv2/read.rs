@@ -19,7 +19,7 @@ use core::fmt;
 
 use crate::error::{Error, ErrorCode};
 
-use super::{pad, TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType};
+use super::{pad, TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType, TLV};
 
 /// A newtype for reading TLV-encoded data from Rust `&[u8]` slices.
 ///
@@ -117,6 +117,13 @@ impl<'a> TLVElement<'a> {
         self.0.raw_value()
     }
 
+    pub fn tlv(&self) -> Result<TLV<'a>, Error> {
+        Ok(TLV {
+            tag: self.tag()?,
+            value: self.value()?,
+        })
+    }
+
     /// Return a `TLVTag` enum representing the tag of this `TLVElement`.
     ///
     /// Returns an error with code `ErrorCode::TLVTypeMismatch` if the wrapped TLV
@@ -146,12 +153,16 @@ impl<'a> TLVElement<'a> {
             TLVTagType::ImplPrf32 => {
                 TLVTag::ImplPrf32(u32::from_le_bytes(slice.try_into().unwrap()))
             }
-            TLVTagType::FullQual48 => TLVTag::FullQual64(u64::from_le_bytes([
-                slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], 0, 0,
-            ])),
-            TLVTagType::FullQual64 => {
-                TLVTag::FullQual64(u64::from_le_bytes(slice.try_into().unwrap()))
-            }
+            TLVTagType::FullQual48 => TLVTag::FullQual48 {
+                vendor_id: u16::from_le_bytes([slice[0], slice[1]]),
+                profile: u16::from_le_bytes([slice[2], slice[3]]),
+                tag: u16::from_le_bytes([slice[4], slice[5]]),
+            },
+            TLVTagType::FullQual64 => TLVTag::FullQual64 {
+                vendor_id: u16::from_le_bytes([slice[0], slice[1]]),
+                profile: u16::from_le_bytes([slice[2], slice[3]]),
+                tag: u32::from_le_bytes([slice[4], slice[5], slice[6], slice[7]]),
+            },
         };
 
         Ok(tag)
@@ -222,7 +233,7 @@ impl<'a> TLVElement<'a> {
         if matches!(control.value_type, TLVValueType::S8) {
             Ok(i8::from_le_bytes(
                 self.0
-                    .value_start(control)?
+                    .value(control)?
                     .try_into()
                     .map_err(|_| ErrorCode::InvalidData)?,
             ))
@@ -244,7 +255,7 @@ impl<'a> TLVElement<'a> {
         if matches!(control.value_type, TLVValueType::U8) {
             Ok(u8::from_le_bytes(
                 self.0
-                    .value_start(control)?
+                    .value(control)?
                     .try_into()
                     .map_err(|_| ErrorCode::InvalidData)?,
             ))
@@ -266,7 +277,7 @@ impl<'a> TLVElement<'a> {
         if matches!(control.value_type, TLVValueType::S16) {
             Ok(i16::from_le_bytes(
                 self.0
-                    .value_start(control)?
+                    .value(control)?
                     .try_into()
                     .map_err(|_| ErrorCode::InvalidData)?,
             ))
@@ -382,6 +393,50 @@ impl<'a> TLVElement<'a> {
             ))
         } else {
             self.u32().map(|a| a.into())
+        }
+    }
+
+    /// Return the value of this TLV element as an `f32`.
+    ///
+    /// Returns an error with code `ErrorCode::TLVTypeMismatch` if the wrapped TLV byte slice
+    /// contains malformed TLV data.
+    ///
+    /// Returns an error with code `ErrorCode::InvalidData` if the value of the TLV element is not
+    /// a TLV F32 value.
+    pub fn f32(&self) -> Result<f32, Error> {
+        let control = self.control()?;
+
+        if matches!(control.value_type, TLVValueType::F32) {
+            Ok(f32::from_le_bytes(
+                self.0
+                    .value(control)?
+                    .try_into()
+                    .map_err(|_| ErrorCode::InvalidData)?,
+            ))
+        } else {
+            Err(ErrorCode::TLVTypeMismatch.into())
+        }
+    }
+
+    /// Return the value of this TLV element as an `f64`.
+    ///
+    /// Returns an error with code `ErrorCode::TLVTypeMismatch` if the wrapped TLV byte slice
+    /// contains malformed TLV data.
+    ///
+    /// Returns an error with code `ErrorCode::InvalidData` if the value of the TLV element is not
+    /// a TLV F64 value.
+    pub fn f64(&self) -> Result<f64, Error> {
+        let control = self.control()?;
+
+        if matches!(control.value_type, TLVValueType::F64) {
+            Ok(f64::from_le_bytes(
+                self.0
+                    .value(control)?
+                    .try_into()
+                    .map_err(|_| ErrorCode::InvalidData)?,
+            ))
+        } else {
+            Err(ErrorCode::TLVTypeMismatch.into())
         }
     }
 
@@ -531,7 +586,7 @@ impl<'a> TLVElement<'a> {
         if matches!(self.control()?.value_type, TLVValueType::List) {
             self.0.next_enter()
         } else {
-            Err(ErrorCode::InvalidData.into())
+            Err(ErrorCode::TLVTypeMismatch.into())
         }
     }
 
@@ -564,7 +619,7 @@ impl<'a> TLVElement<'a> {
         if matches!(self.control()?.tag_type, TLVTagType::Anonymous) {
             Ok(())
         } else {
-            Err(ErrorCode::InvalidData.into())
+            Err(ErrorCode::TLVTypeMismatch.into())
         }
     }
 
@@ -702,24 +757,39 @@ impl<'a> TLVSequence<'a> {
         Ok(Self(self.next_start(control)?))
     }
 
-    /// Return a sub-sequence representing the TLV-encoded elements after the first one on the sequence.
-    ///
-    /// As the name suggests, if the first TLV element in the sequence is a container, this method will return a sub-sequence
-    /// which corresponds to the elements AFTER the container element (i.e., the method "skips over" the elements of the container element).
-    ///
-    /// If the sequence is empty, or the sequence contains just one element, the method will return an empty `TLVSequence`.
-    ///
-    /// Unlike `next_enter`, this method will never return a TLV `TLVValueType::EndCnt` marker,
-    /// which - formally speaking - is not a TLVElement, but a TLV control byte that marks the end of a container.
-    ///
-    /// Instead, if a TLV `TLVValueType::EndCnt` marker is encountered, the method will return the empty sequence.
-    fn container_next(&self) -> Result<Self, Error> {
+    fn current(&self) -> Result<TLVElement<'a>, Error> {
+        if self.0.is_empty() {
+            return Ok(TLVElement(Self::EMPTY));
+        }
+
         let control = self.control()?;
 
         if control.value_type.is_container_end() {
             control.confirm_container_end()?;
 
+            return Ok(TLVElement(Self::EMPTY));
+        }
+
+        return Ok(TLVElement::new(self.0));
+    }
+
+    /// Return a sub-sequence representing the TLV-encoded elements after the first one on the sequence.
+    ///
+    /// As the name suggests, if the first TLV element in the sequence is a container, this method will return a sub-sequence
+    /// which corresponds to the elements AFTER the container element (i.e., the method "skips over" the elements of the container element).
+    ///
+    /// If the sequence is empty or the sequence starts with a container-end control byte, the method will return the current sequence.
+    fn container_next(&self) -> Result<Self, Error> {
+        if self.0.is_empty() {
             return Ok(Self::EMPTY);
+        }
+
+        let control = self.control()?;
+
+        if control.value_type.is_container_end() {
+            control.confirm_container_end()?;
+
+            return Ok(self.clone());
         }
 
         let mut next = self.next_enter()?;
@@ -943,6 +1013,12 @@ impl<'a> TLVSequenceIter<'a> {
     const fn new(seq: TLVSequence<'a>) -> Self {
         Self(seq)
     }
+
+    fn advance(&mut self) -> Result<(), Error> {
+        self.0 = self.0.container_next()?;
+
+        Ok(())
+    }
 }
 
 impl<'a> Iterator for TLVSequenceIter<'a> {
@@ -950,18 +1026,19 @@ impl<'a> Iterator for TLVSequenceIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.0
-            .container_next()
-            .map(|next_seq| (!next_seq.0.is_empty()).then(|| TLVElement(next_seq)))
+            .current()
+            .and_then(|current| self.advance().map(|_| current))
+            .map(|elem| (!elem.is_empty()).then_some(elem))
             .transpose()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use log::info;
+    use core::{f32, f64};
 
     use super::TLVElement;
-    use crate::error::ErrorCode;
+    use crate::tlv2::{TLVArray, TLVList, TLVSequence, TLVStruct, TLVTag, TLVValue, TLV};
 
     // #[test]
     // fn test_short_length_tag() {
@@ -985,16 +1062,16 @@ mod tests {
     //     assert_eq!(tlv_iter.next(), None);
     // }
 
-    #[test]
-    fn test_short_length_value_immediate() {
-        // The 0x24 is a a tagged integer, here we leave out the integer value
-        let b = [0x15, 0x24, 0x0];
-        let tlvlist = TLVList::new(&b);
-        let mut tlv_iter = tlvlist.iter();
-        // Skip the 0x15
-        tlv_iter.next();
-        assert_eq!(tlv_iter.next(), None);
-    }
+    // #[test]
+    // fn test_short_length_value_immediate() {
+    //     // The 0x24 is a a tagged integer, here we leave out the integer value
+    //     let b = [0x15, 0x24, 0x0, 0x0];
+    //     let tlvlist = TLVStruct::<TLVElement>::new(TLVElement::new(&b)).unwrap();
+    //     let mut tlv_iter = tlvlist.iter();
+    //     // Skip the 0x15
+    //     tlv_iter.next().unwrap().unwrap();
+    //     assert!(tlv_iter.next().is_none());
+    // }
 
     // #[test]
     // fn test_short_length_value_string() {
@@ -1152,110 +1229,106 @@ mod tests {
     //     );
     // }
 
-    // #[test]
-    // fn test_no_iterator_for_int() {
-    //     // The 0x24 is a a tagged integer, here the integer is 2
-    //     let b = [0x15, 0x24, 0x1, 0x2];
-    //     let tlvlist = TLVList::new(&b);
-    //     let mut tlv_iter = tlvlist.iter();
-    //     // Skip the 0x15
-    //     tlv_iter.next();
-    //     assert_eq!(tlv_iter.next().unwrap().enter(), None);
-    // }
+    #[test]
+    fn test_no_container_for_int() {
+        // The 0x24 is a a tagged integer, here the integer is 2
+        let data = &[0x15, 0x24, 0x1, 0x2];
+        let seq = TLVSequence(data);
+        // Skip the 0x15
+        let seq = seq.next_enter().unwrap();
 
-    // #[test]
-    // fn test_struct_iteration_with_mix_values() {
-    //     // This is a struct with 3 valid values
-    //     let b = [
-    //         0x15, 0x24, 0x0, 0x2, 0x26, 0x2, 0x4e, 0x10, 0x02, 0x00, 0x30, 0x3, 0x04, 0x73, 0x6d,
-    //         0x61, 0x72,
-    //     ];
-    //     let mut root_iter = get_root_node_struct(&b).unwrap().enter().unwrap();
-    //     assert_eq!(
-    //         root_iter.next(),
-    //         Some(TLVElement {
-    //             tag_type: TagType::Context(0),
-    //             element_type: ElementType::U8(2),
-    //         })
-    //     );
-    //     assert_eq!(
-    //         root_iter.next(),
-    //         Some(TLVElement {
-    //             tag_type: TagType::Context(2),
-    //             element_type: ElementType::U32(135246),
-    //         })
-    //     );
-    //     assert_eq!(
-    //         root_iter.next(),
-    //         Some(TLVElement {
-    //             tag_type: TagType::Context(3),
-    //             element_type: ElementType::Str8l(&[0x73, 0x6d, 0x61, 0x72]),
-    //         })
-    //     );
-    // }
+        let elem = TLVElement(seq);
+        assert!(elem.container().is_err());
+    }
 
-    // #[test]
-    // fn test_struct_find_element_mix_values() {
-    //     // This is a struct with 3 valid values
-    //     let b = [
-    //         0x15, 0x30, 0x3, 0x04, 0x73, 0x6d, 0x61, 0x72, 0x24, 0x0, 0x2, 0x26, 0x2, 0x4e, 0x10,
-    //         0x02, 0x00,
-    //     ];
-    //     let root = get_root_node_struct(&b).unwrap();
+    #[test]
+    fn test_struct_iteration_with_mix_values() {
+        // This is a struct with 3 valid values
+        let data = &[
+            0x15, 0x24, 0x0, 0x2, 0x26, 0x2, 0x4e, 0x10, 0x02, 0x00, 0x30, 0x3, 0x04, 0x73, 0x6d,
+            0x61, 0x72,
+        ];
 
-    //     assert_eq!(
-    //         root.find_tag(0).unwrap(),
-    //         TLVElement {
-    //             tag_type: TagType::Context(0),
-    //             element_type: ElementType::U8(2),
-    //         }
-    //     );
-    //     assert_eq!(
-    //         root.find_tag(2).unwrap(),
-    //         TLVElement {
-    //             tag_type: TagType::Context(2),
-    //             element_type: ElementType::U32(135246),
-    //         }
-    //     );
-    //     assert_eq!(
-    //         root.find_tag(3).unwrap(),
-    //         TLVElement {
-    //             tag_type: TagType::Context(3),
-    //             element_type: ElementType::Str8l(&[0x73, 0x6d, 0x61, 0x72]),
-    //         }
-    //     );
-    // }
+        let mut root_iter = TLVElement::new(data).structure().unwrap().iter();
+        assert_eq!(
+            root_iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(0),
+                value: TLVValue::U8(2),
+            }
+        );
+        assert_eq!(
+            root_iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(2),
+                value: TLVValue::U32(135246),
+            }
+        );
+        assert_eq!(
+            root_iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(3),
+                value: TLVValue::Str8l(&[0x73, 0x6d, 0x61, 0x72]),
+            }
+        );
+    }
 
-    // #[test]
-    // fn test_list_iteration_with_mix_values() {
-    //     // This is a list with 3 valid values
-    //     let b = [
-    //         0x17, 0x24, 0x0, 0x2, 0x26, 0x2, 0x4e, 0x10, 0x02, 0x00, 0x30, 0x3, 0x04, 0x73, 0x6d,
-    //         0x61, 0x72,
-    //     ];
-    //     let mut root_iter = get_root_node_list(&b).unwrap().enter().unwrap();
-    //     assert_eq!(
-    //         root_iter.next(),
-    //         Some(TLVElement {
-    //             tag_type: TagType::Context(0),
-    //             element_type: ElementType::U8(2),
-    //         })
-    //     );
-    //     assert_eq!(
-    //         root_iter.next(),
-    //         Some(TLVElement {
-    //             tag_type: TagType::Context(2),
-    //             element_type: ElementType::U32(135246),
-    //         })
-    //     );
-    //     assert_eq!(
-    //         root_iter.next(),
-    //         Some(TLVElement {
-    //             tag_type: TagType::Context(3),
-    //             element_type: ElementType::Str8l(&[0x73, 0x6d, 0x61, 0x72]),
-    //         })
-    //     );
-    // }
+    #[test]
+    fn test_struct_find_element_mix_values() {
+        // This is a struct with 3 valid values
+        let data = &[
+            0x15, 0x30, 0x3, 0x04, 0x73, 0x6d, 0x61, 0x72, 0x24, 0x0, 0x2, 0x26, 0x2, 0x4e, 0x10,
+            0x02, 0x00,
+        ];
+        let root = TLVElement::new(data).structure().unwrap();
+
+        assert_eq!(
+            root.find_ctx(0).unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(0),
+                value: TLVValue::U8(2),
+            }
+        );
+        assert_eq!(root.find_ctx(2).unwrap().tag().unwrap(), TLVTag::Context(2));
+        assert_eq!(root.find_ctx(2).unwrap().u64().unwrap(), 135246);
+
+        assert_eq!(root.find_ctx(3).unwrap().tag().unwrap(), TLVTag::Context(3));
+        assert_eq!(
+            root.find_ctx(3).unwrap().str().unwrap(),
+            &[0x73, 0x6d, 0x61, 0x72]
+        );
+    }
+
+    #[test]
+    fn test_list_iteration_with_mix_values() {
+        // This is a list with 3 valid values
+        let data = &[
+            0x17, 0x24, 0x0, 0x2, 0x26, 0x2, 0x4e, 0x10, 0x02, 0x00, 0x30, 0x3, 0x04, 0x73, 0x6d,
+            0x61, 0x72,
+        ];
+        let mut root_iter = TLVElement::new(data).list().unwrap().iter();
+        assert_eq!(
+            root_iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(0),
+                value: TLVValue::U8(2),
+            }
+        );
+        assert_eq!(
+            root_iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(2),
+                value: TLVValue::U32(135246),
+            }
+        );
+        assert_eq!(
+            root_iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(3),
+                value: TLVValue::Str8l(&[0x73, 0x6d, 0x61, 0x72]),
+            }
+        );
+    }
 
     // #[test]
     // fn test_complex_structure_invoke_cmd() {
@@ -1314,73 +1387,665 @@ mod tests {
     //     );
     // }
 
-    // #[test]
-    // fn test_read_past_end_of_container() {
-    //     let b = [0x15, 0x35, 0x0, 0x24, 0x1, 0x2, 0x18, 0x24, 0x0, 0x2, 0x18];
+    #[test]
+    fn test_read_past_end_of_container() {
+        let data = &[0x15, 0x35, 0x0, 0x24, 0x1, 0x2, 0x18, 0x24, 0x0, 0x2, 0x18];
 
-    //     let mut sub_root_iter = get_root_node_struct(&b)
-    //         .unwrap()
-    //         .find_tag(0)
-    //         .unwrap()
-    //         .enter()
-    //         .unwrap();
-    //     assert_eq!(
-    //         sub_root_iter.next(),
-    //         Some(TLVElement {
-    //             tag_type: TagType::Context(1),
-    //             element_type: ElementType::U8(2),
-    //         })
-    //     );
-    //     assert_eq!(sub_root_iter.next(), None);
-    //     // Call next, even after the first next returns None
-    //     assert_eq!(sub_root_iter.next(), None);
-    //     assert_eq!(sub_root_iter.next(), None);
-    // }
+        let mut struct2_iter = TLVElement::new(data)
+            .structure()
+            .unwrap()
+            .find_ctx(0)
+            .unwrap()
+            .structure()
+            .unwrap()
+            .iter();
 
-    // #[test]
-    // fn test_basic_list_iterator() {
-    //     // This is the input we have
-    //     let b = [
-    //         0x15, 0x36, 0x0, 0x15, 0x37, 0x0, 0x24, 0x0, 0x2, 0x24, 0x2, 0x6, 0x24, 0x3, 0x1, 0x18,
-    //         0x35, 0x1, 0x18, 0x18, 0x18, 0x18,
-    //     ];
+        assert_eq!(
+            struct2_iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(1),
+                value: TLVValue::U8(2),
+            }
+        );
+        assert!(struct2_iter.next().is_none());
+        // Call next, even after the first next returns None
+        assert!(struct2_iter.next().is_none());
+        assert!(struct2_iter.next().is_none());
+    }
 
-    //     let dummy_pointer = &b[1..];
-    //     // These are the decoded elements that we expect from this input
-    //     let verify_matrix: [(TagType, ElementType); 13] = [
-    //         (TagType::Anonymous, ElementType::Struct(dummy_pointer)),
-    //         (TagType::Context(0), ElementType::Array(dummy_pointer)),
-    //         (TagType::Anonymous, ElementType::Struct(dummy_pointer)),
-    //         (TagType::Context(0), ElementType::List(dummy_pointer)),
-    //         (TagType::Context(0), ElementType::U8(2)),
-    //         (TagType::Context(2), ElementType::U8(6)),
-    //         (TagType::Context(3), ElementType::U8(1)),
-    //         (TagType::Anonymous, ElementType::EndCnt),
-    //         (TagType::Context(1), ElementType::Struct(dummy_pointer)),
-    //         (TagType::Anonymous, ElementType::EndCnt),
-    //         (TagType::Anonymous, ElementType::EndCnt),
-    //         (TagType::Anonymous, ElementType::EndCnt),
-    //         (TagType::Anonymous, ElementType::EndCnt),
-    //     ];
+    #[test]
+    fn test_iteration() {
+        // This is the input we have
+        // {
+        //   0: [
+        //     {
+        //       0: L[ 0: 2, 2: 6, 3: 1],
+        //       1: {},
+        //     },
+        //   ],
+        // }
 
-    //     let mut list_iter = TLVList::new(&b).iter();
-    //     let mut index = 0;
-    //     loop {
-    //         let element = list_iter.next();
-    //         match element {
-    //             None => break,
-    //             Some(a) => {
-    //                 assert_eq!(a.tag_type, verify_matrix[index].0);
-    //                 assert_eq!(
-    //                     core::mem::discriminant(&a.element_type),
-    //                     core::mem::discriminant(&verify_matrix[index].1)
-    //                 );
-    //             }
-    //         }
-    //         index += 1;
-    //     }
-    //     // After the end, purposefully try a few more next
-    //     assert_eq!(list_iter.next(), None);
-    //     assert_eq!(list_iter.next(), None);
-    // }
+        let data = &[
+            0x15, 0x36, 0x0, 0x15, 0x37, 0x0, 0x24, 0x0, 0x2, 0x24, 0x2, 0x6, 0x24, 0x3, 0x1, 0x18,
+            0x35, 0x1, 0x18, 0x18, 0x18, 0x18,
+        ];
+
+        let struct0 = TLVStruct::<TLVElement>::new(TLVElement::new(data)).unwrap();
+
+        assert_eq!(
+            struct0.element().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Struct(TLVSequence(&data[1..]))
+            }
+        );
+        assert_eq!(struct0.iter().count(), 1);
+
+        let array = TLVArray::<TLVElement>::new(struct0.iter().next().unwrap().unwrap()).unwrap();
+
+        assert_eq!(
+            array.element().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(0),
+                value: TLVValue::Array(TLVSequence(&data[3..data.len() - 1]))
+            }
+        );
+        assert_eq!(array.iter().count(), 1);
+
+        let struct1 = TLVStruct::<TLVElement>::new(array.iter().next().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            struct1.element().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Struct(TLVSequence(&data[4..data.len() - 2]))
+            }
+        );
+        assert_eq!(struct1.iter().count(), 2);
+
+        let mut struct1_iter = struct1.iter();
+
+        let list = TLVList::<TLVElement>::new(struct1_iter.next().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            list.element().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(0),
+                value: TLVValue::List(TLVSequence(&data[6..data.len() - 6]))
+            }
+        );
+        assert_eq!(list.iter().count(), 3);
+
+        let mut list_iter = list.iter();
+
+        let le1 = list_iter.next().unwrap().unwrap();
+        assert_eq!(
+            le1.tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(0),
+                value: TLVValue::U8(2)
+            }
+        );
+
+        let le2 = list_iter.next().unwrap().unwrap();
+        assert_eq!(
+            le2.tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(2),
+                value: TLVValue::U8(6)
+            }
+        );
+
+        let le3 = list_iter.next().unwrap().unwrap();
+        assert_eq!(
+            le3.tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(3),
+                value: TLVValue::U8(1)
+            }
+        );
+
+        assert!(list_iter.next().is_none());
+
+        let struct2 = TLVStruct::<TLVElement>::new(struct1_iter.next().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            struct2.element().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Context(1),
+                value: TLVValue::Struct(TLVSequence(&data[18..18 + 1]))
+            }
+        );
+        assert_eq!(struct2.iter().count(), 0);
+    }
+
+    #[test]
+    fn test_matter_spec_examples() {
+        let tlv = |slice| TLVElement::new(slice).tlv().unwrap();
+
+        // Boolean false
+
+        assert_eq!(
+            tlv(&[0x08]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::False,
+            }
+        );
+
+        // Boolean true
+
+        assert_eq!(
+            tlv(&[0x09]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::True,
+            }
+        );
+
+        // Signed Integer, 1-octet, value 42
+
+        assert_eq!(
+            tlv(&[0x00, 0x2a]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::S8(42),
+            }
+        );
+
+        // Signed Integer, 1-octet, value -17
+
+        assert_eq!(
+            tlv(&[0x00, 0xef]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::S8(-17),
+            }
+        );
+
+        // Unsigned Integer, 1-octet, value 42U
+
+        assert_eq!(
+            tlv(&[0x04, 0x2a]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::U8(42),
+            }
+        );
+
+        // Signed Integer, 2-octet, value 42
+
+        assert_eq!(
+            tlv(&[0x01, 0x2a, 0x00]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::S16(42),
+            }
+        );
+
+        // Signed Integer, 4-octet, value -170000
+
+        assert_eq!(
+            tlv(&[0x02, 0xf0, 0x67, 0xfd, 0xff]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::S32(-170000),
+            }
+        );
+
+        // Signed Integer, 8-octet, value 40000000000
+
+        assert_eq!(
+            tlv(&[0x03, 0x00, 0x90, 0x2f, 0x50, 0x09, 0x00, 0x00, 0x00]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::S64(40000000000),
+            }
+        );
+
+        // UTF-8 String, 1-octet length, "Hello!"
+
+        assert_eq!(
+            tlv(&[0x0c, 0x06, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x21]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Utf8l("Hello!"),
+            }
+        );
+
+        // UTF-8 String, 1-octet length, "Tschüs"
+
+        assert_eq!(
+            tlv(&[0x0c, 0x07, 0x54, 0x73, 0x63, 0x68, 0xc3, 0xbc, 0x73]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Utf8l("Tschüs"),
+            }
+        );
+
+        // Octet String, 1-octet length, octets 00 01 02 03 04
+
+        assert_eq!(
+            tlv(&[0x10, 0x05, 0x00, 0x01, 0x02, 0x03, 0x04]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Str8l(&[0x00, 0x01, 0x02, 0x03, 0x04]),
+            }
+        );
+
+        // Null
+
+        assert_eq!(
+            tlv(&[0x14]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Null,
+            }
+        );
+
+        // Single precision floating point 0.0
+
+        assert_eq!(
+            tlv(&[0x0a, 0x00, 0x00, 0x00, 0x00]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F32(0.0),
+            }
+        );
+
+        // Single precision floating point (1.0 / 3.0)
+
+        assert_eq!(
+            tlv(&[0x0a, 0xab, 0xaa, 0xaa, 0x3e]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F32(1.0 / 3.0),
+            }
+        );
+
+        // Single precision floating point 17.9
+
+        assert_eq!(
+            tlv(&[0x0a, 0x33, 0x33, 0x8f, 0x41]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F32(17.9),
+            }
+        );
+
+        // Single precision floating point infinity
+
+        assert_eq!(
+            tlv(&[0x0a, 0x00, 0x00, 0x80, 0x7f]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F32(f32::INFINITY),
+            }
+        );
+
+        // Single precision floating point negative infinity
+
+        assert_eq!(
+            tlv(&[0x0a, 0x00, 0x00, 0x80, 0xff]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F32(f32::NEG_INFINITY),
+            }
+        );
+
+        // Double precision floating point 0.0
+
+        assert_eq!(
+            tlv(&[0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F64(0.0),
+            }
+        );
+
+        // Double precision floating point (1.0 / 3.0)
+
+        assert_eq!(
+            tlv(&[0x0b, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0xd5, 0x3f]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F64(1.0 / 3.0),
+            }
+        );
+
+        // Double precision floating point 17.9
+
+        assert_eq!(
+            tlv(&[0x0b, 0x66, 0x66, 0x66, 0x66, 0x66, 0xe6, 0x31, 0x40]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F64(17.9),
+            }
+        );
+
+        // Double precision floating point infinity (∞)
+
+        assert_eq!(
+            tlv(&[0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x7f]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F64(f64::INFINITY),
+            }
+        );
+
+        // Double precision floating point negative infinity
+
+        assert_eq!(
+            tlv(&[0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0xff]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F64(f64::NEG_INFINITY),
+            }
+        );
+
+        // Empty Structure, {}
+
+        assert_eq!(
+            tlv(&[0x15, 0x18]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Struct(TLVSequence(&[0x18])),
+            }
+        );
+
+        assert!(TLVElement::new(&[0x15, 0x18])
+            .structure()
+            .unwrap()
+            .iter()
+            .next()
+            .is_none());
+
+        // Empty Array, []
+
+        assert_eq!(
+            tlv(&[0x16, 0x18]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Array(TLVSequence(&[0x18])),
+            }
+        );
+
+        assert!(TLVElement::new(&[0x16, 0x18])
+            .array()
+            .unwrap()
+            .iter()
+            .next()
+            .is_none());
+
+        // Empty List, []
+
+        assert_eq!(
+            tlv(&[0x17, 0x18]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::List(TLVSequence(&[0x18])),
+            }
+        );
+
+        assert!(TLVElement::new(&[0x17, 0x18])
+            .list()
+            .unwrap()
+            .iter()
+            .next()
+            .is_none());
+
+        // Structure, two context specific tags, Signed Intger, 1 octet values, {0 = 42, 1 = -17}
+
+        let data = &[0x15, 0x20, 0x00, 0x2a, 0x20, 0x01, 0xef, 0x18];
+
+        assert_eq!(
+            tlv(data),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Struct(TLVSequence(&data[1..])),
+            }
+        );
+
+        let mut iter = TLVElement::new(data).structure().unwrap().iter();
+
+        let s1 = iter.next().unwrap().unwrap();
+        assert_eq!(s1.tag().unwrap(), TLVTag::Context(0));
+        assert_eq!(s1.i32().unwrap(), 42);
+
+        let s2 = iter.next().unwrap().unwrap();
+        assert_eq!(s2.tag().unwrap(), TLVTag::Context(1));
+        assert_eq!(s2.i16().unwrap(), -17);
+
+        assert!(iter.next().is_none());
+
+        // Array, Signed Integer, 1-octet values, [0, 1, 2, 3, 4]
+
+        let data = &[
+            0x16, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x18,
+        ];
+
+        assert_eq!(
+            tlv(data),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Array(TLVSequence(&data[1..])),
+            }
+        );
+
+        let iter = TLVElement::new(data).array().unwrap().iter().enumerate();
+
+        for (index, elem) in iter {
+            let elem = elem.unwrap();
+
+            assert_eq!(elem.tag().unwrap(), TLVTag::Anonymous);
+            assert_eq!(elem.i8().unwrap(), index as i8);
+        }
+
+        // List, mix of anonymous and context tags, Signed Integer, 1 octet values, [[1, 0 = 42, 2, 3, 0 = -17]]
+
+        let data = &[
+            0x17, 0x00, 0x01, 0x20, 0x00, 0x2a, 0x00, 0x02, 0x00, 0x03, 0x20, 0x00, 0xef, 0x18,
+        ];
+
+        assert_eq!(
+            tlv(data),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::List(TLVSequence(&data[1..])),
+            }
+        );
+
+        let expected = &[
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::S8(1),
+            },
+            TLV {
+                tag: TLVTag::Context(0),
+                value: TLVValue::S8(42),
+            },
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::S8(2),
+            },
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::S8(3),
+            },
+            TLV {
+                tag: TLVTag::Context(0),
+                value: TLVValue::S8(-17),
+            },
+        ];
+
+        let mut iter = TLVElement::new(data).list().unwrap().iter();
+
+        for elem in expected {
+            assert_eq!(iter.next().unwrap().unwrap().tlv().unwrap(), *elem);
+        }
+
+        assert!(iter.next().is_none());
+
+        // Array, mix of element types, [42, -170000, {}, 17.9, "Hello!"]
+
+        let data = &[
+            0x16, 0x00, 0x2a, 0x02, 0xf0, 0x67, 0xfd, 0xff, 0x15, 0x18, 0x0a, 0x33, 0x33, 0x8f,
+            0x41, 0x0c, 0x06, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x21, 0x18,
+        ];
+
+        assert_eq!(
+            tlv(data),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Array(TLVSequence(&data[1..])),
+            }
+        );
+
+        let mut iter = TLVElement::new(data).array().unwrap().iter();
+
+        assert_eq!(
+            iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::S8(42),
+            }
+        );
+
+        assert_eq!(
+            iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::S32(-170000),
+            }
+        );
+
+        assert_eq!(
+            iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Struct(TLVSequence(&[0x18])),
+            }
+        );
+
+        assert_eq!(
+            iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::F32(17.9),
+            }
+        );
+
+        assert_eq!(
+            iter.next().unwrap().unwrap().tlv().unwrap(),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::Utf8l("Hello!"),
+            }
+        );
+
+        // Anonymous tag, Unsigned Integer, 1-octet value, 42U
+
+        assert_eq!(
+            tlv(&[0x04, 0x2a]),
+            TLV {
+                tag: TLVTag::Anonymous,
+                value: TLVValue::U8(42),
+            }
+        );
+
+        // Context tag 1, Unsigned Integer, 1-octet value, 1 = 42U
+
+        assert_eq!(
+            tlv(&[0x24, 0x01, 0x2a]),
+            TLV {
+                tag: TLVTag::Context(1),
+                value: TLVValue::U8(42),
+            }
+        );
+
+        // Common profile tag 1, Unsigned Integer, 1-octet value, Matter::1 = 42U
+
+        assert_eq!(
+            tlv(&[0x44, 0x01, 0x00, 0x2a]),
+            TLV {
+                tag: TLVTag::CommonPrf16(1),
+                value: TLVValue::U8(42),
+            }
+        );
+
+        // Common profile tag 100000, Unsigned Integer, 1-octet value, Matter::100000 = 42U
+
+        assert_eq!(
+            tlv(&[0x64, 0xa0, 0x86, 0x01, 0x00, 0x2a]),
+            TLV {
+                tag: TLVTag::CommonPrf32(100000),
+                value: TLVValue::U8(42),
+            }
+        );
+
+        // Fully qualified tag, Vendor ID 0xFFF1/65521, pro­file number 0xDEED/57069,
+        // 2-octet tag 1, Unsigned Integer, 1-octet value 42, 65521::57069:1 = 42U
+
+        assert_eq!(
+            tlv(&[0xc4, 0xf1, 0xff, 0xed, 0xde, 0x01, 0x00, 0x2a]),
+            TLV {
+                tag: TLVTag::FullQual48 {
+                    vendor_id: 65521,
+                    profile: 57069,
+                    tag: 1,
+                },
+                value: TLVValue::U8(42),
+            }
+        );
+
+        // Fully qualified tag, Vendor ID 0xFFF1/65521, pro­file number 0xDEED/57069,
+        // 4-octet tag 0xAA55FEED/2857762541, Unsigned Integer, 1-octet value 42, 65521::57069:2857762541 = 42U
+
+        assert_eq!(
+            tlv(&[0xe4, 0xf1, 0xff, 0xed, 0xde, 0xed, 0xfe, 0x55, 0xaa, 0x2a]),
+            TLV {
+                tag: TLVTag::FullQual64 {
+                    vendor_id: 65521,
+                    profile: 57069,
+                    tag: 2857762541,
+                },
+                value: TLVValue::U8(42),
+            }
+        );
+
+        // Structure with the fully qualified tag, Vendor ID 0xFFF1/65521, profile number 0xDEED/57069,
+        // 2-octet tag 1. The structure contains a single ele­ment labeled using a fully qualified tag under
+        // the same profile, with 2-octet tag 0xAA55/43605. 65521::57069:1 = {65521::57069:43605 = 42U}
+
+        let data = &[
+            0xd5, 0xf1, 0xff, 0xed, 0xde, 0x01, 0x00, 0xc4, 0xf1, 0xff, 0xed, 0xde, 0x55, 0xaa,
+            0x2a, 0x18,
+        ];
+
+        assert_eq!(
+            tlv(data),
+            TLV {
+                tag: TLVTag::FullQual48 {
+                    vendor_id: 65521,
+                    profile: 57069,
+                    tag: 1,
+                },
+                value: TLVValue::Struct(TLVSequence(&data[7..])),
+            }
+        );
+
+        let mut iter = TLVElement::new(data).structure().unwrap().iter();
+
+        let u1 = iter.next().unwrap().unwrap();
+
+        assert_eq!(
+            u1.tag().unwrap(),
+            TLVTag::FullQual48 {
+                vendor_id: 65521,
+                profile: 57069,
+                tag: 43605,
+            }
+        );
+
+        assert_eq!(u1.u8().unwrap(), 42);
+
+        assert!(iter.next().is_none());
+    }
 }

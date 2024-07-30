@@ -273,6 +273,18 @@ impl TLVControl {
     }
 }
 
+impl fmt::Display for TLVControl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Control({} {})", self.tag_type, self.value_type)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TLV<'a> {
+    pub tag: TLVTag,
+    pub value: TLVValue<'a>,
+}
+
 /// For backwards compatibility
 pub type TagType = TLVTag;
 
@@ -285,8 +297,16 @@ pub enum TLVTag {
     CommonPrf32(u32),
     ImplPrf16(u16),
     ImplPrf32(u32),
-    FullQual48(u64),
-    FullQual64(u64),
+    FullQual48 {
+        vendor_id: u16,
+        profile: u16,
+        tag: u16,
+    },
+    FullQual64 {
+        vendor_id: u16,
+        profile: u16,
+        tag: u32,
+    },
 }
 
 impl TLVTag {
@@ -299,21 +319,29 @@ impl TLVTag {
             Self::CommonPrf32(_) => TLVTagType::CommonPrf32,
             Self::ImplPrf16(_) => TLVTagType::ImplPrf16,
             Self::ImplPrf32(_) => TLVTagType::ImplPrf32,
-            Self::FullQual48(_) => TLVTagType::FullQual48,
-            Self::FullQual64(_) => TLVTagType::FullQual64,
+            Self::FullQual48 { .. } => TLVTagType::FullQual48,
+            Self::FullQual64 { .. } => TLVTagType::FullQual64,
         }
     }
 
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TLVTag::Anonymous => Ok(()),
-            TLVTag::Context(tag) => write!(f, "{}", tag),
-            TLVTag::CommonPrf16(tag) => write!(f, "CommonPrf16({})", tag),
-            TLVTag::CommonPrf32(tag) => write!(f, "CommonPrf32({})", tag),
-            TLVTag::ImplPrf16(tag) => write!(f, "ImplPrf16({})", tag),
-            TLVTag::ImplPrf32(tag) => write!(f, "ImplPrf32({})", tag),
-            TLVTag::FullQual48(tag) => write!(f, "FullQual48({})", tag),
-            TLVTag::FullQual64(tag) => write!(f, "FullQual64({})", tag),
+            TLVTag::Context(tag) => write!(f, "{tag}"),
+            TLVTag::CommonPrf16(tag) => write!(f, "CommonPrf16({tag})"),
+            TLVTag::CommonPrf32(tag) => write!(f, "CommonPrf32({tag})"),
+            TLVTag::ImplPrf16(tag) => write!(f, "ImplPrf16({tag})"),
+            TLVTag::ImplPrf32(tag) => write!(f, "ImplPrf32({tag})"),
+            TLVTag::FullQual48 {
+                vendor_id,
+                profile,
+                tag,
+            } => write!(f, "FullQual48(VID:{vendor_id} PRF:{profile} {tag})"),
+            TLVTag::FullQual64 {
+                vendor_id,
+                profile,
+                tag,
+            } => write!(f, "FullQual64(VID:{vendor_id} PRF:{profile} {tag})"),
         }
     }
 }
@@ -393,16 +421,16 @@ impl<'a> TLVValue<'a> {
 
     fn fmt(&self, indent: usize, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::S8(a) => write!(f, "S8({})", a),
-            Self::S16(a) => write!(f, "S16({})", a),
-            Self::S32(a) => write!(f, "S32({})", a),
-            Self::S64(a) => write!(f, "S64({})", a),
-            Self::U8(a) => write!(f, "U8({})", a),
-            Self::U16(a) => write!(f, "U16({})", a),
-            Self::U32(a) => write!(f, "U32({})", a),
-            Self::U64(a) => write!(f, "U64({})", a),
-            Self::F32(a) => write!(f, "F32({})", a),
-            Self::F64(a) => write!(f, "F64({})", a),
+            Self::S8(a) => write!(f, "S8({a})"),
+            Self::S16(a) => write!(f, "S16({a})"),
+            Self::S32(a) => write!(f, "S32({a})"),
+            Self::S64(a) => write!(f, "S64({a})"),
+            Self::U8(a) => write!(f, "U8({a})"),
+            Self::U16(a) => write!(f, "U16({a})"),
+            Self::U32(a) => write!(f, "U32({a})"),
+            Self::U64(a) => write!(f, "U64({a})"),
+            Self::F32(a) => write!(f, "F32({a})"),
+            Self::F64(a) => write!(f, "F64({a})"),
             Self::Null => write!(f, "Null"),
             Self::Struct(elements) => {
                 write!(f, "{{\n")?;
@@ -425,10 +453,10 @@ impl<'a> TLVValue<'a> {
             Self::True => write!(f, "True"),
             Self::False => write!(f, "False"),
             Self::Utf8l(a) | Self::Utf16l(a) | Self::Utf32l(a) | Self::Utf64l(a) => {
-                write!(f, "\"{}\"", a)
+                write!(f, "\"{a}\"")
             }
             Self::Str8l(a) | Self::Str16l(a) | Self::Str32l(a) | Self::Str64l(a) => {
-                write!(f, "({}){:02X?}", a.len(), a)
+                write!(f, "({}){a:02X?}", a.len())
             }
         }
     }
@@ -437,12 +465,13 @@ impl<'a> TLVValue<'a> {
 /// For backwards compatibility
 pub fn get_root_node(data: &[u8]) -> Result<TLVElement<'_>, Error> {
     // TODO: Check for trailing data
-    TLVList::new(TLVElement::new(data))?.single_child()
+    Ok(TLVElement::new(data))
 }
 
 /// For backwards compatibility
 pub fn get_root_node_struct(data: &[u8]) -> Result<TLVElement<'_>, Error> {
-    let element = get_root_node(data)?;
+    // TODO: Check for trailing data
+    let element = TLVElement::new(data);
 
     element.structure()?;
 

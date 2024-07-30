@@ -15,6 +15,8 @@
  *    limitations under the License.
  */
 
+use num_traits::ToBytes;
+
 use crate::{
     error::{Error, ErrorCode},
     utils::writebuf::WriteBuf,
@@ -172,6 +174,16 @@ pub trait TLVWrite {
         }
     }
 
+    /// Write a tag and a TLV F32 to the TLV stream.
+    fn f32(&mut self, tag: &TLVTag, data: f32) -> Result<(), Error> {
+        self.raw_value(tag, TLVValueType::F32, &data.to_le_bytes())
+    }
+
+    /// Write a tag and a TLV F64 to the TLV stream.
+    fn f64(&mut self, tag: &TLVTag, data: f64) -> Result<(), Error> {
+        self.raw_value(tag, TLVValueType::F64, &data.to_le_bytes())
+    }
+
     /// Write a tag and a TLV Octet String to the TLV stream, where the Octet String is a slice of u8 bytes.
     ///
     /// The exact octet string type (Str8l, Str16l, Str32l, or Str64l) is chosen based on the length of the data,
@@ -316,8 +328,24 @@ pub trait TLVWrite {
             TLVTag::Context(v) => self.write_raw_data(v.to_le_bytes()),
             TLVTag::CommonPrf16(v) | TLVTag::ImplPrf16(v) => self.write_raw_data(v.to_le_bytes()),
             TLVTag::CommonPrf32(v) | TLVTag::ImplPrf32(v) => self.write_raw_data(v.to_le_bytes()),
-            TLVTag::FullQual48(v) => self.write_raw_data(v.to_le_bytes().into_iter().take(6)),
-            TLVTag::FullQual64(v) => self.write_raw_data(v.to_le_bytes()),
+            TLVTag::FullQual48 {
+                vendor_id,
+                profile,
+                tag,
+            } => {
+                self.write_raw_data(vendor_id.to_le_bytes())?;
+                self.write_raw_data(profile.to_le_bytes())?;
+                self.write_raw_data(tag.to_le_bytes())
+            }
+            TLVTag::FullQual64 {
+                vendor_id,
+                profile,
+                tag,
+            } => {
+                self.write_raw_data(vendor_id.to_le_bytes())?;
+                self.write_raw_data(profile.to_le_bytes())?;
+                self.write_raw_data(tag.to_le_bytes())
+            }
         }?;
 
         self.write_raw_data(value_payload.into_iter().copied())
@@ -379,22 +407,23 @@ impl<'a> TLVWrite for WriteBuf<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TLVWrite, TagType};
-    use crate::utils::writebuf::WriteBuf;
+    use core::f32;
+
+    use super::{TLVTag, TLVWrite};
+    use crate::{tlv2::TLVValue, utils::writebuf::WriteBuf};
 
     #[test]
     fn test_write_success() {
         let mut buf = [0; 20];
-        let mut writebuf = WriteBuf::new(&mut buf);
-        let mut tw = TLVWrite::new(&mut writebuf);
+        let mut tw = WriteBuf::new(&mut buf);
 
-        tw.start_struct(TagType::Anonymous).unwrap();
-        tw.u8(TagType::Anonymous, 12).unwrap();
-        tw.u8(TagType::Context(1), 13).unwrap();
-        tw.u16(TagType::Anonymous, 0x1212).unwrap();
-        tw.u16(TagType::Context(2), 0x1313).unwrap();
-        tw.start_array(TagType::Context(3)).unwrap();
-        tw.bool(TagType::Anonymous, true).unwrap();
+        tw.start_struct(&TLVTag::Anonymous).unwrap();
+        tw.u8(&TLVTag::Anonymous, 12).unwrap();
+        tw.u8(&TLVTag::Context(1), 13).unwrap();
+        tw.u16(&TLVTag::Anonymous, 0x1212).unwrap();
+        tw.u16(&TLVTag::Context(2), 0x1313).unwrap();
+        tw.start_array(&TLVTag::Context(3)).unwrap();
+        tw.bool(&TLVTag::Anonymous, true).unwrap();
         tw.end_container().unwrap();
         tw.end_container().unwrap();
         assert_eq!(
@@ -406,15 +435,14 @@ mod tests {
     #[test]
     fn test_write_overflow() {
         let mut buf = [0; 6];
-        let mut writebuf = WriteBuf::new(&mut buf);
-        let mut tw = TLVWrite::new(&mut writebuf);
+        let mut tw = WriteBuf::new(&mut buf);
 
-        tw.u8(TagType::Anonymous, 12).unwrap();
-        tw.u8(TagType::Context(1), 13).unwrap();
-        if tw.u16(TagType::Anonymous, 12).is_ok() {
+        tw.u8(&TLVTag::Anonymous, 12).unwrap();
+        tw.u8(&TLVTag::Context(1), 13).unwrap();
+        if tw.u16(&TLVTag::Anonymous, 12).is_ok() {
             panic!("This should have returned error")
         }
-        if tw.u16(TagType::Context(2), 13).is_ok() {
+        if tw.u16(&TLVTag::Context(2), 13).is_ok() {
             panic!("This should have returned error")
         }
         assert_eq!(buf, [4, 12, 36, 1, 13, 4]);
@@ -423,38 +451,516 @@ mod tests {
     #[test]
     fn test_put_str8() {
         let mut buf = [0; 20];
-        let mut writebuf = WriteBuf::new(&mut buf);
-        let mut tw = TLVWrite::new(&mut writebuf);
+        let mut tw = WriteBuf::new(&mut buf);
 
-        tw.u8(TagType::Context(1), 13).unwrap();
-        tw.str8(TagType::Anonymous, &[10, 11, 12, 13, 14]).unwrap();
-        tw.u16(TagType::Context(2), 0x1313).unwrap();
-        tw.str8(TagType::Context(3), &[20, 21, 22]).unwrap();
+        tw.u8(&TLVTag::Context(1), 13).unwrap();
+        tw.str(&TLVTag::Anonymous, &[10, 11, 12, 13, 14]).unwrap();
+        tw.u16(&TLVTag::Context(2), 0x1313).unwrap();
+        tw.str(&TLVTag::Context(3), &[20, 21, 22]).unwrap();
         assert_eq!(
             buf,
             [36, 1, 13, 16, 5, 10, 11, 12, 13, 14, 37, 2, 0x13, 0x13, 48, 3, 3, 20, 21, 22]
         );
     }
 
+    // #[test]
+    // fn test_put_str16_as() {
+    //     let mut buf = [0; 20];
+    //     let mut writebuf = WriteBuf::new(&mut buf);
+    //     let mut tw = TLVWrite::new(&mut writebuf);
+
+    //     tw.u8(TagType::Context(1), 13).unwrap();
+    //     tw.str8(TagType::Context(2), &[10, 11, 12, 13, 14]).unwrap();
+    //     tw.str16_as(TagType::Context(3), |buf| {
+    //         buf[0] = 10;
+    //         buf[1] = 11;
+    //         Ok(2)
+    //     })
+    //     .unwrap();
+    //     tw.u8(TagType::Context(4), 13).unwrap();
+
+    //     assert_eq!(
+    //         buf,
+    //         [36, 1, 13, 48, 2, 5, 10, 11, 12, 13, 14, 48, 3, 2, 10, 11, 36, 4, 13, 0]
+    //     );
+    // }
+
     #[test]
-    fn test_put_str16_as() {
-        let mut buf = [0; 20];
-        let mut writebuf = WriteBuf::new(&mut buf);
-        let mut tw = TLVWrite::new(&mut writebuf);
+    fn test_matter_spec_examples() {
+        let mut buf = [0; 200];
+        let mut tw = WriteBuf::new(&mut buf);
 
-        tw.u8(TagType::Context(1), 13).unwrap();
-        tw.str8(TagType::Context(2), &[10, 11, 12, 13, 14]).unwrap();
-        tw.str16_as(TagType::Context(3), |buf| {
-            buf[0] = 10;
-            buf[1] = 11;
-            Ok(2)
-        })
-        .unwrap();
-        tw.u8(TagType::Context(4), 13).unwrap();
+        // Boolean false
 
+        tw.bool(&TLVTag::Anonymous, false).unwrap();
+        assert_eq!(&[0x08], tw.as_slice());
+
+        // Boolean true
+
+        tw.reset();
+        tw.bool(&TLVTag::Anonymous, true).unwrap();
+        assert_eq!(&[0x09], tw.as_slice());
+
+        // Signed Integer, 1-octet, value 42
+
+        tw.reset();
+        tw.i8(&TLVTag::Anonymous, 42).unwrap();
+        assert_eq!(&[0x00, 0x2a], tw.as_slice());
+
+        // Signed Integer, 1-octet, value -17
+
+        tw.reset();
+        tw.i32(&TLVTag::Anonymous, -17).unwrap();
+        assert_eq!(&[0x00, 0xef], tw.as_slice());
+
+        // Unsigned Integer, 1-octet, value 42U
+
+        tw.reset();
+        tw.u8(&TLVTag::Anonymous, 42).unwrap();
+        assert_eq!(&[0x04, 0x2a], tw.as_slice());
+
+        // Signed Integer, 2-octet, value 422
+
+        tw.reset();
+        tw.i16(&TLVTag::Anonymous, 422).unwrap();
+        assert_eq!(&[0x01, 0xa6, 0x01], tw.as_slice());
+
+        // Signed Integer, 4-octet, value -170000
+
+        tw.reset();
+        tw.i32(&TLVTag::Anonymous, -170000).unwrap();
+        assert_eq!(&[0x02, 0xf0, 0x67, 0xfd, 0xff], tw.as_slice());
+
+        // Signed Integer, 8-octet, value 40000000000
+
+        tw.reset();
+        tw.i64(&TLVTag::Anonymous, 40000000000).unwrap();
         assert_eq!(
-            buf,
-            [36, 1, 13, 48, 2, 5, 10, 11, 12, 13, 14, 48, 3, 2, 10, 11, 36, 4, 13, 0]
+            &[0x03, 0x00, 0x90, 0x2f, 0x50, 0x09, 0x00, 0x00, 0x00],
+            tw.as_slice()
         );
+
+        // UTF-8 String, 1-octet length, "Hello!"
+
+        tw.reset();
+        tw.utf8(&TLVTag::Anonymous, "Hello!").unwrap();
+        assert_eq!(
+            &[0x0c, 0x06, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x21],
+            tw.as_slice()
+        );
+
+        // UTF-8 String, 1-octet length, "Tschüs"
+
+        tw.reset();
+        tw.utf8i(
+            &TLVTag::Anonymous,
+            "Tschüs".len(),
+            "Tschüs".as_bytes().into_iter().copied(),
+        )
+        .unwrap();
+        assert_eq!(
+            &[0x0c, 0x07, 0x54, 0x73, 0x63, 0x68, 0xc3, 0xbc, 0x73],
+            tw.as_slice()
+        );
+
+        // Octet String, 1-octet length, octets 00 01 02 03 04
+
+        tw.reset();
+        tw.str(&TLVTag::Anonymous, &[0x00, 0x01, 0x02, 0x03, 0x04])
+            .unwrap();
+        assert_eq!(&[0x10, 0x05, 0x00, 0x01, 0x02, 0x03, 0x04], tw.as_slice());
+
+        // Null
+
+        tw.reset();
+        tw.tlv(&TLVTag::Anonymous, &TLVValue::Null).unwrap();
+        assert_eq!(&[0x14], tw.as_slice());
+
+        // Single precision floating point 0.0
+
+        tw.reset();
+        tw.tlv(&TLVTag::Anonymous, &TLVValue::F32(0.0)).unwrap();
+        assert_eq!(&[0x0a, 0x00, 0x00, 0x00, 0x00], tw.as_slice());
+
+        // Single precision floating point (1.0 / 3.0)
+
+        tw.reset();
+        tw.f32(&TLVTag::Anonymous, 1.0 / 3.0).unwrap();
+        assert_eq!(&[0x0a, 0xab, 0xaa, 0xaa, 0x3e], tw.as_slice());
+
+        // Single precision floating point 17.9
+
+        tw.reset();
+        tw.f32(&TLVTag::Anonymous, 17.9).unwrap();
+        assert_eq!(&[0x0a, 0x33, 0x33, 0x8f, 0x41], tw.as_slice());
+
+        // Single precision floating point infinity
+
+        tw.reset();
+        tw.f32(&TLVTag::Anonymous, f32::INFINITY).unwrap();
+        assert_eq!(&[0x0a, 0x00, 0x00, 0x80, 0x7f], tw.as_slice());
+
+        // Single precision floating point negative infinity
+
+        tw.reset();
+        tw.f32(&TLVTag::Anonymous, f32::NEG_INFINITY).unwrap();
+        assert_eq!(&[0x0a, 0x00, 0x00, 0x80, 0xff], tw.as_slice());
+
+        // Double precision floating point 0.0
+
+        tw.reset();
+        tw.f64(&TLVTag::Anonymous, 0.0).unwrap();
+        assert_eq!(
+            &[0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            tw.as_slice()
+        );
+
+        // // Double precision floating point (1.0 / 3.0)
+
+        // assert_eq!(
+        //     tlv(&[0x0b, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0xd5, 0x3f]),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::F64(1.0 / 3.0),
+        //     }
+        // );
+
+        // // Double precision floating point 17.9
+
+        // assert_eq!(
+        //     tlv(&[0x0b, 0x66, 0x66, 0x66, 0x66, 0x66, 0xe6, 0x31, 0x40]),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::F64(17.9),
+        //     }
+        // );
+
+        // // Double precision floating point infinity (∞)
+
+        // assert_eq!(
+        //     tlv(&[0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x7f]),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::F64(f64::INFINITY),
+        //     }
+        // );
+
+        // // Double precision floating point negative infinity
+
+        // assert_eq!(
+        //     tlv(&[0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0xff]),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::F64(f64::NEG_INFINITY),
+        //     }
+        // );
+
+        // // Empty Structure, {}
+
+        // assert_eq!(
+        //     tlv(&[0x15, 0x18]),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::Struct(TLVSequence(&[0x18])),
+        //     }
+        // );
+
+        // assert!(TLVElement::new(&[0x15, 0x18])
+        //     .structure()
+        //     .unwrap()
+        //     .iter()
+        //     .next()
+        //     .is_none());
+
+        // // Empty Array, []
+
+        // assert_eq!(
+        //     tlv(&[0x16, 0x18]),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::Array(TLVSequence(&[0x18])),
+        //     }
+        // );
+
+        // assert!(TLVElement::new(&[0x16, 0x18])
+        //     .array()
+        //     .unwrap()
+        //     .iter()
+        //     .next()
+        //     .is_none());
+
+        // // Empty List, []
+
+        // assert_eq!(
+        //     tlv(&[0x17, 0x18]),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::List(TLVSequence(&[0x18])),
+        //     }
+        // );
+
+        // assert!(TLVElement::new(&[0x17, 0x18])
+        //     .list()
+        //     .unwrap()
+        //     .iter()
+        //     .next()
+        //     .is_none());
+
+        // // Structure, two context specific tags, Signed Intger, 1 octet values, {0 = 42, 1 = -17}
+
+        // let data = &[0x15, 0x20, 0x00, 0x2a, 0x20, 0x01, 0xef, 0x18];
+
+        // assert_eq!(
+        //     tlv(data),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::Struct(TLVSequence(&data[1..])),
+        //     }
+        // );
+
+        // let mut iter = TLVElement::new(data).structure().unwrap().iter();
+
+        // let s1 = iter.next().unwrap().unwrap();
+        // assert_eq!(s1.tag().unwrap(), TLVTag::Context(0));
+        // assert_eq!(s1.i32().unwrap(), 42);
+
+        // let s2 = iter.next().unwrap().unwrap();
+        // assert_eq!(s2.tag().unwrap(), TLVTag::Context(1));
+        // assert_eq!(s2.i16().unwrap(), -17);
+
+        // assert!(iter.next().is_none());
+
+        // // Array, Signed Integer, 1-octet values, [0, 1, 2, 3, 4]
+
+        // let data = &[
+        //     0x16, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x18,
+        // ];
+
+        // assert_eq!(
+        //     tlv(data),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::Array(TLVSequence(&data[1..])),
+        //     }
+        // );
+
+        // let iter = TLVElement::new(data).array().unwrap().iter().enumerate();
+
+        // for (index, elem) in iter {
+        //     let elem = elem.unwrap();
+
+        //     assert_eq!(elem.tag().unwrap(), TLVTag::Anonymous);
+        //     assert_eq!(elem.i8().unwrap(), index as i8);
+        // }
+
+        // // List, mix of anonymous and context tags, Signed Integer, 1 octet values, [[1, 0 = 42, 2, 3, 0 = -17]]
+
+        // let data = &[
+        //     0x17, 0x00, 0x01, 0x20, 0x00, 0x2a, 0x00, 0x02, 0x00, 0x03, 0x20, 0x00, 0xef, 0x18,
+        // ];
+
+        // assert_eq!(
+        //     tlv(data),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::List(TLVSequence(&data[1..])),
+        //     }
+        // );
+
+        // let expected = &[
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::S8(1),
+        //     },
+        //     TLV {
+        //         tag: TLVTag::Context(0),
+        //         value: TLVValue::S8(42),
+        //     },
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::S8(2),
+        //     },
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::S8(3),
+        //     },
+        //     TLV {
+        //         tag: TLVTag::Context(0),
+        //         value: TLVValue::S8(-17),
+        //     },
+        // ];
+
+        // let mut iter = TLVElement::new(data).list().unwrap().iter();
+
+        // for elem in expected {
+        //     assert_eq!(iter.next().unwrap().unwrap().tlv().unwrap(), *elem);
+        // }
+
+        // assert!(iter.next().is_none());
+
+        // // Array, mix of element types, [42, -170000, {}, 17.9, "Hello!"]
+
+        // let data = &[
+        //     0x16, 0x00, 0x2a, 0x02, 0xf0, 0x67, 0xfd, 0xff, 0x15, 0x18, 0x0a, 0x33, 0x33, 0x8f,
+        //     0x41, 0x0c, 0x06, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x21, 0x18,
+        // ];
+
+        // assert_eq!(
+        //     tlv(data),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::Array(TLVSequence(&data[1..])),
+        //     }
+        // );
+
+        // let mut iter = TLVElement::new(data).array().unwrap().iter();
+
+        // assert_eq!(
+        //     iter.next().unwrap().unwrap().tlv().unwrap(),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::S8(42),
+        //     }
+        // );
+
+        // assert_eq!(
+        //     iter.next().unwrap().unwrap().tlv().unwrap(),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::S32(-170000),
+        //     }
+        // );
+
+        // assert_eq!(
+        //     iter.next().unwrap().unwrap().tlv().unwrap(),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::Struct(TLVSequence(&[0x18])),
+        //     }
+        // );
+
+        // assert_eq!(
+        //     iter.next().unwrap().unwrap().tlv().unwrap(),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::F32(17.9),
+        //     }
+        // );
+
+        // assert_eq!(
+        //     iter.next().unwrap().unwrap().tlv().unwrap(),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::Utf8l("Hello!"),
+        //     }
+        // );
+
+        // // Anonymous tag, Unsigned Integer, 1-octet value, 42U
+
+        // assert_eq!(
+        //     tlv(&[0x04, 0x2a]),
+        //     TLV {
+        //         tag: TLVTag::Anonymous,
+        //         value: TLVValue::U8(42),
+        //     }
+        // );
+
+        // // Context tag 1, Unsigned Integer, 1-octet value, 1 = 42U
+
+        // assert_eq!(
+        //     tlv(&[0x24, 0x01, 0x2a]),
+        //     TLV {
+        //         tag: TLVTag::Context(1),
+        //         value: TLVValue::U8(42),
+        //     }
+        // );
+
+        // // Common profile tag 1, Unsigned Integer, 1-octet value, Matter::1 = 42U
+
+        // assert_eq!(
+        //     tlv(&[0x44, 0x01, 0x00, 0x2a]),
+        //     TLV {
+        //         tag: TLVTag::CommonPrf16(1),
+        //         value: TLVValue::U8(42),
+        //     }
+        // );
+
+        // // Common profile tag 100000, Unsigned Integer, 1-octet value, Matter::100000 = 42U
+
+        // assert_eq!(
+        //     tlv(&[0x64, 0xa0, 0x86, 0x01, 0x00, 0x2a]),
+        //     TLV {
+        //         tag: TLVTag::CommonPrf32(100000),
+        //         value: TLVValue::U8(42),
+        //     }
+        // );
+
+        // // Fully qualified tag, Vendor ID 0xFFF1/65521, pro­file number 0xDEED/57069,
+        // // 2-octet tag 1, Unsigned Integer, 1-octet value 42, 65521::57069:1 = 42U
+
+        // assert_eq!(
+        //     tlv(&[0xc4, 0xf1, 0xff, 0xed, 0xde, 0x01, 0x00, 0x2a]),
+        //     TLV {
+        //         tag: TLVTag::FullQual48 {
+        //             vendor_id: 65521,
+        //             profile: 57069,
+        //             tag: 1,
+        //         },
+        //         value: TLVValue::U8(42),
+        //     }
+        // );
+
+        // // Fully qualified tag, Vendor ID 0xFFF1/65521, pro­file number 0xDEED/57069,
+        // // 4-octet tag 0xAA55FEED/2857762541, Unsigned Integer, 1-octet value 42, 65521::57069:2857762541 = 42U
+
+        // assert_eq!(
+        //     tlv(&[0xe4, 0xf1, 0xff, 0xed, 0xde, 0xed, 0xfe, 0x55, 0xaa, 0x2a]),
+        //     TLV {
+        //         tag: TLVTag::FullQual64 {
+        //             vendor_id: 65521,
+        //             profile: 57069,
+        //             tag: 2857762541,
+        //         },
+        //         value: TLVValue::U8(42),
+        //     }
+        // );
+
+        // // Structure with the fully qualified tag, Vendor ID 0xFFF1/65521, profile number 0xDEED/57069,
+        // // 2-octet tag 1. The structure contains a single ele­ment labeled using a fully qualified tag under
+        // // the same profile, with 2-octet tag 0xAA55/43605. 65521::57069:1 = {65521::57069:43605 = 42U}
+
+        // let data = &[
+        //     0xd5, 0xf1, 0xff, 0xed, 0xde, 0x01, 0x00, 0xc4, 0xf1, 0xff, 0xed, 0xde, 0x55, 0xaa,
+        //     0x2a, 0x18,
+        // ];
+
+        // assert_eq!(
+        //     tlv(data),
+        //     TLV {
+        //         tag: TLVTag::FullQual48 {
+        //             vendor_id: 65521,
+        //             profile: 57069,
+        //             tag: 1,
+        //         },
+        //         value: TLVValue::Struct(TLVSequence(&data[7..])),
+        //     }
+        // );
+
+        // let mut iter = TLVElement::new(data).structure().unwrap().iter();
+
+        // let u1 = iter.next().unwrap().unwrap();
+
+        // assert_eq!(
+        //     u1.tag().unwrap(),
+        //     TLVTag::FullQual48 {
+        //         vendor_id: 65521,
+        //         profile: 57069,
+        //         tag: 43605,
+        //     }
+        // );
+
+        // assert_eq!(u1.u8().unwrap(), 42);
+
+        // assert!(iter.next().is_none());
     }
 }

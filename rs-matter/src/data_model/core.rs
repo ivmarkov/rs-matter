@@ -33,11 +33,11 @@ use crate::interaction_model::core::{
     IMStatusCode, OpCode, ReportDataReq, PROTO_ID_INTERACTION_MODEL,
 };
 use crate::interaction_model::messages::msg::{
-    InvReq, InvRespTag, ReadReq, ReportDataTag, StatusResp, SubscribeReq, SubscribeResp, TimedReq,
-    WriteReq, WriteRespTag,
+    InvReq, InvRespTag, ReadReqRef, ReportDataTag, StatusResp, SubscribeReqRef, SubscribeResp,
+    TimedReq, WriteReq, WriteRespTag,
 };
 use crate::respond::ExchangeHandler;
-use crate::tlv::{get_root_node_struct, FromTLV, TLVTag, TLVWrite, TLVWriter};
+use crate::tlv::{get_root_node_struct, FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriter};
 use crate::transport::exchange::{Exchange, MAX_EXCHANGE_RX_BUF_SIZE, MAX_EXCHANGE_TX_BUF_SIZE};
 use crate::utils::writebuf::WriteBuf;
 
@@ -147,7 +147,7 @@ where
 
         let metadata = self.handler.lock().await;
 
-        let req = ReadReq::from_tlv(&get_root_node_struct(exchange.rx()?.payload())?)?;
+        let req = ReadReqRef::new(TLVElement::new(exchange.rx()?.payload()));
         debug!("IM: Read request: {:?}", req);
 
         let req = ReportDataReq::Read(&req);
@@ -157,7 +157,10 @@ where
         // Will the clusters that are to be invoked await?
         let mut awaits = false;
 
-        for item in metadata.node().read(&req, None, &exchange.accessor()?) {
+        for item in metadata
+            .node()
+            .read(&req, None, &exchange.accessor()?, true)?
+        {
             if item?
                 .map(|attr| self.handler.read_awaits(exchange, &attr))
                 .unwrap_or(false)
@@ -172,7 +175,7 @@ where
             // of the transport layer, as the operation won't await.
 
             let node = metadata.node();
-            let mut attrs = node.read(&req, None, &accessor).peekable();
+            let mut attrs = node.read(&req, None, &accessor, true)?.peekable();
 
             if !req
                 .respond(&self.handler, exchange, None, &mut attrs, &mut wb, true)
@@ -208,11 +211,11 @@ where
             return Ok(());
         };
 
-        let req = ReadReq::from_tlv(&get_root_node_struct(&rx)?)?;
+        let req = ReadReqRef::new(TLVElement::new(&rx));
         let req = ReportDataReq::Read(&req);
 
         let node = metadata.node();
-        let mut attrs = node.read(&req, None, &accessor).peekable();
+        let mut attrs = node.read(&req, None, &accessor, true)?.peekable();
 
         loop {
             let more_chunks = req
@@ -370,7 +373,7 @@ where
             return Ok(());
         };
 
-        let req = SubscribeReq::from_tlv(&get_root_node_struct(&rx)?)?;
+        let req = SubscribeReqRef::new(TLVElement::new(&rx));
         debug!("IM: Subscribe request: {:?}", req);
 
         let (fabric_idx, peer_node_id) = exchange.with_session(|sess| {
@@ -381,7 +384,7 @@ where
             Ok((fabric_idx, peer_node_id))
         })?;
 
-        if !req.keep_subs {
+        if !req.keep_subs()? {
             self.subscriptions
                 .remove(Some(fabric_idx), Some(peer_node_id), None);
             self.subscriptions_buffers
@@ -391,8 +394,8 @@ where
             info!("All subscriptions for [F:{fabric_idx:x},P:{peer_node_id:x}] removed");
         }
 
-        let max_int_secs = core::cmp::max(req.max_int_ceil, 40); // Say we need at least 4 secs for potential latencies
-        let min_int_secs = req.min_int_floor;
+        let max_int_secs = core::cmp::max(req.max_int_ceil()?, 40); // Say we need at least 4 secs for potential latencies
+        let min_int_secs = req.min_int_floor()?;
 
         let Some(id) = self.subscriptions.add(
             fabric_idx,
@@ -413,7 +416,15 @@ where
         });
 
         let primed = self
-            .report_data(id, fabric_idx.get(), peer_node_id, &rx, &mut tx, exchange)
+            .report_data(
+                id,
+                fabric_idx.get(),
+                peer_node_id,
+                &rx,
+                &mut tx,
+                exchange,
+                true,
+            )
             .await?;
 
         if primed {
@@ -513,11 +524,6 @@ where
                         .unwrap();
                     let rx = self.subscriptions_buffers.borrow_mut().remove(index).buffer;
 
-                    let mut req = SubscribeReq::from_tlv(&get_root_node_struct(&rx)?)?;
-
-                    // Only used when priming the subscription
-                    req.dataver_filters = None;
-
                     let mut exchange = if let Some(session_id) = session_id {
                         Exchange::initiate_for_session(matter, session_id)?
                     } else {
@@ -536,6 +542,7 @@ where
                                 &rx,
                                 &mut tx,
                                 &mut exchange,
+                                false,
                             )
                             .await?;
 
@@ -608,13 +615,14 @@ where
         rx: &[u8],
         tx: &mut [u8],
         exchange: &mut Exchange<'_>,
+        with_dataver: bool,
     ) -> Result<bool, Error>
     where
         T: DataModelHandler,
     {
         let mut wb = WriteBuf::new(tx);
 
-        let req = SubscribeReq::from_tlv(&get_root_node_struct(rx)?)?;
+        let req = SubscribeReqRef::new(TLVElement::new(rx));
         let req = ReportDataReq::Subscribe(&req);
 
         let metadata = self.handler.lock().await;
@@ -623,7 +631,7 @@ where
 
         {
             let node = metadata.node();
-            let mut attrs = node.read(&req, None, &accessor).peekable();
+            let mut attrs = node.read(&req, None, &accessor, with_dataver)?.peekable();
 
             loop {
                 let more_chunks = req
@@ -778,7 +786,7 @@ impl<'a> ReportDataReq<'a> {
             assert!(matches!(self, ReportDataReq::Read(_)));
         }
 
-        let has_requests = self.attr_requests().is_some();
+        let has_requests = self.has_attr_requests()?;
 
         if has_requests {
             tw.start_array(&TLVTag::Context(ReportDataTag::AttributeReports as u8))?;

@@ -319,53 +319,96 @@ fn gen_totlv_for_enum(
             .map(|v| Literal::u8_suffixed(v as u8))
             .collect::<Vec<_>>();
 
-        quote! {
-            impl #generics #krate::tlv::ToTLV for #enum_name #generics {
-                fn to_tlv<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
-                    let anchor = tw.get_tail();
+        if tlvargs.datatype == "naked" {
+            quote! {
+                impl #generics #krate::tlv::ToTLV for #enum_name #generics {
+                    fn to_tlv<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
+                        let anchor = tw.get_tail();
 
-                    if let Err(err) = (|| {
-                        tw.start_struct(tag)?;
+                        if let Err(err) = (|| {
+                            match self {
+                                #(
+                                    Self::#variant_names(c) => c.to_tlv(&#krate::tlv::TagType::Context(#tags), &mut tw),
+                                )*
+                            }?;
+                        })() {
+                            tw.rewind_to(anchor);
+                            Err(err)
+                        } else {
+                            Ok(())
+                        }
+                    }
+
+                    fn to_tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
+                        use #krate::tlv::ToTLVIter;
+
                         match self {
                             #(
-                                Self::#variant_names(c) => c.to_tlv(&#krate::tlv::TagType::Context(#tags), &mut tw),
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TagType::Context(#tags))),
                             )*
-                        }?;
-                        tw.end_container()
-                    })() {
-                        tw.rewind_to(anchor);
-                        Err(err)
-                    } else {
-                        Ok(())
+                        }
+                    }
+
+                    fn into_tlv_iter(self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
+                        use #krate::tlv::ToTLVIter;
+
+                        match self {
+                            #(
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TagType::Context(#tags))),
+                            )*
+                        }
                     }
                 }
+            }
+        } else {
+            quote! {
+                impl #generics #krate::tlv::ToTLV for #enum_name #generics {
+                    fn to_tlv<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
+                        let anchor = tw.get_tail();
 
-                fn to_tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
-                    use #krate::tlv::ToTLVIter;
+                        if let Err(err) = (|| {
+                            tw.start_struct(tag)?;
+                            match self {
+                                #(
+                                    Self::#variant_names(c) => c.to_tlv(&#krate::tlv::TagType::Context(#tags), &mut tw),
+                                )*
+                            }?;
+                            tw.end_container()
+                        })() {
+                            tw.rewind_to(anchor);
+                            Err(err)
+                        } else {
+                            Ok(())
+                        }
+                    }
 
-                    let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+                    fn to_tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
+                        use #krate::tlv::ToTLVIter;
 
-                    let iter = Iterator::chain(iter, match self {
-                        #(
-                            Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TagType::Context(#tags))),
-                        )*
-                    });
+                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
 
-                    ToTLVIter::end_container(iter)
-                }
+                        let iter = Iterator::chain(iter, match self {
+                            #(
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TagType::Context(#tags))),
+                            )*
+                        });
 
-                fn into_tlv_iter(self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
-                    use #krate::tlv::ToTLVIter;
+                        ToTLVIter::end_container(iter)
+                    }
 
-                    let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+                    fn into_tlv_iter(self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
+                        use #krate::tlv::ToTLVIter;
 
-                    let iter = Iterator::chain(iter, match self {
-                        #(
-                            Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TagType::Context(#tags))),
-                        )*
-                    });
+                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
 
-                    ToTLVIter::end_container(iter)
+                        let iter = Iterator::chain(iter, match self {
+                            #(
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TagType::Context(#tags))),
+                            )*
+                        });
+
+                        ToTLVIter::end_container(iter)
+                    }
                 }
             }
         }
@@ -632,52 +675,81 @@ fn gen_fromtlv_for_enum(
             }
         }
 
-        quote! {
-            // impl #generics #krate::tlv::FromTLV <#lifetime> for #enum_name #generics {
-            //     fn from_tlv(t: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
-            //         let mut t_iter = t.confirm_struct()?.enter().ok_or_else(|| #krate::error::Error::new(#krate::error::ErrorCode::Invalid))?;
-            //         let mut item = t_iter.next().ok_or_else(|| #krate::error::Error::new(#krate::error::ErrorCode::Invalid))?;
-            //         if let TagType::Context(tag) = item.get_tag() {
-            //             match tag {
-            //                 #(
-            //                     #tags => Ok(Self::#variant_names(#types::from_tlv(&item)?)),
-            //                 )*
-            //                 _ => Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
-            //             }
-            //         } else {
-            //             Err(#krate::error::Error::new(#krate::error::ErrorCode::TLVTypeMismatch))
-            //         }
-            //     }
-            // }
+        if tlvargs.datatype == "naked" {
+            quote! {
+                impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
+                    fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
+                        let tag = tlv
+                            .try_ctx()?
+                            .ok_or(#krate::error::ErrorCode::TLVTypeMismatch)?;
 
-            impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
-                fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
-                    let tlv = tlv
-                        .structure()?
-                        .iter()
-                        .next()
-                        .ok_or(#krate::error::ErrorCode::TLVTypeMismatch)??;
+                        match tag {
+                            #(
+                                #tags => Ok(Self::#variant_names(#types::from_tlv(&tlv)?)),
+                            )*
+                            _ => Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
+                        }
+                    }
+                }
 
-                    let tag = tlv
-                        .try_ctx()?
-                        .ok_or(#krate::error::ErrorCode::TLVTypeMismatch)?;
+                impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #enum_name #generics {
+                    type Error = #krate::error::Error;
 
-                    match tag {
-                        #(
-                            #tags => Ok(Self::#variant_names(#types::from_tlv(&tlv)?)),
-                        )*
-                        _ => Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
+                    fn try_from(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
+                        use #krate::tlv::FromTLV;
+
+                        Self::from_tlv(tlv)
                     }
                 }
             }
+        } else {
+            quote! {
+                // impl #generics #krate::tlv::FromTLV <#lifetime> for #enum_name #generics {
+                //     fn from_tlv(t: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
+                //         let mut t_iter = t.confirm_struct()?.enter().ok_or_else(|| #krate::error::Error::new(#krate::error::ErrorCode::Invalid))?;
+                //         let mut item = t_iter.next().ok_or_else(|| #krate::error::Error::new(#krate::error::ErrorCode::Invalid))?;
+                //         if let TagType::Context(tag) = item.get_tag() {
+                //             match tag {
+                //                 #(
+                //                     #tags => Ok(Self::#variant_names(#types::from_tlv(&item)?)),
+                //                 )*
+                //                 _ => Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
+                //             }
+                //         } else {
+                //             Err(#krate::error::Error::new(#krate::error::ErrorCode::TLVTypeMismatch))
+                //         }
+                //     }
+                // }
 
-            impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #enum_name #generics {
-                type Error = #krate::error::Error;
+                impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
+                    fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
+                        let tlv = tlv
+                            .structure()?
+                            .iter()
+                            .next()
+                            .ok_or(#krate::error::ErrorCode::TLVTypeMismatch)??;
 
-                fn try_from(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
-                    use #krate::tlv::FromTLV;
+                        let tag = tlv
+                            .try_ctx()?
+                            .ok_or(#krate::error::ErrorCode::TLVTypeMismatch)?;
 
-                    Self::from_tlv(tlv)
+                        match tag {
+                            #(
+                                #tags => Ok(Self::#variant_names(#types::from_tlv(&tlv)?)),
+                            )*
+                            _ => Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
+                        }
+                    }
+                }
+
+                impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #enum_name #generics {
+                    type Error = #krate::error::Error;
+
+                    fn try_from(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
+                        use #krate::tlv::FromTLV;
+
+                        Self::from_tlv(tlv)
+                    }
                 }
             }
         }

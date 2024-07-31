@@ -23,7 +23,7 @@ use crate::{
     interaction_model::{
         core::{IMStatusCode, ReportDataReq},
         messages::{
-            ib::{AttrPath, AttrStatus, CmdStatus, DataVersionFilter},
+            ib::{AttrStatus, CmdStatus, DataVersionFilter},
             msg::{InvReq, WriteReq},
             GenericPath,
         },
@@ -70,30 +70,13 @@ impl<'a> Node<'a> {
         req: &'m ReportDataReq,
         from: Option<GenericPath>,
         accessor: &'m Accessor<'m>,
-    ) -> impl Iterator<Item = Result<Result<AttrDetails, AttrStatus>, Error>> + 'm {
-        self.read_attr_requests(
-            req.attr_requests()
-                .iter()
-                .flat_map(|attr_requests| attr_requests.iter()),
-            req.dataver_filters(),
-            req.fabric_filtered(),
-            accessor,
-            from,
-        )
-    }
-
-    fn read_attr_requests<'m, P>(
-        &'m self,
-        attr_requests: P,
-        dataver_filters: Option<&'m TLVArray<DataVersionFilter>>,
-        fabric_filtered: bool,
-        accessor: &'m Accessor<'m>,
-        from: Option<GenericPath>,
-    ) -> impl Iterator<Item = Result<Result<AttrDetails, AttrStatus>, Error>> + 'm
-    where
-        P: Iterator<Item = Result<AttrPath, Error>> + 'm,
+        with_dataver_filters: bool,
+    ) -> Result<impl Iterator<Item = Result<Result<AttrDetails, AttrStatus>, Error>> + 'm, Error>
     {
-        alloc!(attr_requests.flat_map(move |path| {
+        let dataver_filters = req.dataver_filters()?;
+        let fabric_filtered = req.fabric_filtered()?;
+
+        let iter = req.attr_requests()?.into_iter().flat_map(move |path| {
             let path = match path {
                 Ok(path) => path,
                 Err(e) => return WildcardIter::Single(once(Err(e))),
@@ -101,13 +84,14 @@ impl<'a> Node<'a> {
 
             if path.to_gp().is_wildcard() {
                 let from = from.clone();
+                let dataver_filters = dataver_filters.clone();
 
                 let iter = self
                     .match_attributes(path.endpoint, path.cluster, path.attr)
                     .skip_while(move |(ep, cl, attr)| {
                         !Self::matches(from.as_ref(), ep.id, cl.id, attr.id as _)
                     })
-                    .filter(move |(ep, cl, attr)| {
+                    .filter(|(ep, cl, attr)| {
                         Cluster::check_attr_access(
                             accessor,
                             GenericPath::new(Some(ep.id), Some(cl.id), Some(attr.id as _)),
@@ -117,7 +101,10 @@ impl<'a> Node<'a> {
                         .is_ok()
                     })
                     .map(move |(ep, cl, attr)| {
-                        let dataver = Self::dataver(dataver_filters, ep.id, cl.id)?;
+                        let dataver = with_dataver_filters
+                            .then(|| Self::dataver(&dataver_filters, ep.id, cl.id))
+                            .transpose()?
+                            .flatten();
 
                         Ok(Ok(AttrDetails {
                             node: self,
@@ -139,7 +126,7 @@ impl<'a> Node<'a> {
                 let attr = path.attr.unwrap();
 
                 let result = match self.check_attribute(accessor, ep, cl, attr, false) {
-                    Ok(()) => Self::dataver(dataver_filters, ep, cl).map(|dataver| {
+                    Ok(()) => Self::dataver(&dataver_filters, ep, cl).map(|dataver| {
                         Ok(AttrDetails {
                             node: self,
                             endpoint_id: ep,
@@ -157,7 +144,9 @@ impl<'a> Node<'a> {
 
                 WildcardIter::Single(once(result))
             }
-        }))
+        });
+
+        Ok(iter)
     }
 
     pub fn write<'m>(
@@ -387,14 +376,10 @@ impl<'a> Node<'a> {
     }
 
     fn dataver(
-        dataver_filters: Option<&TLVArray<DataVersionFilter>>,
+        dataver_filters: &TLVArray<DataVersionFilter>,
         ep: EndptId,
         cl: ClusterId,
     ) -> Result<Option<u32>, Error> {
-        let Some(dataver_filters) = dataver_filters else {
-            return Ok(None);
-        };
-
         for filter in dataver_filters {
             let filter = filter?;
 

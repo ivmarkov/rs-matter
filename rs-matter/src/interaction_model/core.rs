@@ -28,7 +28,7 @@ use num::FromPrimitive;
 use num_derive::FromPrimitive;
 
 use super::messages::ib::{AttrPath, DataVersionFilter};
-use super::messages::msg::{ReadReq, StatusResp, SubscribeReq, SubscribeResp, TimedReq};
+use super::messages::msg::{ReadReqRef, StatusResp, SubscribeReqRef, SubscribeResp, TimedReq};
 
 #[macro_export]
 macro_rules! cmd_enter {
@@ -153,29 +153,36 @@ pub const PROTO_ID_INTERACTION_MODEL: u16 = 0x01;
 /// A wrapper enum for `ReadReq` and `SubscribeReq` that allows downstream code to
 /// treat the two in a unified manner with regards to `OpCode::ReportDataResp` type responses.
 pub enum ReportDataReq<'a> {
-    Read(&'a ReadReq<'a>),
-    Subscribe(&'a SubscribeReq<'a>),
+    Read(&'a ReadReqRef<'a>),
+    Subscribe(&'a SubscribeReqRef<'a>),
 }
 
 impl<'a> ReportDataReq<'a> {
-    pub fn attr_requests(&self) -> &Option<TLVArray<'a, AttrPath>> {
+    pub fn has_attr_requests(&self) -> Result<bool, Error> {
         match self {
-            ReportDataReq::Read(req) => &req.attr_requests,
-            ReportDataReq::Subscribe(req) => &req.attr_requests,
+            ReportDataReq::Read(req) => req.has_attr_requests(),
+            ReportDataReq::Subscribe(req) => req.has_attr_requests(),
         }
     }
 
-    pub fn dataver_filters(&self) -> Option<&TLVArray<'_, DataVersionFilter>> {
+    pub fn attr_requests(&self) -> Result<TLVArray<'a, AttrPath>, Error> {
         match self {
-            ReportDataReq::Read(req) => req.dataver_filters.as_ref(),
-            ReportDataReq::Subscribe(req) => req.dataver_filters.as_ref(),
+            ReportDataReq::Read(req) => req.attr_requests(),
+            ReportDataReq::Subscribe(req) => req.attr_requests(),
         }
     }
 
-    pub fn fabric_filtered(&self) -> bool {
+    pub fn dataver_filters(&self) -> Result<TLVArray<'_, DataVersionFilter>, Error> {
         match self {
-            ReportDataReq::Read(req) => req.fabric_filtered,
-            ReportDataReq::Subscribe(req) => req.fabric_filtered,
+            ReportDataReq::Read(req) => req.dataver_filters(),
+            ReportDataReq::Subscribe(req) => req.dataver_filters(),
+        }
+    }
+
+    pub fn fabric_filtered(&self) -> Result<bool, Error> {
+        match self {
+            ReportDataReq::Read(req) => req.fabric_filtered(),
+            ReportDataReq::Subscribe(req) => req.fabric_filtered(),
         }
     }
 }

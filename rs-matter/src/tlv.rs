@@ -478,25 +478,6 @@ pub fn get_root_node_struct(data: &[u8]) -> Result<TLVElement<'_>, Error> {
     Ok(element)
 }
 
-/// Retrive the single TLV element from the provided TLV data slice.
-/// The slice is interpreted as a TLV list of TLV elements and is expected to have exactly one element.
-///
-/// Returns an error if the TLV data is malformed, if the data does not represent a TLV list, or if the
-/// list does not contain exactly one element.
-pub fn list_single_elem(data: &[u8]) -> Result<TLVElement<'_>, Error> {
-    // TODO: Check for trailing data
-
-    let mut iter = TLVList::new(TLVElement::new(data))?.into_iter();
-
-    let list_element = iter.next().ok_or(ErrorCode::TLVNotFound)??;
-
-    if iter.next().is_some() {
-        return Err(ErrorCode::InvalidData.into());
-    }
-
-    Ok(list_element)
-}
-
 impl<'a> fmt::Display for TLVValue<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.fmt(0, f)

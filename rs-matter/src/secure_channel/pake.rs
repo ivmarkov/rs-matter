@@ -23,7 +23,7 @@ use crate::crypto;
 use crate::error::{Error, ErrorCode};
 use crate::mdns::{Mdns, ServiceMode};
 use crate::secure_channel::common::{complete_with_status, OpCode};
-use crate::tlv::{self, get_root_node_struct, FromTLV, OctetStr, TagType, ToTLV};
+use crate::tlv::{self, get_root_node_struct, FromTLV, OctetStr, TLVElement, TagType, ToTLV};
 use crate::transport::{
     exchange::{Exchange, ExchangeId},
     session::{ReservedSession, SessionMode},
@@ -304,8 +304,7 @@ impl Pake {
             let pase = exchange.matter().pase_mgr.borrow();
             let session = pase.session.as_ref().ok_or(ErrorCode::NoSession)?;
 
-            let root = tlv::get_root_node(rx.payload())?;
-            let a = PBKDFParamReq::from_tlv(&root)?;
+            let a = PBKDFParamReq::from_tlv(&TLVElement::new(rx.payload()))?;
             if a.passcode_id != 0 {
                 error!("Can't yet handle passcode_id != 0");
                 Err(ErrorCode::Invalid)?;

@@ -23,7 +23,7 @@ use log::{error, info, warn};
 use strum::{EnumDiscriminants, FromRepr};
 
 use crate::acl::{AclEntry, AuthMode};
-use crate::cert::{Cert, MAX_CERT_TLV_LEN};
+use crate::cert::{CertRef, MAX_CERT_TLV_LEN};
 use crate::crypto::{self, KeyPair};
 use crate::data_model::objects::*;
 use crate::data_model::sdm::dev_att;
@@ -324,16 +324,20 @@ impl NocCluster {
 
         let r = AddNocReq::from_tlv(data).map_err(|_| NocStatus::InvalidNOC)?;
 
-        let noc_cert = Cert::new(r.noc_value.0).map_err(|_| NocStatus::InvalidNOC)?;
-        info!("Received NOC as: {}", noc_cert);
+        info!(
+            "Received NOC as: {}",
+            CertRef::new(TLVElement::new(r.noc_value.0))
+        );
 
         let noc =
             crate::utils::vec::Vec::from_slice(r.noc_value.0).map_err(|_| NocStatus::InvalidNOC)?;
 
         let icac = if let Some(icac_value) = r.icac_value {
             if !icac_value.0.is_empty() {
-                let icac_cert = Cert::new(icac_value.0).map_err(|_| NocStatus::InvalidNOC)?;
-                info!("Received ICAC as: {}", icac_cert);
+                info!(
+                    "Received ICAC as: {}",
+                    CertRef::new(TLVElement::new(icac_value.0))
+                );
 
                 let icac = crate::utils::vec::Vec::from_slice(icac_value.0)
                     .map_err(|_| NocStatus::InvalidNOC)?;

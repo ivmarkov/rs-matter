@@ -993,6 +993,10 @@ impl<'a> TLVSequence<'a> {
             elem.fmt(indent, f)?;
         }
 
+        if !first {
+            writeln!(f)?;
+        }
+
         Ok(())
     }
 }

@@ -67,8 +67,9 @@ impl GenericPath {
 pub mod msg {
 
     use crate::{
+        error::Error,
         interaction_model::core::IMStatusCode,
-        tlv::{FromTLV, TLVArray, ToTLV},
+        tlv::{FromTLV, TLVArray, TLVElement, ToTLV},
     };
 
     use super::ib::{
@@ -89,6 +90,51 @@ pub mod msg {
         pub _dummy: Option<bool>,
         pub fabric_filtered: bool,
         pub dataver_filters: Option<TLVArray<'a, DataVersionFilter>>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct SubscribeReqRef<'a>(TLVElement<'a>);
+
+    impl<'a> SubscribeReqRef<'a> {
+        pub const fn new(element: TLVElement<'a>) -> Self {
+            Self(element)
+        }
+
+        pub fn keep_subs(&self) -> Result<bool, Error> {
+            self.0.r#struct()?.find_ctx(0)?.bool()
+        }
+
+        pub fn min_int_floor(&self) -> Result<u16, Error> {
+            self.0.r#struct()?.find_ctx(1)?.u16()
+        }
+
+        pub fn max_int_ceil(&self) -> Result<u16, Error> {
+            self.0.r#struct()?.find_ctx(2)?.u16()
+        }
+
+        pub fn has_attr_requests(&self) -> Result<bool, Error> {
+            Ok(!self.0.r#struct()?.find_ctx(3)?.is_empty())
+        }
+
+        pub fn attr_requests(&self) -> Result<TLVArray<'a, AttrPath>, Error> {
+            TLVArray::new(self.0.r#struct()?.find_ctx(3)?)
+        }
+
+        pub fn event_requests(&self) -> Result<TLVArray<'a, EventPath>, Error> {
+            TLVArray::new(self.0.r#struct()?.find_ctx(4)?)
+        }
+
+        pub fn event_filters(&self) -> Result<TLVArray<'a, EventFilter>, Error> {
+            TLVArray::new(self.0.r#struct()?.find_ctx(5)?)
+        }
+
+        pub fn fabric_filtered(&self) -> Result<bool, Error> {
+            self.0.r#struct()?.find_ctx(7)?.bool()
+        }
+
+        pub fn dataver_filters(&self) -> Result<TLVArray<'a, DataVersionFilter>, Error> {
+            TLVArray::new(self.0.r#struct()?.find_ctx(8)?)
+        }
     }
 
     #[derive(Debug, FromTLV, ToTLV)]
@@ -147,14 +193,47 @@ pub mod msg {
         InvokeResponses = 1,
     }
 
-    #[derive(Default, ToTLV, FromTLV, Debug)]
-    #[tlvargs(lifetime = "'a")]
-    pub struct ReadReq<'a> {
-        pub attr_requests: Option<TLVArray<'a, AttrPath>>,
-        pub event_requests: Option<TLVArray<'a, EventPath>>,
-        pub event_filters: Option<TLVArray<'a, EventFilter>>,
-        pub fabric_filtered: bool,
-        pub dataver_filters: Option<TLVArray<'a, DataVersionFilter>>,
+    // #[derive(Default, ToTLV, FromTLV, Debug)]
+    // #[tlvargs(lifetime = "'a")]
+    // pub struct ReadReq<'a> {
+    //     pub attr_requests: Option<TLVArray<'a, AttrPath>>,
+    //     pub event_requests: Option<TLVArray<'a, EventPath>>,
+    //     pub event_filters: Option<TLVArray<'a, EventFilter>>,
+    //     pub fabric_filtered: bool,
+    //     pub dataver_filters: Option<TLVArray<'a, DataVersionFilter>>,
+    // }
+
+    #[derive(Debug, Clone)]
+    pub struct ReadReqRef<'a>(TLVElement<'a>);
+
+    impl<'a> ReadReqRef<'a> {
+        pub const fn new(element: TLVElement<'a>) -> Self {
+            Self(element)
+        }
+
+        pub fn has_attr_requests(&self) -> Result<bool, Error> {
+            Ok(!self.0.r#struct()?.find_ctx(0)?.is_empty())
+        }
+
+        pub fn attr_requests(&self) -> Result<TLVArray<'a, AttrPath>, Error> {
+            TLVArray::new(self.0.r#struct()?.find_ctx(0)?)
+        }
+
+        pub fn event_requests(&self) -> Result<TLVArray<'a, EventPath>, Error> {
+            TLVArray::new(self.0.r#struct()?.find_ctx(1)?)
+        }
+
+        pub fn event_filters(&self) -> Result<TLVArray<'a, EventFilter>, Error> {
+            TLVArray::new(self.0.r#struct()?.find_ctx(2)?)
+        }
+
+        pub fn fabric_filtered(&self) -> Result<bool, Error> {
+            self.0.r#struct()?.find_ctx(3)?.bool()
+        }
+
+        pub fn dataver_filters(&self) -> Result<TLVArray<'a, DataVersionFilter>, Error> {
+            TLVArray::new(self.0.r#struct()?.find_ctx(4)?)
+        }
     }
 
     #[derive(FromTLV, ToTLV, Debug)]

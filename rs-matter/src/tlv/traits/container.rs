@@ -111,7 +111,9 @@ where
 {
     /// Creates a new `TLVContainer` from a TLV element that can be any container.
     pub fn new(tlv: TLVElement<'a>) -> Result<Self, Error> {
-        tlv.container()?;
+        if !tlv.is_empty() {
+            tlv.container()?;
+        }
 
         Ok(Self::new_unchecked(tlv))
     }
@@ -123,7 +125,9 @@ where
 {
     /// Creates a new `TLVContainer` from a TLV element that is expected to be of type array.
     pub fn new(tlv: TLVElement<'a>) -> Result<Self, Error> {
-        tlv.array()?;
+        if !tlv.is_empty() {
+            tlv.array()?;
+        }
 
         Ok(Self::new_unchecked(tlv))
     }
@@ -135,7 +139,9 @@ where
 {
     /// Creates a new `TLVContainer` from a TLV element that is expected to be of type list.
     pub fn new(tlv: TLVElement<'a>) -> Result<Self, Error> {
-        tlv.list()?;
+        if !tlv.is_empty() {
+            tlv.list()?;
+        }
 
         Ok(Self::new_unchecked(tlv))
     }
@@ -147,7 +153,9 @@ where
 {
     /// Creates a new `TLVContainer` from a TLV element that is expected to be of type struct.
     pub fn new(tlv: TLVElement<'a>) -> Result<Self, Error> {
-        tlv.structure()?;
+        if !tlv.is_empty() {
+            tlv.structure()?;
+        }
 
         Ok(Self::new_unchecked(tlv))
     }

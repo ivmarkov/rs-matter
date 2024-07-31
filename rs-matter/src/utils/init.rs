@@ -6,8 +6,9 @@ pub use pinned_init::*;
 
 /// An extension trait for converting `Init<T, Infallible>` to a fallible `Init<T, E>`.
 /// Useful when chaining an infallible initializer with a fallible chained initialization function.
-pub trait AsFallibleInit<T>: Init<T, Infallible> {
-    fn as_fallible<E>(self) -> impl Init<T, E> {
+pub trait IntoFallibleInit<T>: Init<T, Infallible> {
+    /// Convert the infallible initializer to a fallible one.
+    fn into_fallible<E>(self) -> impl Init<T, E> {
         unsafe {
             init_from_closure(move |slot| {
                 Self::__init(self, slot).unwrap();
@@ -18,7 +19,7 @@ pub trait AsFallibleInit<T>: Init<T, Infallible> {
     }
 }
 
-impl<T, I> AsFallibleInit<T> for I where I: Init<T, Infallible> {}
+impl<T, I> IntoFallibleInit<T> for I where I: Init<T, Infallible> {}
 
 /// An extension trait for re-setting an already instantiated `T` with the given initializer.
 pub trait ApplyInit<T, E>: Init<T, E> {

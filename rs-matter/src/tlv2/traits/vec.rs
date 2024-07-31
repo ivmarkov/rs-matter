@@ -30,7 +30,7 @@
 //! directly on the borrowed, encoded TLV representation of the whole array.
 
 use crate::error::{Error, ErrorCode};
-use crate::utils::init::{self, AsFallibleInit};
+use crate::utils::init::{self, IntoFallibleInit};
 use crate::utils::vec::Vec;
 
 use super::slice::into_tlv_array_iter;
@@ -51,7 +51,7 @@ where
     }
 
     fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
-        init::Init::chain(Vec::<T, N>::init().as_fallible(), move |vec| {
+        init::Init::chain(Vec::<T, N>::init().into_fallible(), move |vec| {
             let mut iter = TLVArray::new(tlv)?.iter();
 
             while let Some(item) = iter.try_next_init() {

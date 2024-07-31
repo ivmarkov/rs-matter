@@ -33,7 +33,7 @@ use core::hash::Hash;
 use core::ops::{Deref, DerefMut};
 
 use crate::error::{Error, ErrorCode};
-use crate::utils::init::{self, init, AsFallibleInit};
+use crate::utils::init::{self, init, IntoFallibleInit};
 use crate::utils::vec::Vec;
 
 use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV2};
@@ -154,7 +154,7 @@ impl<'a, const N: usize> FromTLV<'a> for OctetsOwned<N> {
     }
 
     fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
-        init::Init::chain(OctetsOwned::init().as_fallible(), move |bytes| {
+        init::Init::chain(OctetsOwned::init().into_fallible(), move |bytes| {
             bytes
                 .vec
                 .extend_from_slice(tlv.str()?)

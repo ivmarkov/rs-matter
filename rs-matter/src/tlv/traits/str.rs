@@ -58,13 +58,13 @@ impl ToTLV for &str {
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::toiter::ToTLVIter;
+        use crate::tlv::toiter::ToTLVIter;
 
         empty().utf8(tag, self)
     }
 
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::toiter::ToTLVIter;
+        use crate::tlv::toiter::ToTLVIter;
 
         empty().utf8(tag, self)
     }
@@ -83,13 +83,13 @@ impl<const N: usize> ToTLV for String<N> {
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::toiter::ToTLVIter;
+        use crate::tlv::toiter::ToTLVIter;
 
         empty().utf8(tag, self)
     }
 
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::toiter::ToTLVIter;
+        use crate::tlv::toiter::ToTLVIter;
 
         empty().utf8i(
             tag,

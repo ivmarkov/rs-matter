@@ -1038,7 +1038,7 @@ mod tests {
     use core::{f32, f64};
 
     use super::TLVElement;
-    use crate::tlv2::{TLVArray, TLVList, TLVSequence, TLVStruct, TLVTag, TLVValue, TLV};
+    use crate::tlv::{TLVArray, TLVList, TLVSequence, TLVStruct, TLVTag, TLVValue, TLV};
 
     // #[test]
     // fn test_short_length_tag() {

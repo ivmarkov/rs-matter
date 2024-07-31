@@ -98,8 +98,8 @@ impl<T: ToTLV> ToTLV for Maybe<T, AsNullable> {
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::toiter::ToTLVIter;
-        use crate::tlv2::EitherIter;
+        use crate::tlv::toiter::ToTLVIter;
+        use crate::tlv::EitherIter;
 
         match self.as_ref() {
             None => EitherIter::First(empty().null(tag)),
@@ -111,8 +111,8 @@ impl<T: ToTLV> ToTLV for Maybe<T, AsNullable> {
     where
         Self: Sized,
     {
-        use crate::tlv2::toiter::ToTLVIter;
-        use crate::tlv2::EitherIter;
+        use crate::tlv::toiter::ToTLVIter;
+        use crate::tlv::EitherIter;
 
         match self.into_option() {
             None => EitherIter::First(empty().null(tag)),
@@ -148,7 +148,7 @@ impl<T: ToTLV> ToTLV for Maybe<T, AsOptional> {
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::EitherIter;
+        use crate::tlv::EitherIter;
 
         match self.as_ref() {
             None => EitherIter::First(empty()),
@@ -160,7 +160,7 @@ impl<T: ToTLV> ToTLV for Maybe<T, AsOptional> {
     where
         Self: Sized,
     {
-        use crate::tlv2::EitherIter;
+        use crate::tlv::EitherIter;
 
         match self.into_option() {
             None => EitherIter::First(empty()),
@@ -188,7 +188,7 @@ impl<T: ToTLV> ToTLV for Option<T> {
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::EitherIter;
+        use crate::tlv::EitherIter;
 
         match self.as_ref() {
             None => EitherIter::First(empty()),
@@ -200,7 +200,7 @@ impl<T: ToTLV> ToTLV for Option<T> {
     where
         Self: Sized,
     {
-        use crate::tlv2::EitherIter;
+        use crate::tlv::EitherIter;
 
         match self {
             None => EitherIter::First(empty()),

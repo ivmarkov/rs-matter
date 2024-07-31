@@ -78,13 +78,13 @@ impl<'a> ToTLV for Octets<'a> {
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::toiter::ToTLVIter;
+        use crate::tlv::toiter::ToTLVIter;
 
         core::iter::empty().str(tag, self.0)
     }
 
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::toiter::ToTLVIter;
+        use crate::tlv::toiter::ToTLVIter;
 
         core::iter::empty().str(tag, self.0)
     }
@@ -171,13 +171,13 @@ impl<const N: usize> ToTLV for OctetsOwned<N> {
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::toiter::ToTLVIter;
+        use crate::tlv::toiter::ToTLVIter;
 
         core::iter::empty().str(tag, &self.vec)
     }
 
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv2::toiter::ToTLVIter;
+        use crate::tlv::toiter::ToTLVIter;
 
         core::iter::empty().stri(tag, self.vec.len(), self.vec.into_iter().map(Result::Ok))
     }

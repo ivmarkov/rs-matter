@@ -23,7 +23,7 @@ use crate::interaction_model::core::IMStatusCode;
 use crate::interaction_model::messages::ib::{
     AttrPath, AttrResp, AttrStatus, CmdDataTag, CmdPath, CmdStatus, InvResp, InvRespTag,
 };
-use crate::tlv2::TLVTag;
+use crate::tlv::TLVTag;
 use crate::transport::exchange::Exchange;
 use crate::{
     error::{Error, ErrorCode},

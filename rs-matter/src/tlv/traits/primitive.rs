@@ -54,13 +54,13 @@ macro_rules! totlv_for {
                 }
 
                 fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-                    use $crate::tlv2::toiter::ToTLVIter;
+                    use $crate::tlv::toiter::ToTLVIter;
 
                     core::iter::empty().$t(tag, *self)
                 }
 
                 fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-                    use $crate::tlv2::toiter::ToTLVIter;
+                    use $crate::tlv::toiter::ToTLVIter;
 
                     core::iter::empty().$t(tag, self)
                 }
@@ -78,13 +78,13 @@ macro_rules! totlv_for_nonzero {
                 }
 
                 fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-                    use $crate::tlv2::toiter::ToTLVIter;
+                    use $crate::tlv::toiter::ToTLVIter;
 
                     core::iter::empty().$t(tag, self.get())
                 }
 
                 fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-                    use $crate::tlv2::toiter::ToTLVIter;
+                    use $crate::tlv::toiter::ToTLVIter;
 
                     core::iter::empty().$t(tag, self.get())
                 }

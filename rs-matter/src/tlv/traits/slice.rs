@@ -73,7 +73,7 @@ where
     I: Iterator,
     I::Item: ToTLV,
 {
-    use crate::tlv2::toiter::ToTLVIter;
+    use crate::tlv::toiter::ToTLVIter;
 
     empty()
         .start_array(tag)

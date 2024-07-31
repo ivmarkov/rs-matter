@@ -22,8 +22,8 @@ use strum::FromRepr;
 use crate::attribute_enum;
 use crate::data_model::objects::*;
 use crate::error::Error;
+use crate::tlv::TLVTag;
 use crate::tlv::{TLVWrite, TLVWriter, TagType, ToTLV};
-use crate::tlv2::TLVTag;
 use crate::transport::exchange::Exchange;
 
 pub const ID: u32 = 0x001D;

@@ -20,7 +20,7 @@ use core::time::Duration;
 use crate::{
     error::*,
     tlv::{FromTLV, TLVArray, TLVElement, TagType},
-    tlv2::{TLVTag, TLVWrite, ToTLV, ToTLVIter},
+    tlv::{TLVTag, TLVWrite, ToTLV, ToTLVIter},
     transport::exchange::MessageMeta,
     utils::{epoch::Epoch, writebuf::WriteBuf},
 };

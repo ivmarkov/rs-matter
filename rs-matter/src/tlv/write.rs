@@ -410,7 +410,7 @@ mod tests {
     use core::f32;
 
     use super::{TLVTag, TLVWrite};
-    use crate::{tlv2::TLVValue, utils::writebuf::WriteBuf};
+    use crate::{tlv::TLVValue, utils::writebuf::WriteBuf};
 
     #[test]
     fn test_write_success() {

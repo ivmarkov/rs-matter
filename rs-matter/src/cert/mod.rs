@@ -25,7 +25,6 @@ use crate::crypto::KeyPair;
 use crate::error::{Error, ErrorCode};
 use crate::tlv::{
     self, FromTLV, OctetStr, TLVArray, TLVElement, TLVTag, TLVWrite, TLVWriter, TagType, ToTLV,
-    ToTLV2,
 };
 use crate::utils::epoch::MATTER_CERT_DOESNT_EXPIRE;
 use crate::utils::init::Init;
@@ -273,15 +272,15 @@ impl<'a> FromTLV<'a> for Extensions<'a> {
     }
 }
 
-impl<'a> ToTLV2 for Extensions<'a> {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl<'a> ToTLV for Extensions<'a> {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.start_list(tag)?;
 
         for extension in self.iter()? {
             match extension? {
-                Extension::BasicConstraints(t) => t.to_tlv2(&TLVTag::Context(1), &mut tw)?,
+                Extension::BasicConstraints(t) => t.to_tlv(&TLVTag::Context(1), &mut tw)?,
                 Extension::KeyUsage(t) => tw.u16(&TLVTag::Context(2), t)?,
-                Extension::ExtKeyUsage(t) => t.to_tlv2(&TLVTag::Context(3), &mut tw)?,
+                Extension::ExtKeyUsage(t) => t.to_tlv(&TLVTag::Context(3), &mut tw)?,
                 Extension::SubjectKeyId(t) => tw.str(&TLVTag::Context(4), &t)?,
                 Extension::AuthorityKeyId(t) => tw.str(&TLVTag::Context(5), &t)?,
                 Extension::FutureExtensions(t) => tw.str(&TLVTag::Context(6), &t)?,
@@ -466,8 +465,8 @@ impl<'a> FromTLV<'a> for DistNames<'a> {
     }
 }
 
-impl<'a> ToTLV2 for DistNames<'a> {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl<'a> ToTLV for DistNames<'a> {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.start_list(tag)?;
         for dn in self.iter()? {
             let (name, value) = dn?;
@@ -758,7 +757,7 @@ impl<'a> Cert<'a> {
     pub fn as_tlv(&self, buf: &mut [u8]) -> Result<usize, Error> {
         let mut wb = WriteBuf::new(buf);
         let mut tw = TLVWriter::new(&mut wb);
-        self.to_tlv(&mut tw, TagType::Anonymous)?;
+        self.to_tlv(&TLVTag::Anonymous, &mut tw)?;
         Ok(wb.as_slice().len())
     }
 

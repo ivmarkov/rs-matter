@@ -23,7 +23,7 @@ use crate::crypto;
 use crate::error::{Error, ErrorCode};
 use crate::mdns::{Mdns, ServiceMode};
 use crate::secure_channel::common::{complete_with_status, OpCode};
-use crate::tlv::{self, get_root_node_struct, FromTLV, OctetStr, TagType, ToTLV, ToTLV2};
+use crate::tlv::{self, get_root_node_struct, FromTLV, OctetStr, TagType, ToTLV};
 use crate::transport::{
     exchange::{Exchange, ExchangeId},
     session::{ReservedSession, SessionMode},
@@ -281,7 +281,7 @@ impl Pake {
                     pb: OctetStr::new(&pB),
                     cb: OctetStr::new(&cB),
                 };
-                resp.to_tlv2(&TagType::Anonymous, wb)?;
+                resp.to_tlv(&TagType::Anonymous, wb)?;
 
                 Ok(Some(OpCode::PASEPake2.into()))
             })
@@ -351,7 +351,7 @@ impl Pake {
         let mut context_set = false;
         exchange
             .send_with(|_, mut wb| {
-                resp.to_tlv2(&TagType::Anonymous, &mut wb)?;
+                resp.to_tlv(&TagType::Anonymous, &mut wb)?;
 
                 if !context_set {
                     spake2p.update_context(wb.as_slice())?;

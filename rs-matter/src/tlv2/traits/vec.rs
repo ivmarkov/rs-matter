@@ -34,7 +34,7 @@ use crate::utils::init::{self, IntoFallibleInit};
 use crate::utils::vec::Vec;
 
 use super::slice::into_tlv_array_iter;
-use super::{FromTLV, TLVArray, TLVElement, TLVTag, TLVWrite, ToTLV2};
+use super::{FromTLV, TLVArray, TLVElement, TLVTag, TLVWrite, ToTLV};
 
 impl<'a, T, const N: usize> FromTLV<'a> for Vec<T, N>
 where
@@ -63,12 +63,12 @@ where
     }
 }
 
-impl<T, const N: usize> ToTLV2 for Vec<T, N>
+impl<T, const N: usize> ToTLV for Vec<T, N>
 where
-    T: ToTLV2,
+    T: ToTLV,
 {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error> {
-        self.as_slice().to_tlv2(tag, tw)
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error> {
+        self.as_slice().to_tlv(tag, tw)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {

@@ -150,14 +150,14 @@ fn gen_totlv_for_struct(
     let krate = Ident::new(&tlvargs.rs_matter_crate, Span::call_site());
 
     quote! {
-        impl #generics #krate::tlv::ToTLV2 for #struct_name #generics {
-            fn to_tlv2<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
+        impl #generics #krate::tlv::ToTLV for #struct_name #generics {
+            fn to_tlv<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
                 let anchor = tw.get_tail();
 
                 if let Err(err) = (|| {
                     tw.#datatype(tag)?;
                     #(
-                        self.#idents.to_tlv2(&#krate::tlv::TLVTag::Context(#tags), &mut tw)?;
+                        self.#idents.to_tlv(&#krate::tlv::TLVTag::Context(#tags), &mut tw)?;
                     )*
                     tw.end_container()
                 })() {
@@ -249,8 +249,8 @@ fn gen_totlv_for_enum(
             get_unit_enum_func_and_tags(enum_name, tlvargs.datatype.as_str(), tags);
 
         quote! {
-            impl #generics #krate::tlv::ToTLV2 for #enum_name #generics {
-                fn to_tlv2<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
+            impl #generics #krate::tlv::ToTLV for #enum_name #generics {
+                fn to_tlv<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
                     let anchor = tw.get_tail();
 
                     if let Err(err) = (|| {
@@ -320,15 +320,15 @@ fn gen_totlv_for_enum(
             .collect::<Vec<_>>();
 
         quote! {
-            impl #generics #krate::tlv::ToTLV2 for #enum_name #generics {
-                fn to_tlv2<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
+            impl #generics #krate::tlv::ToTLV for #enum_name #generics {
+                fn to_tlv<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
                     let anchor = tw.get_tail();
 
                     if let Err(err) = (|| {
                         tw.start_struct(tag)?;
                         match self {
                             #(
-                                Self::#variant_names(c) => c.to_tlv2(&#krate::tlv::TagType::Context(#tags), &mut tw),
+                                Self::#variant_names(c) => c.to_tlv(&#krate::tlv::TagType::Context(#tags), &mut tw),
                             )*
                         }?;
                         tw.end_container()

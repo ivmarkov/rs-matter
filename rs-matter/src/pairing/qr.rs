@@ -19,7 +19,7 @@ use qrcodegen_no_heap::{QrCode, QrCodeEcc, Version};
 
 use crate::{
     error::ErrorCode,
-    tlv::{TLVElement, TLVTag, TLVWrite, TLVWriter, ToTLV2},
+    tlv::{TLVElement, TLVTag, TLVWrite, TLVWriter, ToTLV},
     utils::writebuf::WriteBuf,
 };
 
@@ -218,7 +218,7 @@ impl<'data> QrSetupPayload<'data> {
             }
 
             for elem in self.optional_data {
-                elem.to_tlv2(&TLVTag::Anonymous, &mut tw)?;
+                elem.to_tlv(&TLVTag::Anonymous, &mut tw)?;
             }
 
             tw.end_container()?;

@@ -29,7 +29,7 @@ use heapless::String;
 
 use crate::error::{Error, ErrorCode};
 
-use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV2};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV};
 
 /// For (partial) backwards compatibility
 ///
@@ -52,8 +52,8 @@ impl<'a> FromTLV<'a> for &'a str {
     }
 }
 
-impl ToTLV2 for &str {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl ToTLV for &str {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.utf8(tag, self)
     }
 
@@ -77,8 +77,8 @@ impl<'a, const N: usize> FromTLV<'a> for String<N> {
     }
 }
 
-impl<const N: usize> ToTLV2 for String<N> {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl<const N: usize> ToTLV for String<N> {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.utf8(tag, self)
     }
 

@@ -26,8 +26,7 @@ use crate::error::{Error, ErrorCode};
 use crate::fabric;
 use crate::interaction_model::messages::GenericPath;
 use crate::tlv::{
-    EitherIter, FromTLV, Nullable, TLVElement, TLVTag, TLVWrite, TLVWriter, ToTLV, ToTLV2,
-    ToTLVIter,
+    EitherIter, FromTLV, Nullable, TLVElement, TLVTag, TLVWrite, TLVWriter, ToTLV, ToTLVIter,
 };
 use crate::transport::session::{Session, SessionMode, MAX_CAT_IDS_PER_NOC};
 use crate::utils::init::{init, Init};
@@ -59,8 +58,8 @@ impl FromTLV<'_> for AuthMode {
     }
 }
 
-impl ToTLV2 for AuthMode {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl ToTLV for AuthMode {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         match self {
             AuthMode::Invalid => Ok(()),
             _ => tw.u8(tag, *self as u8),
@@ -609,7 +608,7 @@ impl AclMgr {
             let mut tw = TLVWriter::new(&mut wb);
             self.entries
                 .as_slice()
-                .to_tlv2(&TLVTag::Anonymous, &mut tw)?;
+                .to_tlv(&TLVTag::Anonymous, &mut tw)?;
 
             self.changed = false;
 

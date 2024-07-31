@@ -36,8 +36,8 @@ macro_rules! bitflags_tlv {
             }
         }
 
-        impl $crate::tlv2::ToTLV2 for $enum_name {
-            fn to_tlv2<W: $crate::tlv2::TLVWrite>(
+        impl $crate::tlv2::ToTLV for $enum_name {
+            fn to_tlv<W: $crate::tlv2::TLVWrite>(
                 &self,
                 tag: &$crate::tlv2::TLVTag,
                 mut tw: W,

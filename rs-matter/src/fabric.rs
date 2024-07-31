@@ -29,9 +29,7 @@ use crate::crypto::{self, hkdf_sha256, HmacSha256, KeyPair};
 use crate::error::{Error, ErrorCode};
 use crate::group_keys::KeySet;
 use crate::mdns::{Mdns, ServiceMode};
-use crate::tlv::{
-    FromTLV, OctetStr, TLVElement, TLVWrite, TLVWriter, TagType, ToTLV, ToTLV2, UtfStr,
-};
+use crate::tlv::{FromTLV, OctetStr, TLVElement, TLVWrite, TLVWriter, TagType, ToTLV, UtfStr};
 use crate::utils::{
     init::{init, Init},
     vec::Vec,
@@ -250,7 +248,7 @@ impl FabricMgr {
 
             self.fabrics
                 .as_slice()
-                .to_tlv2(&TagType::Anonymous, &mut tw)?;
+                .to_tlv(&TagType::Anonymous, &mut tw)?;
 
             self.changed = false;
 

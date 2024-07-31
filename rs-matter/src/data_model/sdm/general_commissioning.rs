@@ -172,7 +172,7 @@ impl GenCommCluster {
                     }
                     Attributes::BasicCommissioningInfo(_) => {
                         self.basic_comm_info
-                            .to_tlv(&mut writer, AttrDataWriter::TAG)?;
+                            .to_tlv(&AttrDataWriter::TAG, &mut *writer)?;
                         writer.complete()
                     }
                     Attributes::SupportsConcurrentConnection(codec) => {

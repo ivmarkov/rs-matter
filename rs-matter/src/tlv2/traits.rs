@@ -21,8 +21,7 @@ use crate::error::Error;
 use crate::utils::init;
 
 use super::{
-    EitherIter, TLVElement, TLVSequenceIter, TLVTag, TLVValue, TLVValueType, TLVWrite, TLVWriter,
-    ToTLVIter,
+    EitherIter, TLVElement, TLVSequenceIter, TLVTag, TLVValue, TLVValueType, TLVWrite, ToTLVIter,
 };
 
 pub use container::*;
@@ -59,25 +58,25 @@ pub trait FromTLV<'a>: Sized + 'a {
     }
 }
 
-pub trait ToTLV {
-    /// Serialize the type to a TLV-encoded stream.
-    fn to_tlv(&self, tw: &mut TLVWriter, tag: TLVTag) -> Result<(), Error>;
-}
+// pub trait ToTLV {
+//     /// Serialize the type to a TLV-encoded stream.
+//     fn to_tlv(&self, tw: &mut TLVWriter, tag: TLVTag) -> Result<(), Error>;
+// }
 
-impl<T> ToTLV for T
-where
-    T: ToTLV2,
-{
-    fn to_tlv(&self, tw: &mut TLVWriter, tag: TLVTag) -> Result<(), Error> {
-        self.to_tlv2(&tag, tw)
-    }
-}
+// impl<T> ToTLV for T
+// where
+//     T: ToTLV,
+// {
+//     fn to_tlv(&self, tw: &mut TLVWriter, tag: TLVTag) -> Result<(), Error> {
+//         self.to_tlv2(&tag, tw)
+//     }
+// }
 
 /// A trait representing Rust types that can serialize themselves to
 /// a TLV-encoded stream.
-pub trait ToTLV2 {
+pub trait ToTLV {
     /// Serialize the type to a TLV-encoded stream.
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error>;
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error>;
 
     /// Serialize the type as an iterator of bytes by potentially borrowing
     /// data from the type.
@@ -87,12 +86,12 @@ pub trait ToTLV2 {
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>>;
 }
 
-impl<T> ToTLV2 for &T
+impl<T> ToTLV for &T
 where
-    T: ToTLV2,
+    T: ToTLV,
 {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error> {
-        (*self).to_tlv2(tag, tw)
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error> {
+        (*self).to_tlv(tag, tw)
     }
 
     fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
@@ -110,8 +109,8 @@ impl<'a> FromTLV<'a> for TLVElement<'a> {
     }
 }
 
-impl<'a> ToTLV2 for TLVElement<'a> {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl<'a> ToTLV for TLVElement<'a> {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.raw_value(tag, self.control()?.value_type, self.raw_value()?)
     }
 
@@ -150,8 +149,8 @@ impl<'a> FromTLV<'a> for TLVValue<'a> {
     }
 }
 
-impl<'a> ToTLV2 for TLVValue<'a> {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl<'a> ToTLV for TLVValue<'a> {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.tlv(tag, self)
     }
 

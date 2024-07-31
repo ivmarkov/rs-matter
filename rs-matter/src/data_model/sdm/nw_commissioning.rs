@@ -24,7 +24,7 @@ use crate::data_model::objects::{
     Cluster, Dataver, Handler, NonBlockingHandler, Quality, ATTRIBUTE_LIST, FEATURE_MAP,
 };
 use crate::error::{Error, ErrorCode};
-use crate::tlv::{OctetStr, TLVArray, TLVWrite, TagType, ToTLV};
+use crate::tlv::{OctetStr, TLVArray, TLVTag, TLVWrite, ToTLV};
 use crate::transport::exchange::Exchange;
 use crate::{attribute_enum, command_enum};
 
@@ -294,7 +294,7 @@ impl EthNwCommCluster {
                     Attributes::MaxNetworks => AttrType::<u8>::new().encode(writer, 1),
                     Attributes::Networks => {
                         writer.start_array(&AttrDataWriter::TAG)?;
-                        info.nw_info.to_tlv(&mut writer, TagType::Anonymous)?;
+                        info.nw_info.to_tlv(&TLVTag::Anonymous, &mut *writer)?;
                         writer.end_container()?;
                         writer.complete()
                     }
@@ -310,7 +310,7 @@ impl EthNwCommCluster {
                     Attributes::LastNetworkID => {
                         info.nw_info
                             .network_id
-                            .to_tlv(&mut writer, AttrDataWriter::TAG)?;
+                            .to_tlv(&AttrDataWriter::TAG, &mut *writer)?;
                         writer.complete()
                     }
                     Attributes::LastConnectErrorValue => {

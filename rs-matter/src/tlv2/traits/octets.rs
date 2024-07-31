@@ -36,7 +36,7 @@ use crate::error::{Error, ErrorCode};
 use crate::utils::init::{self, init, IntoFallibleInit};
 use crate::utils::vec::Vec;
 
-use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV2};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV};
 
 /// For backwards compatibility
 pub type OctetStr<'a> = Octets<'a>;
@@ -72,8 +72,8 @@ impl<'a> FromTLV<'a> for Octets<'a> {
     }
 }
 
-impl<'a> ToTLV2 for Octets<'a> {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl<'a> ToTLV for Octets<'a> {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.str(tag, self.0)
     }
 
@@ -165,8 +165,8 @@ impl<'a, const N: usize> FromTLV<'a> for OctetsOwned<N> {
     }
 }
 
-impl<const N: usize> ToTLV2 for OctetsOwned<N> {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl<const N: usize> ToTLV for OctetsOwned<N> {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.str(tag, &self.vec)
     }
 

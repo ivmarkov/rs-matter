@@ -16,7 +16,7 @@
  */
 use crate::{
     error::{Error, ErrorCode},
-    tlv::{FromTLV, TLVTag, TLVWrite, ToTLV2},
+    tlv::{FromTLV, TLVTag, TLVWrite, ToTLV},
 };
 
 pub const SYMM_KEY_LEN_BITS: usize = 128;
@@ -77,8 +77,8 @@ impl<'a> FromTLV<'a> for KeyPair {
     }
 }
 
-impl ToTLV2 for KeyPair {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl ToTLV for KeyPair {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.start_array(tag)?;
 
         self.with_public_key(|key| tw.str(&TLVTag::Anonymous, key))?;

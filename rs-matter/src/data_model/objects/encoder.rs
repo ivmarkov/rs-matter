@@ -28,7 +28,7 @@ use crate::transport::exchange::Exchange;
 use crate::{
     error::{Error, ErrorCode},
     interaction_model::messages::ib::{AttrDataTag, AttrRespTag},
-    tlv::{FromTLV, TLVElement, TLVWrite, TLVWriter, TagType, ToTLV2},
+    tlv::{FromTLV, TLVElement, TLVWrite, TLVWriter, TagType, ToTLV},
 };
 use log::error;
 
@@ -67,7 +67,7 @@ impl<'a, 'b, 'c> AttrDataEncoder<'a, 'b, 'c> {
         };
 
         if let Some(status) = status {
-            AttrResp::Status(status).to_tlv2(&TagType::Anonymous, tw)?;
+            AttrResp::Status(status).to_tlv(&TagType::Anonymous, tw)?;
         }
 
         Ok(true)
@@ -93,7 +93,7 @@ impl<'a, 'b, 'c> AttrDataEncoder<'a, 'b, 'c> {
         };
 
         if let Some(status) = status {
-            status.to_tlv2(&TagType::Anonymous, tw)?;
+            status.to_tlv(&TagType::Anonymous, tw)?;
         }
 
         Ok(())
@@ -119,7 +119,7 @@ impl<'a, 'b, 'c> AttrDataEncoder<'a, 'b, 'c> {
             writer.start_struct(&TLVTag::Context(AttrRespTag::Data as _))?;
             writer.u32(&TLVTag::Context(AttrDataTag::DataVer as _), dataver)?;
             self.path
-                .to_tlv2(&TagType::Context(AttrDataTag::Path as _), &mut *writer)?;
+                .to_tlv(&TagType::Context(AttrDataTag::Path as _), &mut *writer)?;
 
             Ok(Some(writer))
         } else {
@@ -147,8 +147,8 @@ impl<'a, 'b, 'c> AttrDataWriter<'a, 'b, 'c> {
         }
     }
 
-    pub fn set<T: ToTLV2>(mut self, value: T) -> Result<(), Error> {
-        value.to_tlv2(&Self::TAG, &mut self.tw)?;
+    pub fn set<T: ToTLV>(mut self, value: T) -> Result<(), Error> {
+        value.to_tlv(&Self::TAG, &mut self.tw)?;
         self.complete()
     }
 
@@ -262,7 +262,7 @@ impl<'a, 'b, 'c> CmdDataEncoder<'a, 'b, 'c> {
         };
 
         if let Some(status) = status {
-            InvResp::Status(status).to_tlv2(&TagType::Anonymous, tw)?;
+            InvResp::Status(status).to_tlv(&TagType::Anonymous, tw)?;
         }
 
         Ok(())
@@ -288,7 +288,7 @@ impl<'a, 'b, 'c> CmdDataEncoder<'a, 'b, 'c> {
 
         self.path.path.leaf = Some(cmd as _);
         self.path
-            .to_tlv2(&TagType::Context(CmdDataTag::Path as _), &mut *writer)?;
+            .to_tlv(&TagType::Context(CmdDataTag::Path as _), &mut *writer)?;
 
         Ok(writer)
     }
@@ -315,8 +315,8 @@ impl<'a, 'b, 'c> CmdDataWriter<'a, 'b, 'c> {
         }
     }
 
-    pub fn set<T: ToTLV2>(mut self, value: T) -> Result<(), Error> {
-        value.to_tlv2(&Self::TAG, &mut self.tw)?;
+    pub fn set<T: ToTLV>(mut self, value: T) -> Result<(), Error> {
+        value.to_tlv(&Self::TAG, &mut self.tw)?;
         self.complete()
     }
 
@@ -367,7 +367,7 @@ impl<T> AttrType<T> {
 
     pub fn encode(&self, writer: AttrDataWriter, value: T) -> Result<(), Error>
     where
-        T: ToTLV2,
+        T: ToTLV,
     {
         writer.set(value)
     }

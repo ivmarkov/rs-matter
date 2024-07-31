@@ -31,9 +31,7 @@ use core::marker::PhantomData;
 use crate::error::{Error, ErrorCode};
 use crate::utils::init;
 
-use super::{
-    EitherIter, FromTLV, TLVElement, TLVSequenceIter, TLVTag, TLVWrite, ToTLV2, ToTLVIter,
-};
+use super::{EitherIter, FromTLV, TLVElement, TLVSequenceIter, TLVTag, TLVWrite, ToTLV, ToTLVIter};
 
 /// A type-state that indicates that the container can be any type of container (array, list or struct).
 pub type AnyContainer = ();
@@ -189,8 +187,8 @@ where
     }
 }
 
-impl<'a, T, C> ToTLV2 for TLVContainer<'a, T, C> {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+impl<'a, T, C> ToTLV for TLVContainer<'a, T, C> {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.start_container(tag, self.tlv.control()?.value_type)?;
 
         let seq = self.tlv.container()?;
@@ -322,14 +320,14 @@ where
     }
 }
 
-impl<'a, T> ToTLV2 for TLVArrayOrSlice<'a, T>
+impl<'a, T> ToTLV for TLVArrayOrSlice<'a, T>
 where
-    T: ToTLV2,
+    T: ToTLV,
 {
-    fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error> {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error> {
         match self {
-            Self::Array(array) => array.to_tlv2(tag, tw),
-            Self::Slice(slice) => slice.to_tlv2(tag, tw),
+            Self::Array(array) => array.to_tlv(tag, tw),
+            Self::Slice(slice) => slice.to_tlv(tag, tw),
         }
     }
 

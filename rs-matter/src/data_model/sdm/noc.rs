@@ -28,7 +28,7 @@ use crate::crypto::{self, KeyPair};
 use crate::data_model::objects::*;
 use crate::data_model::sdm::dev_att;
 use crate::fabric::{Fabric, MAX_SUPPORTED_FABRICS};
-use crate::tlv::{FromTLV, OctetStr, TLVElement, TLVWrite, TLVWriter, TagType, ToTLV, UtfStr};
+use crate::tlv::{FromTLV, OctetStr, TLVElement, TLVTag, TLVWrite, TLVWriter, ToTLV, UtfStr};
 use crate::transport::exchange::Exchange;
 use crate::transport::session::SessionMode;
 use crate::utils::epoch::Epoch;
@@ -250,7 +250,7 @@ impl NocCluster {
 
                                     entry
                                         .get_fabric_desc(fab_idx, &root_ca_cert)?
-                                        .to_tlv(&mut writer, TagType::Anonymous)?;
+                                        .to_tlv(&TLVTag::Anonymous, &mut *writer)?;
                                 }
 
                                 Ok(())
@@ -734,13 +734,13 @@ fn add_attestation_element(
 
     let epoch = epoch().as_secs() as u32;
     let mut writer = TLVWriter::new(write_buf);
-    writer.start_struct(&TagType::Anonymous)?;
-    writer.str(&TagType::Context(1), cert_dec)?;
-    writer.str(&TagType::Context(2), att_nonce)?;
-    writer.u32(&TagType::Context(3), epoch)?;
+    writer.start_struct(&TLVTag::Anonymous)?;
+    writer.str(&TLVTag::Context(1), cert_dec)?;
+    writer.str(&TLVTag::Context(2), att_nonce)?;
+    writer.u32(&TLVTag::Context(3), epoch)?;
     writer.end_container()?;
 
-    t.str(&TagType::Context(0), write_buf.as_slice())
+    t.str(&TLVTag::Context(0), write_buf.as_slice())
 }
 
 fn add_attestation_signature(
@@ -759,7 +759,7 @@ fn add_attestation_signature(
     attest_element.copy_from_slice(attest_challenge)?;
     let mut signature = [0u8; crypto::EC_SIGNATURE_LEN_BYTES];
     dac_key.sign_msg(attest_element.as_slice().iter().copied(), &mut signature)?;
-    resp.str(&TagType::Context(1), &signature)
+    resp.str(&TLVTag::Context(1), &signature)
 }
 
 fn add_nocsrelement(
@@ -771,12 +771,12 @@ fn add_nocsrelement(
     let mut csr: [u8; MAX_CSR_LEN] = [0; MAX_CSR_LEN];
     let csr = noc_keypair.get_csr(&mut csr)?;
     let mut writer = TLVWriter::new(write_buf);
-    writer.start_struct(&TagType::Anonymous)?;
-    writer.str(&TagType::Context(1), csr)?;
-    writer.str(&TagType::Context(2), csr_nonce)?;
+    writer.start_struct(&TLVTag::Anonymous)?;
+    writer.str(&TLVTag::Context(1), csr)?;
+    writer.str(&TLVTag::Context(2), csr_nonce)?;
     writer.end_container()?;
 
-    resp.str(&TagType::Context(0), write_buf.as_slice())
+    resp.str(&TLVTag::Context(0), write_buf.as_slice())
 }
 
 fn get_certchainrequest_params(data: &TLVElement) -> Result<DataType, Error> {

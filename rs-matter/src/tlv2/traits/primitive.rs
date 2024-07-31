@@ -19,7 +19,7 @@
 
 use crate::error::{Error, ErrorCode};
 
-use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV2};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV};
 
 macro_rules! fromtlv_for {
     ($($t:ident)*) => {
@@ -48,8 +48,8 @@ macro_rules! fromtlv_for_nonzero {
 macro_rules! totlv_for {
     ($($t:ident)*) => {
         $(
-            impl ToTLV2 for $t {
-                fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+            impl ToTLV for $t {
+                fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
                     tw.$t(tag, *self)
                 }
 
@@ -72,8 +72,8 @@ macro_rules! totlv_for {
 macro_rules! totlv_for_nonzero {
     ($($t:ident:$n:ty)*) => {
         $(
-            impl ToTLV2 for $n {
-                fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+            impl ToTLV for $n {
+                fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
                     tw.$t(tag, self.get())
                 }
 

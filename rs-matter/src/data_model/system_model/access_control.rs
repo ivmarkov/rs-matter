@@ -24,7 +24,7 @@ use log::{error, info};
 use crate::acl::{self, AclEntry, AclMgr};
 use crate::data_model::objects::*;
 use crate::interaction_model::messages::ib::{attr_list_write, ListOperation};
-use crate::tlv::{FromTLV, TLVElement, TLVWrite, TagType, ToTLV};
+use crate::tlv::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV};
 use crate::transport::exchange::Exchange;
 use crate::{attribute_enum, error::*};
 
@@ -135,7 +135,7 @@ impl AccessControlCluster {
                         writer.start_array(&AttrDataWriter::TAG)?;
                         acl_mgr.for_each_acl(|entry| {
                             if !attr.fab_filter || attr.fab_idx == entry.fab_idx.get() {
-                                entry.to_tlv(&mut writer, TagType::Anonymous)?;
+                                entry.to_tlv(&TLVTag::Anonymous, &mut *writer)?;
                             }
 
                             Ok(())

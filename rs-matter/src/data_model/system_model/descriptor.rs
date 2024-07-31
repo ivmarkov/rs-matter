@@ -22,7 +22,7 @@ use strum::FromRepr;
 use crate::attribute_enum;
 use crate::data_model::objects::*;
 use crate::error::Error;
-use crate::tlv::{TLVWrite, TLVWriter, TagType, ToTLV2};
+use crate::tlv::{TLVWrite, TLVWriter, TagType, ToTLV};
 use crate::tlv2::TLVTag;
 use crate::transport::exchange::Exchange;
 
@@ -183,7 +183,7 @@ impl<'a> DescriptorCluster<'a> {
         for endpoint in node.endpoints {
             if endpoint.id == endpoint_id {
                 let dev_type = endpoint.device_type;
-                dev_type.to_tlv2(&TagType::Anonymous, &mut tw)?;
+                dev_type.to_tlv(&TagType::Anonymous, &mut tw)?;
             }
         }
 

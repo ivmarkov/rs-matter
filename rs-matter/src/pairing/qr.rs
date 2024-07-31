@@ -540,7 +540,7 @@ pub fn compute_qr_code_text<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{secure_channel::spake2p::VerifierData, tlv::ElementType, utils::rand::dummy_rand};
+    use crate::{secure_channel::spake2p::VerifierData, utils::rand::dummy_rand};
 
     #[test]
     fn can_base38_encode() {

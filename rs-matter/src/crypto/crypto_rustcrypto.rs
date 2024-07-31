@@ -207,7 +207,7 @@ impl KeyPair {
                             .unwrap(),
                         ),
                     },
-                    subject_public_key: BitString::from_bytes(&pubkey).unwrap(),
+                    subject_public_key: BitString::from_bytes(pubkey).unwrap(),
                 },
                 attributes: Default::default(),
             };
@@ -238,7 +238,7 @@ impl KeyPair {
     pub fn get_csr<'a>(&self, out_csr: &'a mut [u8]) -> Result<&'a [u8], Error> {
         let len = self.with_csr(|csr| {
             let a = &mut out_csr[0..csr.len()];
-            a.copy_from_slice(&csr);
+            a.copy_from_slice(csr);
             Ok(a.len())
         })?;
 
@@ -308,7 +308,7 @@ impl KeyPair {
                 let signing_key = SigningKey::from(k);
                 let mut digest = sha2::Sha256::new();
                 for byte in msg {
-                    digest.update(&[byte]);
+                    digest.update([byte]);
                 }
                 let sig: Signature = signing_key.sign_digest(digest);
                 let bytes = sig.to_bytes();
@@ -328,7 +328,7 @@ impl KeyPair {
 
         let mut digest = sha2::Sha256::new();
         for byte in msg {
-            digest.update(&[byte]);
+            digest.update([byte]);
         }
 
         verifying_key

@@ -212,7 +212,7 @@ impl<'a, T, C> ToTLV2 for TLVContainer<'a, T, C> {
                     self.tlv
                         .container()
                         .and_then(move |array| array.raw_value())
-                        .map(move |value| value.into_iter().copied().map(Result::Ok)),
+                        .map(move |value| value.iter().copied().map(Result::Ok)),
                 ))
                 .end_container(),
         )
@@ -230,7 +230,7 @@ impl<'a, T, C> ToTLV2 for TLVContainer<'a, T, C> {
                     self.tlv
                         .container()
                         .and_then(move |array| array.raw_value())
-                        .map(move |value| value.into_iter().copied().map(Result::Ok)),
+                        .map(move |value| value.iter().copied().map(Result::Ok)),
                 ))
                 .end_container(),
         )

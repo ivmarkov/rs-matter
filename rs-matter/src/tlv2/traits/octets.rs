@@ -98,6 +98,12 @@ pub struct OctetsOwned<const N: usize> {
     pub vec: Vec<u8, N>,
 }
 
+impl<const N: usize> Default for OctetsOwned<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const N: usize> OctetsOwned<N> {
     /// Create a new empty `OctetsOwned` instance
     pub const fn new() -> Self {

@@ -559,13 +559,13 @@ impl NocCluster {
             exchange.matter().dev_att(),
             req.str.0,
             &mut attest_element,
-            &mut *writer,
+            &mut writer,
         )?;
         add_attestation_signature(
             exchange.matter().dev_att(),
             &mut attest_element,
             &attest_challenge,
-            &mut *writer,
+            &mut writer,
         )?;
         writer.end_container()?;
 
@@ -630,12 +630,12 @@ impl NocCluster {
         let mut buf: [u8; RESP_MAX] = [0; RESP_MAX];
         let mut nocsr_element = WriteBuf::new(&mut buf);
         writer.start_struct(&CmdDataWriter::TAG)?;
-        add_nocsrelement(&noc_keypair, req.str.0, &mut nocsr_element, &mut *writer)?;
+        add_nocsrelement(&noc_keypair, req.str.0, &mut nocsr_element, &mut writer)?;
         add_attestation_signature(
             exchange.matter().dev_att(),
             &mut nocsr_element,
             &attest_challenge,
-            &mut *writer,
+            &mut writer,
         )?;
         writer.end_container()?;
 

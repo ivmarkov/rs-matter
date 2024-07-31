@@ -633,7 +633,7 @@ impl<'a> TLVElement<'a> {
                 *self
                     .0
                     .tag(control.tag_type)?
-                    .get(0)
+                    .first()
                     .ok_or(ErrorCode::TLVTypeMismatch)?,
             ))
         } else {
@@ -817,7 +817,7 @@ impl<'a> TLVSequence<'a> {
     /// Return the TLV control byte of the first TLV in the sequence.
     #[inline(always)]
     fn control(&self) -> Result<TLVControl, Error> {
-        TLVControl::parse(*self.0.get(0).ok_or(ErrorCode::TLVTypeMismatch)?)
+        TLVControl::parse(*self.0.first().ok_or(ErrorCode::TLVTypeMismatch)?)
     }
 
     /// Return a sub-slice of the wrapped byte slice that designates the START of the tag payload

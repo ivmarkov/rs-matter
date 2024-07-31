@@ -47,14 +47,14 @@ macro_rules! bitflags_tlv {
 
             fn to_tlv_iter(
                 &self,
-                tag: crate::tlv2::TLVTag,
+                tag: $crate::tlv2::TLVTag,
             ) -> impl Iterator<Item = Result<u8, Error>> {
                 $crate::tlv2::ToTLVIter::$type(core::iter::empty(), tag, self.bits())
             }
 
             fn into_tlv_iter(
                 self,
-                tag: crate::tlv2::TLVTag,
+                tag: $crate::tlv2::TLVTag,
             ) -> impl Iterator<Item = Result<u8, Error>> {
                 $crate::tlv2::ToTLVIter::$type(core::iter::empty(), tag, self.bits())
             }

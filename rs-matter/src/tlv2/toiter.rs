@@ -82,7 +82,7 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
             TLVValue::U32(a) => Either6Iter::Fourth(size._raw_bytes(a.to_le_bytes())),
             TLVValue::U64(a) => Either6Iter::Fifth(size._raw_bytes(a.to_le_bytes())),
             TLVValue::Struct(seq) | TLVValue::Array(seq) | TLVValue::List(seq) => {
-                Either6Iter::Sixth(size._raw_bytes(seq.0.into_iter().copied()))
+                Either6Iter::Sixth(size._raw_bytes(seq.0.iter().copied()))
             }
             TLVValue::Null | TLVValue::True | TLVValue::False => Either6Iter::First(size),
             TLVValue::F32(a) => Either6Iter::Fourth(size._raw_bytes(a.to_le_bytes())),
@@ -90,12 +90,12 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
             TLVValue::Str8l(a)
             | TLVValue::Str16l(a)
             | TLVValue::Str32l(a)
-            | TLVValue::Str64l(a) => Either6Iter::Sixth(size._raw_bytes((*a).into_iter().copied())),
+            | TLVValue::Str64l(a) => Either6Iter::Sixth(size._raw_bytes((*a).iter().copied())),
             TLVValue::Utf8l(a)
             | TLVValue::Utf16l(a)
             | TLVValue::Utf32l(a)
             | TLVValue::Utf64l(a) => {
-                Either6Iter::Sixth(size._raw_bytes((*a.as_bytes()).into_iter().copied()))
+                Either6Iter::Sixth(size._raw_bytes((*a.as_bytes()).iter().copied()))
             }
         }
     }
@@ -122,7 +122,7 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
         } else {
             EitherIter::Second(
                 self._tag(tag, TLVValueType::S16)
-                    ._raw_bytes((data as i16).to_le_bytes()),
+                    ._raw_bytes(data.to_le_bytes()),
             )
         }
     }
@@ -138,7 +138,7 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
         } else {
             EitherIter::Second(
                 self._tag(tag, TLVValueType::U16)
-                    ._raw_bytes((data as u16).to_le_bytes()),
+                    ._raw_bytes(data.to_le_bytes()),
             )
         }
     }
@@ -159,7 +159,7 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
         } else {
             Either3Iter::Third(
                 self._tag(tag, TLVValueType::S32)
-                    ._raw_bytes((data as i32).to_le_bytes()),
+                    ._raw_bytes(data.to_le_bytes()),
             )
         }
     }
@@ -180,7 +180,7 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
         } else {
             Either3Iter::Third(
                 self._tag(tag, TLVValueType::U32)
-                    ._raw_bytes((data as u32).to_le_bytes()),
+                    ._raw_bytes(data.to_le_bytes()),
             )
         }
     }
@@ -257,7 +257,7 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
         self.stri(
             tag,
             data.len(),
-            core::iter::empty()._raw_bytes(data.into_iter().copied()),
+            core::iter::empty()._raw_bytes(data.iter().copied()),
         )
     }
 
@@ -307,7 +307,7 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
         self.utf8i(
             tag,
             data.len(),
-            core::iter::empty()._raw_bytes(data.as_bytes().into_iter().copied()),
+            core::iter::empty()._raw_bytes(data.as_bytes().iter().copied()),
         )
     }
 

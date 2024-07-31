@@ -275,7 +275,7 @@ impl<'a> FromTLV<'a> for Extensions<'a> {
 
 impl<'a> ToTLV2 for Extensions<'a> {
     fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
-        tw.start_list(&tag)?;
+        tw.start_list(tag)?;
 
         for extension in self.iter()? {
             match extension? {
@@ -468,7 +468,7 @@ impl<'a> FromTLV<'a> for DistNames<'a> {
 
 impl<'a> ToTLV2 for DistNames<'a> {
     fn to_tlv2<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
-        tw.start_list(&tag)?;
+        tw.start_list(tag)?;
         for dn in self.iter()? {
             let (name, value) = dn?;
 

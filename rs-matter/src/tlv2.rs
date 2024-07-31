@@ -433,19 +433,19 @@ impl<'a> TLVValue<'a> {
             Self::F64(a) => write!(f, "F64({a})"),
             Self::Null => write!(f, "Null"),
             Self::Struct(elements) => {
-                write!(f, "{{\n")?;
+                writeln!(f, "{{")?;
                 elements.fmt(indent + 1, f)?;
                 pad(indent, f)?;
                 write!(f, "}}")
             }
             Self::Array(elements) => {
-                write!(f, "[\n")?;
+                writeln!(f, "[")?;
                 elements.fmt(indent + 1, f)?;
                 pad(indent, f)?;
                 write!(f, "]")
             }
             Self::List(elements) => {
-                write!(f, "(\n")?;
+                writeln!(f, "(")?;
                 elements.fmt(indent + 1, f)?;
                 pad(indent, f)?;
                 write!(f, ")")

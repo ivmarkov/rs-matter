@@ -872,14 +872,14 @@ impl<'a> InvReq<'a> {
         handler: T,
         exchange: &Exchange<'_>,
         node: &Node<'_>,
-        mut wb: &mut WriteBuf<'_>,
+        wb: &mut WriteBuf<'_>,
     ) -> Result<(), Error>
     where
         T: DataModelHandler,
     {
         wb.reset();
 
-        let mut tw = TLVWriter::new(&mut wb);
+        let mut tw = TLVWriter::new(wb);
 
         tw.start_struct(&TLVTag::Anonymous)?;
 

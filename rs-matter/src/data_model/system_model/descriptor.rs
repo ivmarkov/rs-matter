@@ -143,7 +143,7 @@ impl<'a> DescriptorCluster<'a> {
                             attr.node,
                             attr.endpoint_id,
                             &AttrDataWriter::TAG,
-                            &mut *writer,
+                            &mut writer,
                         )?;
                         writer.complete()
                     }
@@ -152,7 +152,7 @@ impl<'a> DescriptorCluster<'a> {
                             attr.node,
                             attr.endpoint_id,
                             &AttrDataWriter::TAG,
-                            &mut *writer,
+                            &mut writer,
                         )?;
                         writer.complete()
                     }
@@ -161,7 +161,7 @@ impl<'a> DescriptorCluster<'a> {
                             attr.node,
                             attr.endpoint_id,
                             &AttrDataWriter::TAG,
-                            &mut *writer,
+                            &mut writer,
                         )?;
                         writer.complete()
                     }

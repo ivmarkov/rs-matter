@@ -47,7 +47,7 @@ where
             vec.push(item?).map_err(|_| ErrorCode::NoSpace)?;
         }
 
-        return Ok(vec);
+        Ok(vec)
     }
 
     fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {

@@ -46,7 +46,7 @@ where
     }
 
     fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        into_tlv_array_iter(tag, self.into_iter())
+        into_tlv_array_iter(tag, self.iter())
     }
 }
 

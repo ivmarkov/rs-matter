@@ -98,11 +98,11 @@ pub trait TLVWrite {
             TLVValue::Utf8l(a)
             | TLVValue::Utf16l(a)
             | TLVValue::Utf32l(a)
-            | TLVValue::Utf64l(a) => self.write_raw_data(a.as_bytes().into_iter().copied()),
+            | TLVValue::Utf64l(a) => self.write_raw_data(a.as_bytes().iter().copied()),
             TLVValue::Str8l(a)
             | TLVValue::Str16l(a)
             | TLVValue::Str32l(a)
-            | TLVValue::Str64l(a) => self.write_raw_data(a.into_iter().copied()),
+            | TLVValue::Str64l(a) => self.write_raw_data(a.iter().copied()),
             TLVValue::Null => Ok(()),
             TLVValue::Struct(seq) | TLVValue::Array(seq) | TLVValue::List(seq) => {
                 self.write_raw_data(seq.0.iter().copied())
@@ -189,7 +189,7 @@ pub trait TLVWrite {
     /// The exact octet string type (Str8l, Str16l, Str32l, or Str64l) is chosen based on the length of the data,
     /// whereas the smallest type filling the provided data length is chosen.
     fn str(&mut self, tag: &TLVTag, data: &[u8]) -> Result<(), Error> {
-        self.stri(tag, data.len(), data.into_iter().copied())
+        self.stri(tag, data.len(), data.iter().copied())
     }
 
     /// Write a tag and a TLV Octet String to the TLV stream, where the Octet String is
@@ -222,7 +222,7 @@ pub trait TLVWrite {
     /// The exact UTF-8 string type (Utf8l, Utf16l, Utf32l, or Utf64l) is chosen based on the length of the data,
     /// whereas the smallest type filling the provided data length is chosen.
     fn utf8(&mut self, tag: &TLVTag, data: &str) -> Result<(), Error> {
-        self.utf8i(tag, data.len(), data.as_bytes().into_iter().copied())
+        self.utf8i(tag, data.len(), data.as_bytes().iter().copied())
     }
 
     /// Write a tag and a TLV UTF-8 String to the TLV stream, where the UTF-8 String is
@@ -348,7 +348,7 @@ pub trait TLVWrite {
             }
         }?;
 
-        self.write_raw_data(value_payload.into_iter().copied())
+        self.write_raw_data(value_payload.iter().copied())
     }
 
     /// Append multiple raw bytes to the TLV stream.
@@ -555,7 +555,7 @@ mod tests {
         tw.utf8i(
             &TLVTag::Anonymous,
             "Tschüs".len(),
-            "Tschüs".as_bytes().into_iter().copied(),
+            "Tschüs".as_bytes().iter().copied(),
         )
         .unwrap();
         assert_eq!(

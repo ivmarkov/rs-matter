@@ -15,9 +15,16 @@
  *    limitations under the License.
  */
 
-//! A container type (`TLVArray`) and an iterator type (`TLVArrayIter`) that represents and iterates directly over serialized TLV arrays.
-//! As such, the memory prepresentation of `TLVArray` / `TLVArrayIter` is just a byte slice (`&[u8]`),
-//! and the array elements are materialized only when the array is iterated over.
+//! A container type (`TLVContainer`) and an iterator type (`TLVContainerIter`) that represent and iterate directly over serialized TLV containers.
+//! As such, the memory prepresentation of `TLVContainer` and `TLVContainerIter` is just a byte slice (`&[u8]`),
+//! and the container elements are materialized (with `FromTLV`) only when the container is iterated over.
+//!
+//! The difference between `TLVContainer` and `TLVContainerIter` on one side, and `TLVElement`, `TLVSequence` and `TLVSequenceIter` on the other
+//! is that the former are generified by type `T: FromTLV<'_>` and can directly yield values of type `T` when iterated over,
+//! while iterating over a `TLVSequence` with a `TLVSequenceIter` always yields elements of type `TLVElement`.
+//!
+//! Thus, a `TLVContainer<TLVElement<'_>, ()`> is equivalent to a `TLVElement` which represents a container and
+//! `TLVContainerIter<TLVElement<'_>>` is equivalent to a `TLVSequenceIter<'_>` that is obtained by `element.container()?.iter()`.
 
 use core::marker::PhantomData;
 
@@ -80,7 +87,7 @@ where
         &self.tlv
     }
 
-    /// Returns an iterator over the elements of the array.
+    /// Returns an iterator over the elements of the container.
     pub fn iter(&self) -> TLVContainerIter<'a, T> {
         TLVContainerIter::new(self.tlv.container().unwrap().iter())
     }
@@ -104,7 +111,7 @@ impl<'a, T> TLVContainer<'a, T, AnyContainer>
 where
     T: FromTLV<'a>,
 {
-    /// Creates a new `TLVContainer` from a TLV element that is expected to be a container.
+    /// Creates a new `TLVContainer` from a TLV element that can be any container.
     pub fn new(tlv: TLVElement<'a>) -> Result<Self, Error> {
         tlv.container()?;
 
@@ -230,7 +237,7 @@ impl<'a, T, C> ToTLV2 for TLVContainer<'a, T, C> {
     }
 }
 
-/// An iterator over a serialized TLV array.
+/// An iterator over a serialized TLV container.
 #[repr(transparent)]
 pub struct TLVContainerIter<'a, T> {
     iter: TLVSequenceIter<'a>,

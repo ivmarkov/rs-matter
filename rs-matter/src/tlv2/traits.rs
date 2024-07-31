@@ -43,11 +43,11 @@ mod vec;
 /// A trait representing Rust types that can deserialize themselves from
 /// a TLV-encoded byte slice.
 pub trait FromTLV<'a>: Sized + 'a {
-    /// Deserialize the type from a TLV-encoded byte slice.
+    /// Deserialize the type from a TLV-encoded element.
     fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error>;
 
     /// Generate an in-place initializer for the type that initializes
-    /// the type from a TLV-encoded byte slice.
+    /// the type from a TLV-encoded element.
     fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
         unsafe {
             init::init_from_closure(move |slot| {

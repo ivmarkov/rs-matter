@@ -11,7 +11,7 @@ type ByteResult = Result<u8, Error>;
 /// trait combinators (e.g. `map`, `filter`, `flat_map`, etc.) that allow for serializing TLV elements.
 ///
 /// The trait is already implemented for any `Iterator` with `Item = Result<u8, Error>`, so users are
-/// not expected to proviude implementations of it.
+/// not expected to provide implementations of it.
 ///
 /// Using an Iterator approach to TLV serialization is useful when the data is not serialized to its
 /// final location (be it in the storage or in an outgoing network packet) - but rather - is serialized
@@ -26,7 +26,8 @@ type ByteResult = Result<u8, Error>;
 /// of the Rust `Iterator` combinators (e.g. `chain`, `map`, `flat_map`, etc.).
 ///
 /// Therefore, the iterator TLV serialization is only useful when the serialized TLV data contains few but
-/// large non-container TLV elements, like octet strings or utf8 strings (typically, TLV-encoded certificates).
+/// large non-container TLV elements, like octet strings or utf8 strings
+/// (which is typical for e.g. TLV-encoded certificates).
 ///
 /// For other cases, allocating a temporary memory buffer and serializing into it with `TLVWrite` might result
 /// in less memory overhead (and better performance when reading the raw serialized TLV data) by the code that
@@ -234,6 +235,18 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
                     ._raw_bytes(data.to_le_bytes()),
             )
         }
+    }
+
+    /// Serialize the given tag and the provided value as an F32 TLV value.
+    fn f32(self, tag: TLVTag, data: f32) -> impl Iterator<Item = ByteResult> {
+        self._tag(tag, TLVValueType::F32)
+            ._raw_bytes(data.to_le_bytes())
+    }
+
+    /// Serialize the given tag and the provided value as an F64 TLV value.
+    fn f64(self, tag: TLVTag, data: f64) -> impl Iterator<Item = ByteResult> {
+        self._tag(tag, TLVValueType::F64)
+            ._raw_bytes(data.to_le_bytes())
     }
 
     /// Serialize the given tag and the provided value as a TLV Octet String.

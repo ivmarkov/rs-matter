@@ -22,11 +22,11 @@
 //!
 //! To elaborate, `null` and optional are two different notions in the TLV spec:
 //! - Optional values apply only to TLV structs, and have the semantics
-//!   that the value is not provided in the TLV stream for that struct
-//! - `null` is a property of the type DOMAIN and therefore applies to all TLV types,
+//!   that the value might not be provided in the TLV stream for that struct
+//! - `null` is a property of the type _domain_ and therefore applies to all TLV types,
 //!   and has the semantics that the value is provided, but is null
 //!
-//! Therefore, `Optional<Nullable<T>>` is completely valid (in the context of a struct member)
+//! Therefore, e.g. `Optional<Nullable<T>>` is completely valid (in the context of a struct member)
 //! and means that this struct member is optional, but additionally - when provided - can be null.
 //!
 //! In terms of memory optimizations:

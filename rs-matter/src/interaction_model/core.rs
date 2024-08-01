@@ -152,6 +152,7 @@ pub const PROTO_ID_INTERACTION_MODEL: u16 = 0x01;
 
 /// A wrapper enum for `ReadReq` and `SubscribeReq` that allows downstream code to
 /// treat the two in a unified manner with regards to `OpCode::ReportDataResp` type responses.
+#[derive(Debug, Clone)]
 pub enum ReportDataReq<'a> {
     Read(&'a ReadReqRef<'a>),
     Subscribe(&'a SubscribeReqRef<'a>),

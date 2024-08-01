@@ -463,12 +463,6 @@ impl<'a> TLVValue<'a> {
 }
 
 /// For backwards compatibility
-pub fn get_root_node(data: &[u8]) -> Result<TLVElement<'_>, Error> {
-    // TODO: Check for trailing data
-    Ok(TLVElement::new(data))
-}
-
-/// For backwards compatibility
 pub fn get_root_node_struct(data: &[u8]) -> Result<TLVElement<'_>, Error> {
     // TODO: Check for trailing data
     let element = TLVElement::new(data);

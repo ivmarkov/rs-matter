@@ -33,8 +33,8 @@ use crate::interaction_model::core::{
     IMStatusCode, OpCode, ReportDataReq, PROTO_ID_INTERACTION_MODEL,
 };
 use crate::interaction_model::messages::msg::{
-    InvReq, InvRespTag, ReadReqRef, ReportDataTag, StatusResp, SubscribeReqRef, SubscribeResp,
-    TimedReq, WriteReq, WriteRespTag,
+    InvReqRef, InvRespTag, ReadReqRef, ReportDataTag, StatusResp, SubscribeReqRef, SubscribeResp,
+    TimedReq, WriteReqRef, WriteRespTag,
 };
 use crate::respond::ExchangeHandler;
 use crate::tlv::{get_root_node_struct, FromTLV, TLVElement, TLVTag, TLVWrite, TLVWriter};
@@ -241,10 +241,10 @@ where
         exchange: &mut Exchange<'_>,
         timeout_instant: Option<Duration>,
     ) -> Result<bool, Error> {
-        let req = WriteReq::from_tlv(&get_root_node_struct(exchange.rx()?.payload())?)?;
+        let req = WriteReqRef::new(TLVElement::new(exchange.rx()?.payload()));
         debug!("IM: Write request: {:?}", req);
 
-        let timed = req.timed_request.unwrap_or(false);
+        let timed = req.timed_request()?;
 
         if self.timed_out(exchange, timeout_instant, timed).await? {
             return Ok(false);
@@ -258,12 +258,12 @@ where
 
         let metadata = self.handler.lock().await;
 
-        let req = WriteReq::from_tlv(&get_root_node_struct(exchange.rx()?.payload())?)?;
+        let req = WriteReqRef::new(TLVElement::new(exchange.rx()?.payload()));
 
         // Will the clusters that are to be invoked await?
         let mut awaits = false;
 
-        for item in metadata.node().write(&req, &exchange.accessor()?) {
+        for item in metadata.node().write(&req, &exchange.accessor()?)? {
             if item?
                 .map(|(attr, _)| self.handler.write_awaits(exchange, &attr))
                 .unwrap_or(false)
@@ -283,7 +283,7 @@ where
                 return Ok(false);
             };
 
-            let req = WriteReq::from_tlv(&get_root_node_struct(&rx)?)?;
+            let req = WriteReqRef::new(TLVElement::new(&rx));
 
             req.respond(&self.handler, exchange, &metadata.node(), &mut wb)
                 .await?
@@ -305,10 +305,10 @@ where
         exchange: &mut Exchange<'_>,
         timeout_instant: Option<Duration>,
     ) -> Result<(), Error> {
-        let req = InvReq::from_tlv(&get_root_node_struct(exchange.rx()?.payload())?)?;
+        let req = InvReqRef::new(TLVElement::new(exchange.rx()?.payload()));
         debug!("IM: Invoke request: {:?}", req);
 
-        let timed = req.timed_request.unwrap_or(false);
+        let timed = req.timed_request()?;
 
         if self.timed_out(exchange, timeout_instant, timed).await? {
             return Ok(());
@@ -322,12 +322,12 @@ where
 
         let metadata = self.handler.lock().await;
 
-        let req = InvReq::from_tlv(&get_root_node_struct(exchange.rx()?.payload())?)?;
+        let req = InvReqRef::new(TLVElement::new(exchange.rx()?.payload()));
 
         // Will the clusters that are to be invoked await?
         let mut awaits = false;
 
-        for item in metadata.node().invoke(&req, &exchange.accessor()?) {
+        for item in metadata.node().invoke(&req, &exchange.accessor()?)? {
             if item?
                 .map(|(cmd, _)| self.handler.invoke_awaits(exchange, &cmd))
                 .unwrap_or(false)
@@ -347,7 +347,7 @@ where
                 return Ok(());
             };
 
-            let req = InvReq::from_tlv(&get_root_node_struct(&rx)?)?;
+            let req = InvReqRef::new(TLVElement::new(&rx));
 
             req.respond(&self.handler, exchange, &metadata.node(), &mut wb)
                 .await?;
@@ -830,7 +830,7 @@ impl<'a> ReportDataReq<'a> {
     }
 }
 
-impl<'a> WriteReq<'a> {
+impl<'a> WriteReqRef<'a> {
     async fn respond<T>(
         &self,
         handler: T,
@@ -861,7 +861,7 @@ impl<'a> WriteReq<'a> {
         // Thus we support the Case1 by doing this. It does come at the cost of maintaining an
         // additional list of expanded write requests as we start processing those.
         let write_attrs: heapless::Vec<_, MAX_WRITE_ATTRS_IN_ONE_TRANS> =
-            node.write(self, &accessor).collect();
+            node.write(self, &accessor)?.collect();
 
         for item in write_attrs {
             AttrDataEncoder::handle_write(exchange, &item?, &handler, &mut tw).await?;
@@ -870,11 +870,11 @@ impl<'a> WriteReq<'a> {
         tw.end_container()?;
         tw.end_container()?;
 
-        Ok(self.more_chunked.unwrap_or(false))
+        self.more_chunked()
     }
 }
 
-impl<'a> InvReq<'a> {
+impl<'a> InvReqRef<'a> {
     async fn respond<T>(
         &self,
         handler: T,
@@ -894,7 +894,7 @@ impl<'a> InvReq<'a> {
         // Suppress Response -> TODO: Need to revisit this for cases where we send a command back
         tw.bool(&TLVTag::Context(InvRespTag::SupressResponse as u8), false)?;
 
-        let has_requests = self.inv_requests.is_some();
+        let has_requests = self.has_inv_requests()?;
 
         if has_requests {
             tw.start_array(&TLVTag::Context(InvRespTag::InvokeResponses as u8))?;
@@ -902,7 +902,7 @@ impl<'a> InvReq<'a> {
 
         let accessor = exchange.accessor()?;
 
-        for item in node.invoke(self, &accessor) {
+        for item in node.invoke(self, &accessor)? {
             CmdDataEncoder::handle(&item?, &handler, &mut tw, exchange).await?;
         }
 

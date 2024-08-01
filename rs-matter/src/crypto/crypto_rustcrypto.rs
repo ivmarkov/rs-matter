@@ -163,6 +163,7 @@ impl KeyPair {
             KeyType::Public(_) => Err(ErrorCode::Crypto.into()),
         }
     }
+
     pub fn get_private_key(&self, priv_key: &mut [u8]) -> Result<usize, Error> {
         self.with_private_key(|key| {
             let len = key.len();
@@ -170,6 +171,7 @@ impl KeyPair {
             Ok(len)
         })
     }
+
     pub fn with_csr<F, R>(&self, f: F) -> Result<R, Error>
     where
         F: FnOnce(&[u8]) -> Result<R, Error>,
@@ -235,6 +237,7 @@ impl KeyPair {
             f(&out)
         })
     }
+
     pub fn get_csr<'a>(&self, out_csr: &'a mut [u8]) -> Result<&'a [u8], Error> {
         let len = self.with_csr(|csr| {
             let a = &mut out_csr[0..csr.len()];
@@ -244,6 +247,7 @@ impl KeyPair {
 
         Ok(&out_csr[..len])
     }
+
     pub fn with_public_key<F, R>(&self, pub_key_cb: F) -> Result<R, Error>
     where
         F: FnOnce(&[u8]) -> Result<R, Error>,
@@ -252,6 +256,7 @@ impl KeyPair {
 
         pub_key_cb(point.as_bytes())
     }
+
     pub fn get_public_key(&self, pub_key: &mut [u8]) -> Result<usize, Error> {
         self.with_public_key(|key| {
             let len = key.len();
@@ -259,6 +264,7 @@ impl KeyPair {
             Ok(len)
         })
     }
+
     pub fn derive_secret(self, peer_pub_key: &[u8], secret: &mut [u8]) -> Result<usize, Error> {
         self.with_derived_secret(peer_pub_key, |s| {
             assert_eq!(secret.len(), s.len());
@@ -267,6 +273,7 @@ impl KeyPair {
             Ok(s.len())
         })
     }
+
     pub fn with_derived_secret<F, R>(self, peer_pub_key: &[u8], f: F) -> Result<R, Error>
     where
         F: FnOnce(&[u8]) -> Result<R, Error>,
@@ -282,6 +289,7 @@ impl KeyPair {
 
         f(bytes.as_slice())
     }
+
     pub fn sign_msg<I>(&self, msg: I, signature: &mut [u8]) -> Result<usize, Error>
     where
         I: Iterator<Item = u8>,
@@ -296,6 +304,7 @@ impl KeyPair {
             Ok(len)
         })
     }
+
     pub fn with_msg_signature<I, F, R>(&self, msg: I, f: F) -> Result<R, Error>
     where
         I: Iterator<Item = u8>,
@@ -317,6 +326,7 @@ impl KeyPair {
             KeyType::Public(_) => todo!(),
         }
     }
+
     pub fn verify_msg<I>(&self, msg: I, signature: &[u8]) -> Result<(), Error>
     where
         I: Iterator<Item = u8>,

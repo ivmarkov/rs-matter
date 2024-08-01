@@ -70,7 +70,7 @@ use super::{pad, TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType, TLV};
 /// In practice, random access - and in general - representation of the TLV stream as a `&[u8]` slice should be natural and
 /// convenient, as the TLV stream usually comes from the network UDP/TCP memory buffers of the Matter transport protocol, and
 /// these can and are borrowed as `&[u8]` slices in the upper-layer code for direct reads.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct TLVElement<'a>(TLVSequence<'a>);
 
@@ -87,6 +87,14 @@ impl<'a> TLVElement<'a> {
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.0 .0.is_empty()
+    }
+
+    pub fn non_empty(&self) -> Option<&TLVElement<'a>> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self)
+        }
     }
 
     /// Return a copy of the wrapped TLV byte slice.
@@ -623,8 +631,14 @@ impl<'a> TLVElement<'a> {
         }
     }
 
-    /// Retrieve the context ID of the first TLV in the slice.
-    /// If the first TLV is not tagged with a context tag, the method will return `None`.
+    /// Retrieve the context ID of the element.
+    /// If element is not tagged with a context tag, the method will return an error.
+    pub fn ctx(&self) -> Result<u8, Error> {
+        self.try_ctx()?.ok_or(ErrorCode::TLVTypeMismatch.into())
+    }
+
+    /// Retrieve the context ID of the element.
+    /// If element is not tagged with a context tag, the method will return `None`.
     pub fn try_ctx(&self) -> Result<Option<u8>, Error> {
         let control = self.control()?;
 
@@ -658,6 +672,12 @@ impl<'a> TLVElement<'a> {
     }
 }
 
+impl<'a> fmt::Debug for TLVElement<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.fmt(0, f)
+    }
+}
+
 impl<'a> fmt::Display for TLVElement<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.fmt(0, f)
@@ -674,7 +694,7 @@ impl<'a> fmt::Display for TLVElement<'a> {
 /// Unlike `TLVElement`, `TLVSequence` - as the name suggests - represents a sequence of 0, 1 or more `TLVElements`.
 /// The only public API of `TLVSequence` however is the `iter` method which returns a `TLVContainerIter` iterator over
 /// the `TLVElement` instances in the sequence.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct TLVSequence<'a>(pub(crate) &'a [u8]);
 
@@ -721,6 +741,37 @@ impl<'a> TLVSequence<'a> {
         }
 
         Ok(TLVElement(Self::EMPTY))
+    }
+
+    pub fn scan_ctx(&mut self, ctx: u8) -> Result<TLVElement<'a>, Error> {
+        self.scan_map(move |elem| {
+            if elem.is_empty() {
+                return Ok(Some(elem));
+            }
+
+            if let Some(elem_ctx) = elem.try_ctx()? {
+                if elem_ctx == ctx {
+                    return Ok(Some(elem));
+                } else if elem_ctx > ctx {
+                    return Ok(Some(TLVElement(Self::EMPTY)));
+                }
+            }
+
+            Ok(None)
+        })
+    }
+
+    pub fn scan_map<F>(&mut self, mut f: F) -> Result<TLVElement<'a>, Error>
+    where
+        F: FnMut(TLVElement<'a>) -> Result<Option<TLVElement<'a>>, Error>,
+    {
+        loop {
+            if let Some(elem) = f(self.current()?)? {
+                return Ok(elem);
+            }
+
+            *self = self.container_next()?;
+        }
     }
 
     /// Return a raw byte sub-slice representing the TLV-encoded elements and only those
@@ -1001,6 +1052,12 @@ impl<'a> TLVSequence<'a> {
     }
 }
 
+impl<'a> fmt::Debug for TLVSequence<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.fmt(0, f)
+    }
+}
+
 impl<'a> fmt::Display for TLVSequence<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.fmt(0, f)
@@ -1008,7 +1065,7 @@ impl<'a> fmt::Display for TLVSequence<'a> {
 }
 
 /// A type representing an iterator over the elements of a `TLVSequence`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[repr(transparent)]
 pub struct TLVSequenceIter<'a>(TLVSequence<'a>);
 
@@ -1034,6 +1091,18 @@ impl<'a> Iterator for TLVSequenceIter<'a> {
             .and_then(|current| self.advance().map(|_| current))
             .map(|elem| (!elem.is_empty()).then_some(elem))
             .transpose()
+    }
+}
+
+impl<'a> fmt::Debug for TLVSequenceIter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(0, f)
+    }
+}
+
+impl<'a> fmt::Display for TLVSequenceIter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(0, f)
     }
 }
 

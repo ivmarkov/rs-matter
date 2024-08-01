@@ -508,31 +508,16 @@ fn gen_fromtlv_for_struct(
     }
 
     let krate = Ident::new(&tlvargs.rs_matter_crate, Span::call_site());
+    let seq_method = format_ident!("{}_ctx", if tlvargs.unordered { "find" } else { "scan" });
 
-    // Currently we don't use find_tag() because the tags come in sequential
-    // order. If ever the tags start coming out of order, we can use find_tag()
-    // instead
-    //if !tlvargs.unordered {
     quote! {
-        // #[repr(transparent)]
-        // pub struct #struct_name_ref #generics (#krate::tlv::TLVElement<#lifetime>);
-
-        // impl #generics #krate::tlv::FromTLV<#lifetime> for #struct_name_ref #generics {
-        //     fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
-        //         Ok(Self(tlv.clone()))
-        //     }
-        // }
-
         impl #generics #krate::tlv::FromTLV<#lifetime> for #struct_name #generics {
-            fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
-                let tlv = tlv.#datatype()?;
-
-                #(
-                    let #idents = #types::from_tlv(&tlv.find_ctx(#tags as u8)?)?;
-                )*
+            fn from_tlv(element: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
+                #[allow(unused_mut)]
+                let mut seq = element.#datatype()?;
 
                 Ok(Self {
-                    #(#idents,
+                    #(#idents: #types::from_tlv(&seq.#seq_method(#tags as u8)?)?,
                     )*
                 })
             }
@@ -541,33 +526,13 @@ fn gen_fromtlv_for_struct(
         impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #struct_name #generics {
             type Error = #krate::error::Error;
 
-            fn try_from(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
+            fn try_from(element: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
                 use #krate::tlv::FromTLV;
 
-                Self::from_tlv(tlv)
+                Self::from_tlv(element)
             }
         }
     }
-    // } else {
-    //     quote! {
-    //        impl #generics #krate::tlv::FromTLV<#lifetime> for #struct_name #generics {
-    //            fn from_tlv(tlv: #krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
-    //                #(
-    //                    let #idents = if let Ok(s) = t.find_tag(#tags as u32) {
-    //                        #types::from_tlv(&s)
-    //                    } else {
-    //                        #types::tlv_not_found()
-    //                    }?;
-    //                )*
-
-    //                Ok(Self {
-    //                    #(#idents,
-    //                    )*
-    //                })
-    //            }
-    //        }
-    //     }
-    // }
 }
 
 /// Generate a FromTlv implementation for an enum
@@ -625,15 +590,16 @@ fn gen_fromtlv_for_enum(
 
     let krate = Ident::new(&tlvargs.rs_matter_crate, Span::call_site());
     if variant_types.contains(&FieldTypes::Unit) {
-        let (read_func, tags) =
+        let (elem_read_method, tags) =
             get_unit_enum_func_and_tags(enum_name, tlvargs.datatype.as_str(), tags);
 
         quote! {
             impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
-                fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
-                    Ok(match tlv.#read_func()? {
-                    #( #tags => Self::#variant_names, )*
-                    _ => return Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
+                fn from_tlv(element: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
+                    Ok(match element.#elem_read_method()? {
+                        #(#tags => Self::#variant_names,
+                        )*
+                        _ => Err(#krate::error::ErrorCode::Invalid)?,
                     })
                 }
             }
@@ -641,10 +607,10 @@ fn gen_fromtlv_for_enum(
             impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #enum_name #generics {
                 type Error = #krate::error::Error;
 
-                fn try_from(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
+                fn try_from(element: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
                     use #krate::tlv::FromTLV;
 
-                    Self::from_tlv(tlv)
+                    Self::from_tlv(element)
                 }
             }
         }
@@ -675,81 +641,42 @@ fn gen_fromtlv_for_enum(
             }
         }
 
-        if tlvargs.datatype == "naked" {
-            quote! {
-                impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
-                    fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
-                        let tag = tlv
-                            .try_ctx()?
-                            .ok_or(#krate::error::ErrorCode::TLVTypeMismatch)?;
-
-                        match tag {
-                            #(
-                                #tags => Ok(Self::#variant_names(#types::from_tlv(&tlv)?)),
-                            )*
-                            _ => Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
-                        }
-                    }
+        let enter = (tlvargs.datatype != "naked")
+            .then(|| {
+                quote! {
+                    let element = element
+                        .r#struct()?
+                        .iter()
+                        .next()
+                        .ok_or(#krate::error::ErrorCode::TLVTypeMismatch)??;
                 }
+            })
+            .unwrap_or(TokenStream::new());
 
-                impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #enum_name #generics {
-                    type Error = #krate::error::Error;
+        quote! {
+            impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
+                fn from_tlv(element: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
+                    #enter
 
-                    fn try_from(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
-                        use #krate::tlv::FromTLV;
+                    let tag = element
+                        .try_ctx()?
+                        .ok_or(#krate::error::ErrorCode::TLVTypeMismatch)?;
 
-                        Self::from_tlv(tlv)
-                    }
+                    Ok(match tag {
+                        #(#tags => Self::#variant_names(#types::from_tlv(&element)?),
+                        )*
+                        _ => Err(#krate::error::ErrorCode::Invalid)?,
+                    })
                 }
             }
-        } else {
-            quote! {
-                // impl #generics #krate::tlv::FromTLV <#lifetime> for #enum_name #generics {
-                //     fn from_tlv(t: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
-                //         let mut t_iter = t.confirm_struct()?.enter().ok_or_else(|| #krate::error::Error::new(#krate::error::ErrorCode::Invalid))?;
-                //         let mut item = t_iter.next().ok_or_else(|| #krate::error::Error::new(#krate::error::ErrorCode::Invalid))?;
-                //         if let TagType::Context(tag) = item.get_tag() {
-                //             match tag {
-                //                 #(
-                //                     #tags => Ok(Self::#variant_names(#types::from_tlv(&item)?)),
-                //                 )*
-                //                 _ => Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
-                //             }
-                //         } else {
-                //             Err(#krate::error::Error::new(#krate::error::ErrorCode::TLVTypeMismatch))
-                //         }
-                //     }
-                // }
 
-                impl #generics #krate::tlv::FromTLV<#lifetime> for #enum_name #generics {
-                    fn from_tlv(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
-                        let tlv = tlv
-                            .structure()?
-                            .iter()
-                            .next()
-                            .ok_or(#krate::error::ErrorCode::TLVTypeMismatch)??;
+            impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #enum_name #generics {
+                type Error = #krate::error::Error;
 
-                        let tag = tlv
-                            .try_ctx()?
-                            .ok_or(#krate::error::ErrorCode::TLVTypeMismatch)?;
+                fn try_from(element: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
+                    use #krate::tlv::FromTLV;
 
-                        match tag {
-                            #(
-                                #tags => Ok(Self::#variant_names(#types::from_tlv(&tlv)?)),
-                            )*
-                            _ => Err(#krate::error::Error::new(#krate::error::ErrorCode::Invalid)),
-                        }
-                    }
-                }
-
-                impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #enum_name #generics {
-                    type Error = #krate::error::Error;
-
-                    fn try_from(tlv: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
-                        use #krate::tlv::FromTLV;
-
-                        Self::from_tlv(tlv)
-                    }
+                    Self::from_tlv(element)
                 }
             }
         }

@@ -23,7 +23,7 @@ use crate::crypto;
 use crate::error::{Error, ErrorCode};
 use crate::mdns::{Mdns, ServiceMode};
 use crate::secure_channel::common::{complete_with_status, OpCode};
-use crate::tlv::{self, get_root_node_struct, FromTLV, OctetStr, TLVElement, TagType, ToTLV};
+use crate::tlv::{get_root_node_struct, FromTLV, OctetStr, TLVElement, TagType, ToTLV};
 use crate::transport::{
     exchange::{Exchange, ExchangeId},
     session::{ReservedSession, SessionMode},

@@ -16,7 +16,7 @@
  */
 
 use rs_matter::{
-    interaction_model::{messages::ib::AttrResp, messages::msg::ReportDataMsg},
+    interaction_model::messages::{ib::AttrResp, msg::ReportDataMsg, GenericPath},
     tlv::{TLVElement, TLVList, TLVWriter, TagType, ToTLV},
     utils::writebuf::WriteBuf,
 };
@@ -60,6 +60,14 @@ pub fn assert_attr_report_skip_data(received: &ReportDataMsg, expected: &[AttrRe
 // We have to hard-code this here, and it should match the tag
 // of the 'data' part in AttrData
 pub const ATTR_DATA_TAG_DATA: u8 = 2;
+
+pub fn attr_data0(endpoint: u16, cluster: u32, attr: u32, f: impl FnOnce(&TLVElement) -> bool) -> impl FnOnce(AttrResp) -> bool {
+    todo!()
+}
+
+pub fn attr_data_path0(path: GenericPath, f: impl FnOnce(&TLVElement) -> bool) -> impl FnOnce(AttrResp) -> bool {
+    todo!()
+}
 
 #[macro_export]
 macro_rules! attr_data {

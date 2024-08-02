@@ -89,6 +89,14 @@ impl DevAttDataFetcher for DummyDevAtt {
     fn get_devatt_data(&self, _data_type: DataType, _data: &mut [u8]) -> Result<usize, Error> {
         Ok(2)
     }
+    
+    fn with_devatt_data(
+        &self,
+        data_type: DataType,
+        f: &mut dyn FnOnce(&[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        f(&[0, 1])
+    }
 }
 
 pub const IM_ENGINE_PEER_ID: u64 = 445566;

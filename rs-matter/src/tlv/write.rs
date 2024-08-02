@@ -405,6 +405,25 @@ impl<'a> TLVWrite for WriteBuf<'a> {
     }
 }
 
+/// A TLVWrite implementation that counts the number of bytes written.
+impl<'a> TLVWrite for usize {
+    type Position = usize;
+
+    fn write(&mut self, _byte: u8) -> Result<(), Error> {
+        *self += 1;
+
+        Ok(())
+    }
+
+    fn get_tail(&self) -> Self::Position {
+        *self
+    }
+
+    fn rewind_to(&mut self, pos: Self::Position) {
+        *self = pos;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::f32;

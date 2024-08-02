@@ -15,18 +15,21 @@
  *    limitations under the License.
  */
 
+use std::iter::Empty;
+
+use log::info;
+
 use qrcodegen_no_heap::{QrCode, QrCodeEcc, Version};
 
-use crate::{
-    error::ErrorCode,
-    tlv::{TLVElement, TLVTag, TLVWrite, TLVWriter, ToTLV},
-    utils::writebuf::WriteBuf,
-};
+use crate::codec::base38;
+use crate::data_model::cluster_basic_information::BasicInfoConfig;
+use crate::error::{Error, ErrorCode};
+use crate::tlv::{EitherIter, TLVTag, ToTLVIter};
+use crate::utils::writebuf::WriteBuf;
+use crate::CommissioningData;
 
-use super::{
-    vendor_identifiers::{is_vendor_id_valid_operationally, VendorId},
-    *,
-};
+use super::vendor_identifiers::{is_vendor_id_valid_operationally, VendorId};
+use super::{passwd_from_comm_data, DiscoveryCapabilities};
 
 // See section 5.1.2. QR Code in the Matter specification
 const LONG_BITS: usize = 12;
@@ -56,23 +59,27 @@ pub const BPKFSALT_TAG: u8 = 0x02;
 pub const NUMBER_OFDEVICES_TAG: u8 = 0x03;
 pub const COMMISSIONING_TIMEOUT_TAG: u8 = 0x04;
 
-pub struct QrSetupPayload<'data> {
+pub struct QrSetupPayload<'data, T> {
     version: u8,
     flow_type: CommissionningFlowType,
     discovery_capabilities: DiscoveryCapabilities,
     dev_det: &'data BasicInfoConfig<'data>,
     comm_data: &'data CommissioningData,
-    // The slice must be ordered by the tag of each `TLVElement` in ascending order.
-    optional_data: &'data [TLVElement<'data>],
+    // The data written by the optional data provider must be ordered by the tag of each TLV element in ascending order.
+    optional_data: T,
 }
 
-impl<'data> QrSetupPayload<'data> {
+impl<'data, T, I> QrSetupPayload<'data, T>
+where
+    T: Fn() -> I,
+    I: Iterator<Item = Result<u8, Error>> + 'data,
+{
     /// `optional_data` should be ordered by tag number in ascending order.
     pub fn new(
         dev_det: &'data BasicInfoConfig,
         comm_data: &'data CommissioningData,
         discovery_capabilities: DiscoveryCapabilities,
-        optional_data: &'data [TLVElement<'data>],
+        optional_data: T,
     ) -> Self {
         const DEFAULT_VERSION: u8 = 0;
 
@@ -161,84 +168,27 @@ impl<'data> QrSetupPayload<'data> {
     }
 
     pub fn try_as_str<'a>(&self, buf: &'a mut [u8]) -> Result<(&'a str, &'a mut [u8]), Error> {
-        let str_len = self.try_iter(buf)?.count();
+        let str_len = self.emit_chars().count();
 
         let (str_buf, remaining_buf) = buf.split_at_mut(str_len);
 
         let mut wb = WriteBuf::new(str_buf);
-        for ch in self.try_iter(remaining_buf)? {
-            wb.le_u8(ch as u8)?;
+        for ch in self.emit_chars() {
+            wb.le_u8(ch? as u8)?;
         }
 
         let str = unsafe { core::str::from_utf8_unchecked(str_buf) };
         Ok((str, remaining_buf))
     }
 
-    pub fn try_iter<'a>(
-        &'a self,
-        tlv_buf: &'a mut [u8],
-    ) -> Result<impl Iterator<Item = char> + 'a, Error> {
-        let iter = self.emit_chars(self.optional_data_to_tlv(tlv_buf)?.iter().copied());
-
-        Ok(iter)
-    }
-
-    pub fn estimate_optional_data_tlv(&self) -> Result<usize, Error> {
-        let mut estimate = 0;
-
-        for data in self.optional_data {
-            estimate += data.len()?;
-        }
-
-        // Estimate 4 bytes of overhead per field.  This can happen for a large
-        // octet string field: 1 byte control, 1 byte context tag, 2 bytes
-        // length.
-        //
-        // The struct itself has a control byte and an end-of-struct marker.
-        estimate += 4 + 2; // TODO
-
-        if estimate > u32::MAX as usize {
-            Err(ErrorCode::NoMemory)?;
-        }
-
-        Ok(estimate)
-    }
-
-    pub fn optional_data_to_tlv<'a>(&self, buf: &'a mut [u8]) -> Result<&'a [u8], Error> {
-        if self.optional_data.is_empty() && self.dev_det.serial_no.is_empty() {
-            Ok(&[])
-        } else {
-            let mut wb = WriteBuf::new(buf);
-            let mut tw = TLVWriter::new(&mut wb);
-
-            tw.start_struct(&TLVTag::Anonymous)?;
-
-            if !self.dev_det.serial_no.is_empty() {
-                tw.utf8(&TLVTag::Context(SERIAL_NUMBER_TAG), self.dev_det.serial_no)?;
-            }
-
-            for elem in self.optional_data {
-                elem.to_tlv(&TLVTag::Anonymous, &mut tw)?;
-            }
-
-            tw.end_container()?;
-
-            let end = wb.get_tail();
-            Ok(&buf[..end])
-        }
-    }
-
-    fn emit_chars<'a, T>(&'a self, tlv_data: T) -> impl Iterator<Item = char> + 'a
-    where
-        T: Iterator<Item = u8> + 'a,
-    {
+    pub fn emit_chars(&self) -> impl Iterator<Item = Result<char, Error>> + '_ {
         struct PackedBitsIterator<I>(I);
 
         impl<I> Iterator for PackedBitsIterator<I>
         where
-            I: Iterator<Item = bool>,
+            I: Iterator<Item = Result<bool, Error>>,
         {
-            type Item = (u32, u8);
+            type Item = Result<(u32, u8), Error>;
 
             fn next(&mut self) -> Option<Self::Item> {
                 let mut chunk = 0;
@@ -247,6 +197,11 @@ impl<'data> QrSetupPayload<'data> {
                 for index in 0..24 {
                     // Up to 24 bits as we are enclding with Base38, which means up to 3 bytes at once
                     if let Some(bit) = self.0.next() {
+                        let bit = match bit {
+                            Ok(bit) => bit,
+                            Err(err) => return Some(Err(err)),
+                        };
+
                         chunk |= (bit as u32) << index;
                         packed_bits += 1;
                     } else {
@@ -257,23 +212,27 @@ impl<'data> QrSetupPayload<'data> {
                 if packed_bits > 0 {
                     assert!(packed_bits % 8 == 0);
 
-                    Some((chunk, packed_bits))
+                    Some(Ok((chunk, packed_bits)))
                 } else {
                     None
                 }
             }
         }
 
-        "MT:".chars().chain(
-            PackedBitsIterator(self.emit_all_bits(tlv_data))
-                .flat_map(|(bits, bits_count)| base38::encode_bits(bits, bits_count)),
-        )
+        "MT:"
+            .chars()
+            .map(Result::Ok)
+            .chain(
+                PackedBitsIterator(self.emit_all_bits()).flat_map(|bits| match bits {
+                    Ok((bits, bits_count)) => {
+                        EitherIter::First(base38::encode_bits(bits, bits_count).map(Result::Ok))
+                    }
+                    Err(err) => EitherIter::Second(core::iter::once(Err(err))),
+                }),
+            )
     }
 
-    fn emit_all_bits<'a, I>(&'a self, tlv_data: I) -> impl Iterator<Item = bool> + 'a
-    where
-        I: Iterator<Item = u8> + 'a,
-    {
+    fn emit_all_bits(&self) -> impl Iterator<Item = Result<bool, Error>> + '_ {
         let passwd = passwd_from_comm_data(self.comm_data);
 
         Self::emit_bits(self.version as _, VERSION_FIELD_LENGTH_IN_BITS)
@@ -302,11 +261,46 @@ impl<'data> QrSetupPayload<'data> {
                 SETUP_PINCODE_FIELD_LENGTH_IN_BITS,
             ))
             .chain(Self::emit_bits(0, PADDING_FIELD_LENGTH_IN_BITS))
-            .chain(tlv_data.flat_map(|b| Self::emit_bits(b as _, 8)))
+            .chain(
+                self.emit_optional_tlv_data()
+                    .flat_map(|bits| Self::emit_maybe_bits(bits.map(|bits| (bits as _, 8)))),
+            )
     }
 
-    fn emit_bits(input: u32, len: usize) -> impl Iterator<Item = bool> {
-        (0..len).map(move |i| (input >> i) & 1 == 1)
+    fn emit_bits(input: u32, len: usize) -> impl Iterator<Item = Result<bool, Error>> {
+        (0..len).map(move |i| Ok((input >> i) & 1 == 1))
+    }
+
+    fn emit_maybe_bits(
+        bits: Result<(u32, usize), Error>,
+    ) -> impl Iterator<Item = Result<bool, Error>> {
+        match bits {
+            Ok((input, len)) => EitherIter::First(Self::emit_bits(input, len)),
+            Err(err) => EitherIter::Second(core::iter::once(Err(err))),
+        }
+    }
+
+    fn emit_optional_tlv_data(&self) -> impl Iterator<Item = Result<u8, Error>> + '_ {
+        if self.dev_det.serial_no.is_empty() && (self.optional_data)().next().is_none() {
+            return EitherIter::First(core::iter::empty());
+        }
+
+        let serial_no = if self.dev_det.serial_no.is_empty() {
+            EitherIter::First(core::iter::empty())
+        } else {
+            EitherIter::Second(
+                core::iter::empty()
+                    .utf8(TLVTag::Context(SERIAL_NUMBER_TAG), self.dev_det.serial_no),
+            )
+        };
+
+        EitherIter::Second(
+            core::iter::empty()
+                .start_struct(TLVTag::Anonymous)
+                .chain(serial_no)
+                .chain((self.optional_data)())
+                .end_container(),
+        )
     }
 }
 
@@ -524,17 +518,27 @@ pub fn compute_qr_code_version(qr_code_text: &str) -> u8 {
     }
 }
 
-pub fn compute_qr_code_text<'a>(
+pub fn compute_qr_code_text<'a, T, I>(
     dev_det: &BasicInfoConfig,
     comm_data: &CommissioningData,
     discovery_capabilities: DiscoveryCapabilities,
-    optional_data: &[TLVElement],
+    optional_data: T,
     buf: &'a mut [u8],
-) -> Result<(&'a str, &'a mut [u8]), Error> {
+) -> Result<(&'a str, &'a mut [u8]), Error>
+where
+    T: Fn() -> I,
+    I: Iterator<Item = Result<u8, Error>>,
+{
     let qr_code_data =
         QrSetupPayload::new(dev_det, comm_data, discovery_capabilities, optional_data);
 
     qr_code_data.try_as_str(buf)
+}
+
+pub type NoOptionalData = fn() -> Empty<Result<u8, Error>>;
+
+pub fn no_optional_data() -> Empty<Result<u8, Error>> {
+    core::iter::empty()
 }
 
 #[cfg(test)]
@@ -557,7 +561,8 @@ mod tests {
         };
 
         let disc_cap = DiscoveryCapabilities::new(false, true, false);
-        let qr_code_data = QrSetupPayload::new(&dev_det, &comm_data, disc_cap, &[]);
+        let qr_code_data =
+            QrSetupPayload::<NoOptionalData>::new(&dev_det, &comm_data, disc_cap, no_optional_data);
         let mut buf = [0; 1024];
         let data_str = qr_code_data
             .try_as_str(&mut buf)
@@ -582,7 +587,8 @@ mod tests {
         };
 
         let disc_cap = DiscoveryCapabilities::new(true, false, false);
-        let qr_code_data = QrSetupPayload::new(&dev_det, &comm_data, disc_cap, &[]);
+        let qr_code_data =
+            QrSetupPayload::<NoOptionalData>::new(&dev_det, &comm_data, disc_cap, no_optional_data);
         let mut buf = [0; 1024];
         let data_str = qr_code_data
             .try_as_str(&mut buf)
@@ -613,18 +619,19 @@ mod tests {
         };
 
         let disc_cap = DiscoveryCapabilities::new(true, false, false);
-        let optional_data = []; // TODO XXX FIXME
-                                //     TLVElement::new(
-                                //         TagType::Context(OPTIONAL_DEFAULT_STRING_TAG),
-                                //         ElementType::Utf8l(OPTIONAL_DEFAULT_STRING_VALUE),
-                                //     ),
-                                //     // todo: check why unsigned ints are not accepted by 'chip-tool payload parse-setup-payload'
-                                //     TLVElement::new(
-                                //         TagType::Context(OPTIONAL_DEFAULT_INT_TAG),
-                                //         ElementType::S32(OPTIONAL_DEFAULT_INT_VALUE),
-                                //     ),
-                                // ];
-        let qr_code_data = QrSetupPayload::new(&dev_det, &comm_data, disc_cap, &optional_data);
+        let optional_data = || {
+            core::iter::empty()
+                .utf8(
+                    TLVTag::Context(OPTIONAL_DEFAULT_STRING_TAG),
+                    OPTIONAL_DEFAULT_STRING_VALUE,
+                )
+                .i32(
+                    TLVTag::Context(OPTIONAL_DEFAULT_INT_TAG),
+                    OPTIONAL_DEFAULT_INT_VALUE,
+                )
+        };
+
+        let qr_code_data = QrSetupPayload::new(&dev_det, &comm_data, disc_cap, optional_data);
 
         let mut buf = [0; 1024];
         let data_str = qr_code_data

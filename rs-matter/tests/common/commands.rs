@@ -17,10 +17,7 @@
 
 use rs_matter::{
     data_model::objects::EncodeValue,
-    interaction_model::{
-        messages::ib::{CmdPath, CmdStatus, InvResp},
-        messages::msg,
-    },
+    interaction_model::messages::{ib::{CmdPath, CmdStatus, InvResp}, msg, GenericPath}, tlv::TLVElement,
 };
 
 pub enum ExpectedInvResp {
@@ -60,6 +57,10 @@ pub fn assert_inv_response(resp: &msg::InvResp, expected: &[ExpectedInvResp]) {
         index += 1;
     }
     assert_eq!(index, expected.len());
+}
+
+pub fn cmd_data0(path: GenericPath, data: FnOnce(&TLVElement) -> bool) -> impl FnOnce(&TLVElement) -> bool {
+    todo!()
 }
 
 #[macro_export]

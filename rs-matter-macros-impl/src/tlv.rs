@@ -328,7 +328,7 @@ fn gen_totlv_for_enum(
                         if let Err(err) = (|| {
                             match self {
                                 #(
-                                    Self::#variant_names(c) => c.to_tlv(&#krate::tlv::TagType::Context(#tags), &mut tw),
+                                    Self::#variant_names(c) => { c.to_tlv(&#krate::tlv::TLVTag::Context(#tags), &mut tw) }
                                 )*
                             }?;
                         })() {
@@ -344,7 +344,7 @@ fn gen_totlv_for_enum(
 
                         match self {
                             #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TagType::Context(#tags))),
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
                             )*
                         }
                     }
@@ -354,7 +354,7 @@ fn gen_totlv_for_enum(
 
                         match self {
                             #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TagType::Context(#tags))),
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
                             )*
                         }
                     }
@@ -370,7 +370,7 @@ fn gen_totlv_for_enum(
                             tw.start_struct(tag)?;
                             match self {
                                 #(
-                                    Self::#variant_names(c) => c.to_tlv(&#krate::tlv::TagType::Context(#tags), &mut tw),
+                                    Self::#variant_names(c) => c.to_tlv(&#krate::tlv::TLVTag::Context(#tags), &mut tw),
                                 )*
                             }?;
                             tw.end_container()
@@ -389,7 +389,7 @@ fn gen_totlv_for_enum(
 
                         let iter = Iterator::chain(iter, match self {
                             #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TagType::Context(#tags))),
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
                             )*
                         });
 
@@ -403,7 +403,7 @@ fn gen_totlv_for_enum(
 
                         let iter = Iterator::chain(iter, match self {
                             #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TagType::Context(#tags))),
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
                             )*
                         });
 
@@ -517,7 +517,7 @@ fn gen_fromtlv_for_struct(
                 let mut seq = element.#datatype()?;
 
                 Ok(Self {
-                    #(#idents: #types::from_tlv(&seq.#seq_method(#tags as u8)?)?,
+                    #(#idents: #types::from_tlv(&seq.#seq_method(#tags)?)?,
                     )*
                 })
             }
@@ -733,400 +733,543 @@ pub fn derive_fromtlv(ast: DeriveInput, rs_matter_crate: String) -> TokenStream 
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use assert_tokenstreams_eq::assert_tokenstreams_eq;
-//     use quote::quote;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_tokenstreams_eq::assert_tokenstreams_eq;
+    use quote::quote;
 
-//     #[test]
-//     fn tlvargs_parse() {
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             #[tlvargs(datatype = "list")]
-//             enum Unused {}
-//         ))
-//         .unwrap();
-//         assert_eq!(
-//             parse_tlvargs(&ast, "test".to_string()),
-//             TlvArgs {
-//                 rs_matter_crate: "test".to_string(),
-//                 datatype: "list".to_string(),
-//                 ..Default::default()
-//             }
-//         );
+    #[test]
+    fn tlvargs_parse() {
+        let ast: DeriveInput = syn::parse2(quote!(
+            #[tlvargs(datatype = "list")]
+            enum Unused {}
+        ))
+        .unwrap();
+        assert_eq!(
+            parse_tlvargs(&ast, "test".to_string()),
+            TlvArgs {
+                rs_matter_crate: "test".to_string(),
+                datatype: "list".to_string(),
+                ..Default::default()
+            }
+        );
 
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             #[tlvargs(unordered)]
-//             enum Unused {}
-//         ))
-//         .unwrap();
-//         assert_eq!(
-//             parse_tlvargs(&ast, "crate".to_string()),
-//             TlvArgs {
-//                 rs_matter_crate: "crate".to_string(),
-//                 unordered: true,
-//                 ..Default::default()
-//             }
-//         );
+        let ast: DeriveInput = syn::parse2(quote!(
+            #[tlvargs(unordered)]
+            enum Unused {}
+        ))
+        .unwrap();
+        assert_eq!(
+            parse_tlvargs(&ast, "crate".to_string()),
+            TlvArgs {
+                rs_matter_crate: "crate".to_string(),
+                unordered: true,
+                ..Default::default()
+            }
+        );
 
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             #[tlvargs(start = 123)]
-//             enum Unused {}
-//         ))
-//         .unwrap();
-//         assert_eq!(
-//             parse_tlvargs(&ast, "crate".to_string()),
-//             TlvArgs {
-//                 rs_matter_crate: "crate".to_string(),
-//                 start: 123,
-//                 ..Default::default()
-//             }
-//         );
+        let ast: DeriveInput = syn::parse2(quote!(
+            #[tlvargs(start = 123)]
+            enum Unused {}
+        ))
+        .unwrap();
+        assert_eq!(
+            parse_tlvargs(&ast, "crate".to_string()),
+            TlvArgs {
+                rs_matter_crate: "crate".to_string(),
+                start: 123,
+                ..Default::default()
+            }
+        );
 
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             #[tlvargs(lifetime = "'foo")]
-//             enum Unused {}
-//         ))
-//         .unwrap();
-//         assert_eq!(parse_tlvargs(&ast, "abc".to_string()).lifetime.ident, "foo");
-//     }
+        let ast: DeriveInput = syn::parse2(quote!(
+            #[tlvargs(lifetime = "'foo")]
+            enum Unused {}
+        ))
+        .unwrap();
+        assert_eq!(parse_tlvargs(&ast, "abc".to_string()).lifetime.ident, "foo");
+    }
 
-//     #[test]
-//     fn test_to_tlv_for_struct() {
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             struct TestS {
-//                 field1: u8,
-//                 field2: u32,
-//             }
-//         ))
-//         .unwrap();
+    #[test]
+    fn test_to_tlv_for_struct() {
+        let ast: DeriveInput = syn::parse2(quote!(
+            struct TestS {
+                field1: u8,
+                field2: u32,
+            }
+        ))
+        .unwrap();
 
-//         assert_tokenstreams_eq!(
-//             &derive_totlv(ast, "rs_matter_maybe_renamed".to_string()),
-//             &quote!(
-//                 impl rs_matter_maybe_renamed::tlv::ToTLV for TestS {
-//                   fn to_tlv(
-//                       &self,
-//                       tw: &mut rs_matter_maybe_renamed::tlv::TLVWriter,
-//                       tag_type: rs_matter_maybe_renamed::tlv::TagType
-//                     ) -> Result<(), rs_matter_maybe_renamed::error::Error> {
-//                       let anchor = tw.get_tail();
-//                       if let Err(err) = (|| {
-//                           tw.start_struct(tag_type)?;
-//                           self.field1
-//                               .to_tlv(tw, rs_matter_maybe_renamed::tlv::TagType::Context(0u8))?;
-//                           self.field2
-//                               .to_tlv(tw, rs_matter_maybe_renamed::tlv::TagType::Context(1u8))?;
-//                           tw.end_container()
-//                       })() {
-//                           tw.rewind_to(anchor);
-//                           Err(err)
-//                       } else {
-//                           Ok(())
-//                       }
-//                   }
-//               }
-//             )
-//         );
-//     }
+        assert_tokenstreams_eq!(
+            &derive_totlv(ast, "rs_matter_maybe_renamed".to_string()),
+            &quote!(
+                impl rs_matter_maybe_renamed::tlv::ToTLV for TestS {
+                    fn to_tlv<W: rs_matter_maybe_renamed::tlv::TLVWrite>(
+                        &self,
+                        tag: &rs_matter_maybe_renamed::tlv::TLVTag,
+                        mut tw: W,
+                    ) -> Result<(), rs_matter_maybe_renamed::error::Error> {
+                        let anchor = tw.get_tail();
+                        if let Err(err) = (|| {
+                            tw.start_struct(tag)?;
+                            self.field1
+                                .to_tlv(&rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8), &mut tw)?;
+                            self.field2
+                                .to_tlv(&rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8), &mut tw)?;
+                            tw.end_container()
+                        })() {
+                            tw.rewind_to(anchor);
+                            Err(err)
+                        } else {
+                            Ok(())
+                        }
+                    }
 
-//     #[test]
-//     fn test_from_tlv_for_struct() {
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             struct TestS {
-//                 field1: u8,
-//                 field2: u32,
-//                 field_opt: Option<u32>,
-//                 field_null: rs_matter_maybe_renamed::tlv::Nullable<u32>,
-//             }
-//         ))
-//         .unwrap();
+                    fn to_tlv_iter(
+                        &self,
+                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
+                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
+                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
 
-//         assert_tokenstreams_eq!(
-//             &derive_fromtlv(ast, "rs_matter_maybe_renamed".to_string()),
-//             &quote!(
-//                 impl rs_matter_maybe_renamed::tlv::FromTLV<'_> for TestS {
-//                    fn from_tlv(
-//                        t: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
-//                    ) -> Result<Self, rs_matter_maybe_renamed::error::Error> {
-//                        let mut t_iter = t.confirm_struct()?.enter().ok_or_else(|| {
-//                            rs_matter_maybe_renamed::error::Error::new(
-//                                rs_matter_maybe_renamed::error::ErrorCode::Invalid,
-//                            )
-//                        })?;
-//                        let mut item = t_iter.next();
-//                        let field1 = if Some(true) == item.as_ref().map(|x| x.check_ctx_tag(0u8)) {
-//                            let backup = item;
-//                            item = t_iter.next();
-//                            u8::from_tlv(&backup.unwrap())
-//                        } else {
-//                            u8::tlv_not_found()
-//                        }?;
-//                        let field2 = if Some(true) == item.as_ref().map(|x| x.check_ctx_tag(1u8)) {
-//                            let backup = item;
-//                            item = t_iter.next();
-//                            u32::from_tlv(&backup.unwrap())
-//                        } else {
-//                            u32::tlv_not_found()
-//                        }?;
-//                        let field_opt = if Some(true) == item.as_ref().map(|x| x.check_ctx_tag(2u8)) {
-//                            let backup = item;
-//                            item = t_iter.next();
-//                            Option::from_tlv(&backup.unwrap())
-//                        } else {
-//                            Option::tlv_not_found()
-//                        }?;
-//                        let field_null = if Some(true) == item.as_ref().map(|x| x.check_ctx_tag(3u8)) {
-//                            let backup = item;
-//                            item = t_iter.next();
-//                            rs_matter_maybe_renamed::tlv::Nullable::from_tlv(&backup.unwrap())
-//                        } else {
-//                            rs_matter_maybe_renamed::tlv::Nullable::tlv_not_found()
-//                        }?;
-//                        Ok(Self {
-//                            field1,
-//                            field2,
-//                            field_opt,
-//                            field_null,
-//                        })
-//                    }
-//                }
-//             )
-//         );
-//     }
+                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
 
-//     #[test]
-//     fn test_to_tlv_for_enum() {
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             enum TestEnum {
-//                 ValueA(u32),
-//                 ValueB(u32),
-//             }
-//         ))
-//         .unwrap();
+                        let iter = Iterator::chain(
+                            iter,
+                            self.field1
+                                .to_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
+                        );
 
-//         assert_tokenstreams_eq!(
-//             &derive_totlv(ast, "rs_matter_maybe_renamed".to_string()),
-//             &quote!(
-//                 impl rs_matter_maybe_renamed::tlv::ToTLV for TestEnum {
-//                     fn to_tlv(
-//                         &self,
-//                         tw: &mut rs_matter_maybe_renamed::tlv::TLVWriter,
-//                         tag_type: rs_matter_maybe_renamed::tlv::TagType,
-//                     ) -> Result<(), rs_matter_maybe_renamed::error::Error> {
-//                         let anchor = tw.get_tail();
-//                         if let Err(err) = (|| {
-//                             tw.start_struct(tag_type)?;
-//                             match self {
-//                                 Self::ValueA(c) => {
-//                                     c.to_tlv(tw, rs_matter_maybe_renamed::tlv::TagType::Context(0u8))?;
-//                                 }
-//                                 Self::ValueB(c) => {
-//                                     c.to_tlv(tw, rs_matter_maybe_renamed::tlv::TagType::Context(1u8))?;
-//                                 }
-//                           }
-//                           tw.end_container()
-//                       })() {
-//                           tw.rewind_to(anchor);
-//                           Err(err)
-//                       } else {
-//                           Ok(())
-//                       }
-//                     }
-//                 }
-//             )
-//         );
-//     }
+                        let iter = Iterator::chain(
+                            iter,
+                            self.field2
+                                .to_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
+                        );
 
-//     #[test]
-//     fn test_to_tlv_for_unit_defaults() {
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             enum TestEnum {
-//                 ValueA,
-//                 ValueB,
-//             }
-//         ))
-//         .unwrap();
+                        ToTLVIter::end_container(iter)
+                    }
 
-//         assert_tokenstreams_eq!(
-//             &derive_totlv(ast, "rs_matter_maybe_renamed".to_string()),
-//             &quote!(
-//                 impl rs_matter_maybe_renamed::tlv::ToTLV for TestEnum {
-//                     fn to_tlv(
-//                         &self,
-//                         tw: &mut rs_matter_maybe_renamed::tlv::TLVWriter,
-//                         tag_type: rs_matter_maybe_renamed::tlv::TagType,
-//                     ) -> Result<(), rs_matter_maybe_renamed::error::Error> {
-//                         let anchor = tw.get_tail();
-//                         if let Err(err) = (|| {
-//                             match self {
-//                                 Self::ValueA => tw.u8(tag_type, 0u8),
-//                                 Self::ValueB => tw.u8(tag_type, 1u8),
-//                             }
-//                       })() {
-//                           tw.rewind_to(anchor);
-//                           Err(err)
-//                       } else {
-//                           Ok(())
-//                       }
-//                     }
-//                 }
-//             )
-//         );
-//     }
+                    fn into_tlv_iter(
+                        self,
+                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
+                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
+                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
 
-//     #[test]
-//     fn test_to_tlv_for_unit_enum() {
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             #[tlvargs(datatype = "u16")]
-//             enum TestEnum {
-//                 ValueA,
-//                 ValueB,
-//                 #[enumval(100)]
-//                 ValueC,
-//                 #[enumval(0x1234)]
-//                 ValueD,
-//             }
-//         ))
-//         .unwrap();
+                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
 
-//         assert_tokenstreams_eq!(
-//             &derive_totlv(ast, "rs_matter_maybe_renamed".to_string()),
-//             &quote!(
-//                 impl rs_matter_maybe_renamed::tlv::ToTLV for TestEnum {
-//                     fn to_tlv(
-//                         &self,
-//                         tw: &mut rs_matter_maybe_renamed::tlv::TLVWriter,
-//                         tag_type: rs_matter_maybe_renamed::tlv::TagType,
-//                     ) -> Result<(), rs_matter_maybe_renamed::error::Error> {
-//                         let anchor = tw.get_tail();
-//                         if let Err(err) = (|| {
-//                             match self {
-//                                 Self::ValueA => tw.u16(tag_type, 0u16),
-//                                 Self::ValueB => tw.u16(tag_type, 1u16),
-//                                 Self::ValueC => tw.u16(tag_type, 100u16),
-//                                 Self::ValueD => tw.u16(tag_type, 4660u16),
-//                             }
-//                       })() {
-//                           tw.rewind_to(anchor);
-//                           Err(err)
-//                       } else {
-//                           Ok(())
-//                       }
-//                     }
-//                 }
-//             )
-//         );
-//     }
+                        let iter = Iterator::chain(
+                            iter,
+                            self.field1
+                                .into_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
+                        );
 
-//     #[test]
-//     fn test_from_tlv_for_enum() {
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             enum TestEnum {
-//                 ValueA(u32),
-//                 ValueB(u32),
-//             }
-//         ))
-//         .unwrap();
+                        let iter = Iterator::chain(
+                            iter,
+                            self.field2
+                                .into_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
+                        );
 
-//         assert_tokenstreams_eq!(
-//             &derive_fromtlv(ast, "rs_matter_maybe_renamed".to_string()),
-//             &quote!(
-//                 impl rs_matter_maybe_renamed::tlv::FromTLV<'_> for TestEnum {
-//                    fn from_tlv(
-//                        t: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
-//                    ) -> Result<Self, rs_matter_maybe_renamed::error::Error> {
-//                        let mut t_iter = t.confirm_struct()?.enter().ok_or_else(|| {
-//                            rs_matter_maybe_renamed::error::Error::new(
-//                                rs_matter_maybe_renamed::error::ErrorCode::Invalid,
-//                            )
-//                        })?;
-//                        let mut item = t_iter.next().ok_or_else(|| {
-//                            rs_matter_maybe_renamed::error::Error::new(
-//                                rs_matter_maybe_renamed::error::ErrorCode::Invalid,
-//                            )
-//                        })?;
-//                        if let TagType::Context(tag) = item.get_tag() {
-//                            match tag {
-//                                0u8 => Ok(Self::ValueA(u32::from_tlv(&item)?)),
-//                                1u8 => Ok(Self::ValueB(u32::from_tlv(&item)?)),
-//                                _ => Err(rs_matter_maybe_renamed::error::Error::new(
-//                                    rs_matter_maybe_renamed::error::ErrorCode::Invalid,
-//                                )),
-//                            }
-//                        } else {
-//                            Err(rs_matter_maybe_renamed::error::Error::new(
-//                                rs_matter_maybe_renamed::error::ErrorCode::TLVTypeMismatch,
-//                            ))
-//                        }
-//                    }
-//                }
-//             )
-//         );
-//     }
+                        ToTLVIter::end_container(iter)
+                    }
+                }
+            )
+        );
+    }
 
-//     #[test]
-//     fn test_from_tlv_for_unit_enum() {
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             enum TestEnum {
-//                 ValueA,
-//                 ValueB,
-//             }
-//         ))
-//         .unwrap();
+    #[test]
+    fn test_from_tlv_for_struct() {
+        let ast: DeriveInput = syn::parse2(quote!(
+            struct TestS {
+                field1: u8,
+                field2: u32,
+                field_opt: Option<u32>,
+                field_null: rs_matter_maybe_renamed::tlv::Nullable<u32>,
+            }
+        ))
+        .unwrap();
 
-//         assert_tokenstreams_eq!(
-//             &derive_fromtlv(ast, "rs_matter_maybe_renamed".to_string()),
-//             &quote!(
-//                 impl rs_matter_maybe_renamed::tlv::FromTLV<'_> for TestEnum {
-//                    fn from_tlv(
-//                        t: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
-//                    ) -> Result<Self, rs_matter_maybe_renamed::error::Error> {
-//                        Ok(match t.u8()? {
-//                            0u8 => Self::ValueA,
-//                            1u8 => Self::ValueB,
-//                            _ => return Err(rs_matter_maybe_renamed::error::Error::new(
-//                                rs_matter_maybe_renamed::error::ErrorCode::Invalid)),
-//                        })
-//                    }
-//                }
-//             )
-//         );
-//     }
+        assert_tokenstreams_eq!(
+            &derive_fromtlv(ast, "rs_matter_maybe_renamed".to_string()),
+            &quote!(
+                impl rs_matter_maybe_renamed::tlv::FromTLV<'_> for TestS {
+                    fn from_tlv(
+                        element: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
+                    ) -> Result<Self, rs_matter_maybe_renamed::error::Error> {
+                        #[allow(unused_mut)]
+                        let mut seq = element.r#struct()?;
 
-//     #[test]
-//     fn test_from_tlv_for_unit_enum_complex() {
-//         let ast: DeriveInput = syn::parse2(quote!(
-//             #[tlvargs(datatype = "u16")]
-//             enum TestEnum {
-//                 A,
-//                 B,
-//                 #[enumval(100)]
-//                 C,
-//                 #[enumval(0x1234)]
-//                 D,
-//             }
-//         ))
-//         .unwrap();
+                        Ok(Self {
+                            field1: u8::from_tlv(&seq.scan_ctx(0u8)?)?,
+                            field2: u32::from_tlv(&seq.scan_ctx(1u8)?)?,
+                            field_opt: Option::from_tlv(&seq.scan_ctx(2u8)?)?,
+                            field_null: rs_matter_maybe_renamed::tlv::Nullable::from_tlv(&seq.scan_ctx(3u8)?)?,
+                        })
+                    }
+                }
 
-//         assert_tokenstreams_eq!(
-//             &derive_fromtlv(ast, "rs_matter_maybe_renamed".to_string()),
-//             &quote!(
-//                 impl rs_matter_maybe_renamed::tlv::FromTLV<'_> for TestEnum {
-//                    fn from_tlv(
-//                        t: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
-//                    ) -> Result<Self, rs_matter_maybe_renamed::error::Error> {
-//                        Ok(match t.u16()? {
-//                            0u16 => Self::A,
-//                            1u16 => Self::B,
-//                            100u16 => Self::C,
-//                            4660u16 => Self::D,
-//                            _ => return Err(rs_matter_maybe_renamed::error::Error::new(
-//                                rs_matter_maybe_renamed::error::ErrorCode::Invalid)),
-//                        })
-//                    }
-//                }
-//             )
-//         );
-//     }
-// }
+                impl TryFrom<&rs_matter_maybe_renamed::tlv::TLVElement<'_>> for TestS {
+                    type Error = rs_matter_maybe_renamed::error::Error;
+
+                    fn try_from(
+                        element: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
+                    ) -> Result<Self, Self::Error> {
+                        use rs_matter_maybe_renamed::tlv::FromTLV;
+                        Self::from_tlv(element)
+                    }
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_to_tlv_for_enum() {
+        let ast: DeriveInput = syn::parse2(quote!(
+            enum TestEnum {
+                ValueA(u32),
+                ValueB(u32),
+            }
+        ))
+        .unwrap();
+
+        assert_tokenstreams_eq!(
+            &derive_totlv(ast, "rs_matter_maybe_renamed".to_string()),
+            &quote!(
+                impl rs_matter_maybe_renamed::tlv::ToTLV for TestEnum {
+                    fn to_tlv<W: rs_matter_maybe_renamed::tlv::TLVWrite>(
+                        &self,
+                        tag: &rs_matter_maybe_renamed::tlv::TLVTag,
+                        mut tw: W,
+                    ) -> Result<(), rs_matter_maybe_renamed::error::Error> {
+                        let anchor = tw.get_tail();
+                        if let Err(err) = (|| {
+                            tw.start_struct(tag)?;
+                            match self {
+                                Self::ValueA(c) => c.to_tlv(&rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8), &mut tw),
+                                Self::ValueB(c) => c.to_tlv(&rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8), &mut tw),
+                            }?;
+                            tw.end_container()
+                        })() {
+                            tw.rewind_to(anchor);
+                            Err(err)
+                        } else {
+                            Ok(())
+                        }
+                    }
+
+                    fn to_tlv_iter(
+                        &self,
+                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
+                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
+                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
+
+                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+
+                        let iter = Iterator::chain(
+                            iter,
+                            match self {
+                                Self::ValueA(c) => rs_matter_maybe_renamed::tlv::EitherIter::First(
+                                    c.to_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
+                                ),
+                                Self::ValueB(c) => rs_matter_maybe_renamed::tlv::EitherIter::Second(
+                                    c.to_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
+                                ),
+                            },
+                        );
+
+                        ToTLVIter::end_container(iter)
+                    }
+
+                    fn into_tlv_iter(
+                        self,
+                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
+                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
+                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
+
+                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+
+                        let iter = Iterator::chain(
+                            iter,
+                            match self {
+                                Self::ValueA(c) => rs_matter_maybe_renamed::tlv::EitherIter::First(
+                                    c.into_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
+                                ),
+                                Self::ValueB(c) => rs_matter_maybe_renamed::tlv::EitherIter::Second(
+                                    c.into_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
+                                ),
+                            },
+                        );
+
+                        ToTLVIter::end_container(iter)
+                    }
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_to_tlv_for_unit_defaults() {
+        let ast: DeriveInput = syn::parse2(quote!(
+            enum TestEnum {
+                ValueA,
+                ValueB,
+            }
+        ))
+        .unwrap();
+
+        assert_tokenstreams_eq!(
+            &derive_totlv(ast, "rs_matter_maybe_renamed".to_string()),
+            &quote!(
+                impl rs_matter_maybe_renamed::tlv::ToTLV for TestEnum {
+                    fn to_tlv<W: rs_matter_maybe_renamed::tlv::TLVWrite>(
+                        &self,
+                        tag: &rs_matter_maybe_renamed::tlv::TLVTag,
+                        mut tw: W,
+                    ) -> Result<(), rs_matter_maybe_renamed::error::Error> {
+                        let anchor = tw.get_tail();
+                        if let Err(err) = (|| {
+                            match self {
+                                Self::ValueA => tw.u8(tag, 0u8),
+                                Self::ValueB => tw.u8(tag, 1u8),
+                            }
+                        })() {
+                            tw.rewind_to(anchor);
+                            Err(err)
+                        } else {
+                            Ok(())
+                        }
+                    }
+
+                    fn to_tlv_iter(
+                        &self,
+                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
+                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
+                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
+
+                        match self {
+                            Self::ValueA => ToTLVIter::u8(core::iter::empty(), tag, 0u8),
+                            Self::ValueB => ToTLVIter::u8(core::iter::empty(), tag, 1u8),
+                        }
+                    }
+
+                    fn into_tlv_iter(
+                        self,
+                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
+                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
+                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
+
+                        match self {
+                            Self::ValueA => ToTLVIter::u8(core::iter::empty(), tag, 0u8),
+                            Self::ValueB => ToTLVIter::u8(core::iter::empty(), tag, 1u8),
+                        }
+                    }
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_to_tlv_for_unit_enum() {
+        let ast: DeriveInput = syn::parse2(quote!(
+            #[tlvargs(datatype = "u16")]
+            enum TestEnum {
+                ValueA,
+                ValueB,
+                #[enumval(100)]
+                ValueC,
+                #[enumval(0x1234)]
+                ValueD,
+            }
+        ))
+        .unwrap();
+
+        assert_tokenstreams_eq!(
+            &derive_totlv(ast, "rs_matter_maybe_renamed".to_string()),
+            &quote!(
+                impl rs_matter_maybe_renamed::tlv::ToTLV for TestEnum {
+                    fn to_tlv<W: rs_matter_maybe_renamed::tlv::TLVWrite>(
+                        &self,
+                        tag: &rs_matter_maybe_renamed::tlv::TLVTag,
+                        mut tw: W,
+                    ) -> Result<(), rs_matter_maybe_renamed::error::Error> {
+                        let anchor = tw.get_tail();
+                        if let Err(err) = (|| {
+                            match self {
+                                Self::ValueA => tw.u16(tag, 0u16),
+                                Self::ValueB => tw.u16(tag, 1u16),
+                                Self::ValueC => tw.u16(tag, 100u16),
+                                Self::ValueD => tw.u16(tag, 4660u16),
+                            }
+                        })() {
+                            tw.rewind_to(anchor);
+                            Err(err)
+                        } else {
+                            Ok(())
+                        }
+                    }
+
+                    fn to_tlv_iter(
+                        &self,
+                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
+                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
+                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
+
+                        match self {
+                            Self::ValueA => ToTLVIter::u16(core::iter::empty(), tag, 0u16),
+                            Self::ValueB => ToTLVIter::u16(core::iter::empty(), tag, 1u16),
+                            Self::ValueC => ToTLVIter::u16(core::iter::empty(), tag, 100u16),
+                            Self::ValueD => ToTLVIter::u16(core::iter::empty(), tag, 4660u16),
+                        }
+                    }
+
+                    fn into_tlv_iter(
+                        self,
+                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
+                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
+                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
+
+                        match self {
+                            Self::ValueA => ToTLVIter::u16(core::iter::empty(), tag, 0u16),
+                            Self::ValueB => ToTLVIter::u16(core::iter::empty(), tag, 1u16),
+                            Self::ValueC => ToTLVIter::u16(core::iter::empty(), tag, 100u16),
+                            Self::ValueD => ToTLVIter::u16(core::iter::empty(), tag, 4660u16),
+                        }
+                    }
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_from_tlv_for_enum() {
+        let ast: DeriveInput = syn::parse2(quote!(
+            enum TestEnum {
+                ValueA(u32),
+                ValueB(u32),
+            }
+        ))
+        .unwrap();
+
+        assert_tokenstreams_eq!(
+            &derive_fromtlv(ast, "rs_matter_maybe_renamed".to_string()),
+            &quote!(
+                impl rs_matter_maybe_renamed::tlv::FromTLV<'_> for TestEnum {
+                    fn from_tlv(
+                        element: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
+                    ) -> Result<Self, rs_matter_maybe_renamed::error::Error> {
+                        let element = element
+                            .r#struct()?
+                            .iter()
+                            .next()
+                            .ok_or(rs_matter_maybe_renamed::error::ErrorCode::TLVTypeMismatch)??;
+
+                        let tag = element
+                            .try_ctx()?
+                            .ok_or(rs_matter_maybe_renamed::error::ErrorCode::TLVTypeMismatch)?;
+
+                        Ok(match tag {
+                            0u8 => Self::ValueA(u32::from_tlv(&element)?),
+                            1u8 => Self::ValueB(u32::from_tlv(&element)?),
+                            _ => Err(rs_matter_maybe_renamed::error::ErrorCode::Invalid)?,
+                        })
+                    }
+                }
+
+                impl TryFrom<&rs_matter_maybe_renamed::tlv::TLVElement<'_>> for TestEnum {
+                    type Error = rs_matter_maybe_renamed::error::Error;
+
+                    fn try_from(
+                        element: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
+                    ) -> Result<Self, Self::Error> {
+                        use rs_matter_maybe_renamed::tlv::FromTLV;
+                        Self::from_tlv(element)
+                    }
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_from_tlv_for_unit_enum() {
+        let ast: DeriveInput = syn::parse2(quote!(
+            enum TestEnum {
+                ValueA,
+                ValueB,
+            }
+        ))
+        .unwrap();
+
+        assert_tokenstreams_eq!(
+            &derive_fromtlv(ast, "rs_matter_maybe_renamed".to_string()),
+            &quote!(
+                impl rs_matter_maybe_renamed::tlv::FromTLV<'_> for TestEnum {
+                   fn from_tlv(
+                        element: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
+                    ) -> Result<Self, rs_matter_maybe_renamed::error::Error> {
+                        Ok(match element.u8()? {
+                            0u8 => Self::ValueA,
+                            1u8 => Self::ValueB,
+                            _ => Err(rs_matter_maybe_renamed::error::ErrorCode::Invalid)?,
+                        })
+                    }
+                }
+
+                impl TryFrom<&rs_matter_maybe_renamed::tlv::TLVElement<'_>> for TestEnum {
+                    type Error = rs_matter_maybe_renamed::error::Error;
+
+                    fn try_from(
+                        element: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
+                    ) -> Result<Self, Self::Error> {
+                        use rs_matter_maybe_renamed::tlv::FromTLV;
+                        Self::from_tlv(element)
+                    }
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_from_tlv_for_unit_enum_complex() {
+        let ast: DeriveInput = syn::parse2(quote!(
+            #[tlvargs(datatype = "u16")]
+            enum TestEnum {
+                A,
+                B,
+                #[enumval(100)]
+                C,
+                #[enumval(0x1234)]
+                D,
+            }
+        ))
+        .unwrap();
+
+        assert_tokenstreams_eq!(
+            &derive_fromtlv(ast, "rs_matter_maybe_renamed".to_string()),
+            &quote!(
+                impl rs_matter_maybe_renamed::tlv::FromTLV<'_> for TestEnum {
+                    fn from_tlv(
+                        element: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
+                    ) -> Result<Self, rs_matter_maybe_renamed::error::Error> {
+                        Ok(match element.u16()? {
+                            0u16 => Self::A,
+                            1u16 => Self::B,
+                            100u16 => Self::C,
+                            4660u16 => Self::D,
+                            _ => Err(rs_matter_maybe_renamed::error::ErrorCode::Invalid)?,
+                       })
+                    }
+                }
+
+                impl TryFrom<&rs_matter_maybe_renamed::tlv::TLVElement<'_>> for TestEnum {
+                    type Error = rs_matter_maybe_renamed::error::Error;
+
+                    fn try_from(
+                        element: &rs_matter_maybe_renamed::tlv::TLVElement<'_>,
+                    ) -> Result<Self, Self::Error> {
+                        use rs_matter_maybe_renamed::tlv::FromTLV;
+                        Self::from_tlv(element)
+                    }
+                }
+            )
+        );
+    }
+}

@@ -279,7 +279,7 @@ impl fmt::Display for TLVControl {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TLV<'a> {
     pub tag: TLVTag,
     pub value: TLVValue<'a>,

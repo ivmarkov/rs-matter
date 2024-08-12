@@ -57,15 +57,19 @@ impl<T> UnsafeCellInit<T> for UnsafeCell<T> {
 /// `MaybeUninit<T>` memory.
 pub trait InitMaybeUninit<T> {
     /// Initialize Self with the given in-place initializer.
-    fn init_with<I: Init<T>>(&mut self, init: I) -> &mut T;
+    fn init_with<I: Init<T>>(&mut self, init: I) -> &mut T {
+        self.try_init_with(init).unwrap()
+    }
+
+    fn try_init_with<I: Init<T, E>, E>(&mut self, init: I) -> Result<&mut T, E>;
 }
 
 impl<T> InitMaybeUninit<T> for MaybeUninit<T> {
-    fn init_with<I: Init<T>>(&mut self, init: I) -> &mut T {
+    fn try_init_with<I: Init<T, E>, E>(&mut self, init: I) -> Result<&mut T, E> {
         unsafe {
-            Init::<T>::__init(init, self.as_mut_ptr()).unwrap();
+            Init::<T, E>::__init(init, self.as_mut_ptr())?;
 
-            self.assume_init_mut()
+            Ok(self.assume_init_mut())
         }
     }
 }

@@ -163,140 +163,172 @@ impl<'a> ToTLV for TLVValue<'a> {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::{FromTLV, OctetStr, TLVWriter, TagType, ToTLV};
-//     use crate::{tlv::TLVList, utils::writebuf::WriteBuf};
-//     use rs_matter_macros::{FromTLV, ToTLV};
+#[cfg(test)]
+mod tests {
+    use core::fmt::Debug;
+    use core::mem::MaybeUninit;
 
-//     #[derive(ToTLV)]
-//     struct TestDerive {
-//         a: u16,
-//         b: u32,
-//     }
-//     #[test]
-//     fn test_derive_totlv() {
-//         let mut buf = [0; 20];
-//         let mut writebuf = WriteBuf::new(&mut buf);
-//         let mut tw = TLVWriter::new(&mut writebuf);
+    use rs_matter_macros::{FromTLV, ToTLV};
 
-//         let abc = TestDerive {
-//             a: 0x1010,
-//             b: 0x20202020,
-//         };
-//         abc.to_tlv(&mut tw, TagType::Anonymous).unwrap();
-//         assert_eq!(
-//             buf,
-//             [21, 37, 0, 0x10, 0x10, 38, 1, 0x20, 0x20, 0x20, 0x20, 24, 0, 0, 0, 0, 0, 0, 0, 0]
-//         );
-//     }
+    use crate::tlv::{Octets, TLVElement, TLVWriter};
+    use crate::utils::init::InitMaybeUninit;
+    use crate::utils::writebuf::WriteBuf;
 
-//     #[derive(FromTLV)]
-//     struct TestDeriveSimple {
-//         a: u16,
-//         b: u32,
-//     }
+    use super::{FromTLV, OctetStr, TLVTag, ToTLV};
 
-//     #[test]
-//     fn test_derive_fromtlv() {
-//         let b = [
-//             21, 37, 0, 10, 0, 38, 1, 20, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 0,
-//         ];
-//         let root = TLVList::new(&b).iter().next().unwrap();
-//         let test = TestDeriveSimple::from_tlv(&root).unwrap();
-//         assert_eq!(test.a, 10);
-//         assert_eq!(test.b, 20);
-//     }
+    fn test_from_tlv<'a, T: FromTLV<'a> + PartialEq + Debug>(data: &'a [u8], expected: T) {
+        let root = TLVElement::new(data);
+        let test = T::from_tlv(&root).unwrap();
+        assert_eq!(test, expected);
 
-//     #[derive(FromTLV)]
-//     #[tlvargs(lifetime = "'a")]
-//     struct TestDeriveStr<'a> {
-//         a: u16,
-//         b: OctetStr<'a>,
-//     }
+        let test_init = T::init_from_tlv(root);
 
-//     #[test]
-//     fn test_derive_fromtlv_str() {
-//         let b = [21, 37, 0, 10, 0, 0x30, 0x01, 0x03, 10, 11, 12, 0];
-//         let root = TLVList::new(&b).iter().next().unwrap();
-//         let test = TestDeriveStr::from_tlv(&root).unwrap();
-//         assert_eq!(test.a, 10);
-//         assert_eq!(test.b, OctetStr(&[10, 11, 12]));
-//     }
+        let mut test = MaybeUninit::<T>::uninit();
 
-//     #[derive(FromTLV, Debug)]
-//     struct TestDeriveOption {
-//         a: u16,
-//         b: Option<u16>,
-//         c: Option<u16>,
-//     }
+        let test = test.try_init_with(test_init).unwrap();
 
-//     #[test]
-//     fn test_derive_fromtlv_option() {
-//         let b = [21, 37, 0, 10, 0, 37, 2, 11, 0];
-//         let root = TLVList::new(&b).iter().next().unwrap();
-//         let test = TestDeriveOption::from_tlv(&root).unwrap();
-//         assert_eq!(test.a, 10);
-//         assert_eq!(test.b, None);
-//         assert_eq!(test.c, Some(11));
-//     }
+        assert_eq!(*test, expected);
+    }
 
-//     #[derive(FromTLV, ToTLV, Debug)]
-//     struct TestDeriveFabScoped {
-//         a: u16,
-//         #[tagval(0xFE)]
-//         fab_idx: u16,
-//     }
-//     #[test]
-//     fn test_derive_fromtlv_fab_scoped() {
-//         let b = [21, 37, 0, 10, 0, 37, 0xFE, 11, 0];
-//         let root = TLVList::new(&b).iter().next().unwrap();
-//         let test = TestDeriveFabScoped::from_tlv(&root).unwrap();
-//         assert_eq!(test.a, 10);
-//         assert_eq!(test.fab_idx, 11);
-//     }
+    fn test_to_tlv<T: ToTLV>(t: T, expected: &[u8]) {
+        let mut buf = [0; 20];
+        let mut writebuf = WriteBuf::new(&mut buf);
+        let mut tw = TLVWriter::new(&mut writebuf);
 
-//     #[test]
-//     fn test_derive_totlv_fab_scoped() {
-//         let mut buf = [0; 20];
-//         let mut writebuf = WriteBuf::new(&mut buf);
-//         let mut tw = TLVWriter::new(&mut writebuf);
+        t.to_tlv(&TLVTag::Anonymous, &mut tw).unwrap();
 
-//         let abc = TestDeriveFabScoped { a: 20, fab_idx: 3 };
+        assert_eq!(writebuf.as_slice(), expected);
 
-//         abc.to_tlv(&mut tw, TagType::Anonymous).unwrap();
-//         assert_eq!(
-//             buf,
-//             [21, 36, 0, 20, 36, 0xFE, 3, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-//         );
-//     }
+        writebuf.reset();
 
-//     #[derive(ToTLV, FromTLV, PartialEq, Debug)]
-//     enum TestDeriveEnum {
-//         ValueA(u32),
-//         ValueB(u32),
-//     }
+        let mut iter = t.to_tlv_iter(TLVTag::Anonymous);
+        loop {
+            match iter.next() {
+                Some(Ok(byte)) => writebuf.append(&[byte]).unwrap(),
+                None => break,
+                _ => panic!("Error in iterator"),
+            }
+        }
 
-//     #[test]
-//     fn test_derive_from_to_tlv_enum() {
-//         // Test FromTLV
-//         let b = [21, 36, 0, 100, 24, 0];
-//         let root = TLVList::new(&b).iter().next().unwrap();
-//         let mut enum_val = TestDeriveEnum::from_tlv(&root).unwrap();
-//         assert_eq!(enum_val, TestDeriveEnum::ValueA(100));
+        assert_eq!(writebuf.as_slice(), expected);
 
-//         // Modify the value and test ToTLV
-//         enum_val = TestDeriveEnum::ValueB(10);
+        drop(iter);
 
-//         // Test ToTLV
-//         let mut buf = [0; 20];
-//         let mut writebuf = WriteBuf::new(&mut buf);
-//         let mut tw = TLVWriter::new(&mut writebuf);
+        writebuf.reset();
 
-//         enum_val.to_tlv(&mut tw, TagType::Anonymous).unwrap();
-//         assert_eq!(
-//             buf,
-//             [21, 36, 1, 10, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-//         );
-//     }
-// }
+        let mut iter = t.into_tlv_iter(TLVTag::Anonymous);
+        loop {
+            match iter.next() {
+                Some(Ok(byte)) => writebuf.append(&[byte]).unwrap(),
+                None => break,
+                _ => panic!("Error in iterator"),
+            }
+        }
+    }
+
+    #[derive(ToTLV)]
+    struct TestDerive {
+        a: u16,
+        b: u32,
+    }
+
+    #[test]
+    fn test_derive_totlv() {
+        test_to_tlv(
+            TestDerive {
+                a: 0x1010,
+                b: 0x20202020,
+            },
+            &[21, 37, 0, 0x10, 0x10, 38, 1, 0x20, 0x20, 0x20, 0x20, 24],
+        );
+    }
+
+    #[derive(FromTLV, Debug, PartialEq)]
+    struct TestDeriveSimple {
+        a: u16,
+        b: u32,
+    }
+
+    #[test]
+    fn test_derive_fromtlv() {
+        test_from_tlv(
+            &[21, 37, 0, 10, 0, 38, 1, 20, 0, 0, 0, 24],
+            TestDeriveSimple { a: 10, b: 20 },
+        );
+    }
+
+    #[derive(FromTLV, Debug, PartialEq)]
+    #[tlvargs(lifetime = "'a")]
+    struct TestDeriveStr<'a> {
+        a: u16,
+        b: OctetStr<'a>,
+    }
+
+    #[test]
+    fn test_derive_fromtlv_str() {
+        test_from_tlv(
+            &[21, 37, 0, 10, 0, 0x30, 0x01, 0x03, 10, 11, 12, 0],
+            TestDeriveStr {
+                a: 10,
+                b: Octets(&[10, 11, 12]),
+            },
+        );
+    }
+
+    #[derive(FromTLV, Debug, PartialEq)]
+    struct TestDeriveOption {
+        a: u16,
+        b: Option<u16>,
+        c: Option<u16>,
+    }
+
+    #[test]
+    fn test_derive_fromtlv_option() {
+        test_from_tlv(
+            &[21, 37, 0, 10, 0, 37, 2, 11, 0],
+            TestDeriveOption {
+                a: 10,
+                b: None,
+                c: Some(11),
+            },
+        );
+    }
+
+    #[derive(FromTLV, ToTLV, Debug, PartialEq)]
+    struct TestDeriveFabScoped {
+        a: u16,
+        #[tagval(0xFE)]
+        fab_idx: u16,
+    }
+
+    #[test]
+    fn test_derive_fromtlv_fab_scoped() {
+        test_from_tlv(
+            &[21, 37, 0, 10, 0, 37, 0xFE, 11, 0],
+            TestDeriveFabScoped { a: 10, fab_idx: 11 },
+        );
+    }
+
+    #[test]
+    fn test_derive_totlv_fab_scoped() {
+        test_to_tlv(
+            TestDeriveFabScoped { a: 20, fab_idx: 3 },
+            &[21, 36, 0, 20, 36, 0xFE, 3, 24],
+        );
+    }
+
+    #[derive(ToTLV, FromTLV, PartialEq, Debug)]
+    enum TestDeriveEnum {
+        ValueA(u32),
+        ValueB(u32),
+    }
+
+    #[test]
+    fn test_derive_from_to_tlv_enum() {
+        // Test FromTLV
+        test_from_tlv(&[21, 36, 0, 100, 24, 0], TestDeriveEnum::ValueA(100));
+
+        // Test ToTLV
+        test_to_tlv(TestDeriveEnum::ValueB(10), &[21, 36, 1, 10, 24]);
+    }
+}

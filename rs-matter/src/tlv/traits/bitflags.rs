@@ -29,8 +29,10 @@
 macro_rules! bitflags_tlv {
     ($enum_name:ident, $type:ident) => {
         impl<'a> $crate::tlv::FromTLV<'a> for $enum_name {
-            fn from_tlv(tlv: &$crate::tlv::TLVElement<'a>) -> Result<Self, Error> {
-                Ok(Self::from_bits_retain($crate::tlv::TLVElement::$type(tlv)?))
+            fn from_tlv(element: &$crate::tlv::TLVElement<'a>) -> Result<Self, Error> {
+                Ok(Self::from_bits_retain($crate::tlv::TLVElement::$type(
+                    element,
+                )?))
             }
         }
 
@@ -43,18 +45,11 @@ macro_rules! bitflags_tlv {
                 tw.$type(tag, self.bits())
             }
 
-            fn to_tlv_iter(
+            fn tlv_iter(
                 &self,
                 tag: $crate::tlv::TLVTag,
-            ) -> impl Iterator<Item = Result<u8, Error>> {
-                $crate::tlv::ToTLVIter::$type(core::iter::empty(), tag, self.bits())
-            }
-
-            fn into_tlv_iter(
-                self,
-                tag: $crate::tlv::TLVTag,
-            ) -> impl Iterator<Item = Result<u8, Error>> {
-                $crate::tlv::ToTLVIter::$type(core::iter::empty(), tag, self.bits())
+            ) -> impl Iterator<Item = Result<$crate::tlv::TLV, Error>> {
+                $crate::tlv::TLV::$type(tag, self.bits()).into_tlv_iter()
             }
         }
     };

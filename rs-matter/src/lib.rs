@@ -71,6 +71,7 @@
 //! Start off exploring by going to the [Matter] object.
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(async_fn_in_trait)]
+#![feature(impl_trait_in_assoc_type)]
 
 pub mod acl;
 pub mod cert;
@@ -90,6 +91,8 @@ pub mod secure_channel;
 pub mod tlv;
 pub mod transport;
 pub mod utils;
+
+pub mod e2e;
 
 pub use crate::core::*;
 

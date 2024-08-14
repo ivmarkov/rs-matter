@@ -23,13 +23,11 @@
 //! Note that (for now) `String<N>` has no efficient in-place initialization, so it should not be used for
 //! holding large strings, or else a stack overflow might occur.
 
-use core::iter::empty;
-
 use heapless::String;
 
 use crate::error::{Error, ErrorCode};
 
-use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV, TLV};
 
 /// For (partial) backwards compatibility
 ///
@@ -47,8 +45,8 @@ pub type UtfStr<'a> = Utf8Str<'a>;
 pub type Utf8Str<'a> = &'a str;
 
 impl<'a> FromTLV<'a> for &'a str {
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
-        tlv.utf8()
+    fn from_tlv(element: &TLVElement<'a>) -> Result<Self, Error> {
+        element.utf8()
     }
 }
 
@@ -57,22 +55,15 @@ impl ToTLV for &str {
         tw.utf8(tag, self)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv::toiter::ToTLVIter;
-
-        empty().utf8(tag, self)
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv::toiter::ToTLVIter;
-
-        empty().utf8(tag, self)
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV<'_>, Error>> {
+        TLV::utf8(tag, self).into_tlv_iter()
     }
 }
 
 impl<'a, const N: usize> FromTLV<'a> for String<N> {
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<String<N>, Error> {
-        tlv.utf8()
+    fn from_tlv(element: &TLVElement<'a>) -> Result<String<N>, Error> {
+        element
+            .utf8()
             .and_then(|s| s.try_into().map_err(|_| ErrorCode::NoSpace.into()))
     }
 }
@@ -82,19 +73,7 @@ impl<const N: usize> ToTLV for String<N> {
         tw.utf8(tag, self)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv::toiter::ToTLVIter;
-
-        empty().utf8(tag, self)
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv::toiter::ToTLVIter;
-
-        empty().utf8i(
-            tag,
-            self.len(),
-            self.into_bytes().into_iter().map(Result::Ok),
-        )
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV<'_>, Error>> {
+        TLV::utf8(tag, self.as_str()).into_tlv_iter()
     }
 }

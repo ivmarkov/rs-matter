@@ -19,8 +19,7 @@ use core::time::Duration;
 
 use crate::{
     error::*,
-    tlv::{FromTLV, TLVArray, TLVElement, TagType},
-    tlv::{TLVTag, TLVWrite, ToTLV, ToTLVIter},
+    tlv::{FromTLV, TLVArray, TLVElement, TLVTag, TLVWrite, TagType, ToTLV, TLV},
     transport::exchange::MessageMeta,
     utils::{epoch::Epoch, writebuf::WriteBuf},
 };
@@ -38,7 +37,7 @@ macro_rules! cmd_enter {
     }};
 }
 
-#[derive(FromPrimitive, Debug, Clone, Copy, PartialEq)]
+#[derive(FromPrimitive, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IMStatusCode {
     Success = 0,
     Failure = 1,
@@ -103,12 +102,8 @@ impl ToTLV for IMStatusCode {
         tw.u16(tag, *self as _)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        core::iter::empty().u16(tag, *self as _)
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        core::iter::empty().u16(tag, self as _)
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
+        TLV::u16(tag, *self as _).into_tlv_iter()
     }
 }
 

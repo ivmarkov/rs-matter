@@ -18,28 +18,18 @@
 use core::num::NonZeroU8;
 
 use rs_matter::{
-    acl::{gen_noc_cat, AclEntry, AuthMode, Target},
-    data_model::{
-        objects::{EncodeValue, Privilege},
+    acl::{gen_noc_cat, AclEntry, AuthMode, Target}, attr_data_path, attr_status, data_model::{
+        objects::{HandlerCompat, Privilege},
         system_model::access_control,
-    },
-    interaction_model::{
+    }, e2e::{AttrReadResp, AttrReadTest, AttrTLVData, E2eTestRunner, ImEngine, IM_ENGINE_PEER_ID}, interaction_model::{
         core::IMStatusCode,
-        messages::ib::{AttrData, AttrPath, AttrResp, AttrStatus, ClusterPath, DataVersionFilter},
-        messages::GenericPath,
-    },
-    tlv::{ElementType, TLVArray, TLVElement, TLVWriter, TagType},
+        messages::{ib::{AttrData, AttrPath, AttrResp, AttrStatus, ClusterPath, DataVersionFilter}, GenericPath},
+    }, tlv::{ElementType, TLVArray, TLVElement, TLVValue, TLVWriter, TagType}
 };
 
-use crate::{
-    attr_data_path, attr_status,
-    common::{
-        attributes::*,
-        echo_cluster::{self, ATTR_WRITE_DEFAULT_VALUE},
-        im_engine::{ImEngine, IM_ENGINE_PEER_ID},
-        init_env_logger,
-    },
-};
+use crate::common::{
+        echo_cluster, init_env_logger
+    };
 
 const FAB_1: NonZeroU8 = match NonZeroU8::new(1) {
     Some(f) => f,
@@ -68,38 +58,38 @@ fn wc_read_attribute() {
         Some(echo_cluster::AttributesDiscriminants::Att1 as u32),
     );
 
-    let im = ImEngine::new_default();
-    let handler = im.handler();
+    let im = E2eTestRunner::new();
+    let handler = HandlerCompat(im.default_handler());
 
     // Test1: Empty Response as no ACL matches
-    let input = &[AttrPath::new(&wc_att1)];
-    let expected = &[];
-    im.handle_read_reqs(&handler, input, expected);
+    im.run_one(&handler, AttrReadTest::new(&[AttrPath::new(&wc_att1)], &[]));
 
     // Add ACL to allow our peer to only access endpoint 0
     let mut acl = AclEntry::new(FAB_1, Privilege::ADMIN, AuthMode::Case);
-    acl.add_subject(IM_ENGINE_PEER_ID).unwrap();
+    acl.add_subject(E2eTestRunner::PEER_ID).unwrap();
     acl.add_target(Target::new(Some(0), None, None)).unwrap();
     im.matter.acl_mgr.borrow_mut().add(acl).unwrap();
 
     // Test2: Only Single response as only single endpoint is allowed
-    let input = &[AttrPath::new(&wc_att1)];
-    let expected = &[attr_data_path!(ep0_att1, ElementType::U16(0x1234))];
-    im.handle_read_reqs(&handler, input, expected);
+    im.run_one(&handler, AttrReadTest::new(&[AttrPath::new(&wc_att1)], &[AttrReadResp::data(&ep0_att1, ElementType::U16(0x1234))]));
 
     // Add ACL to allow our peer to also access endpoint 1
     let mut acl = AclEntry::new(FAB_1, Privilege::ADMIN, AuthMode::Case);
-    acl.add_subject(IM_ENGINE_PEER_ID).unwrap();
+    acl.add_subject(E2eTestRunner::PEER_ID).unwrap();
     acl.add_target(Target::new(Some(1), None, None)).unwrap();
     im.matter.acl_mgr.borrow_mut().add(acl).unwrap();
 
     // Test3: Both responses are valid
-    let input = &[AttrPath::new(&wc_att1)];
-    let expected = &[
-        attr_data_path!(ep0_att1, ElementType::U16(0x1234)),
-        attr_data_path!(ep1_att1, ElementType::U16(0x1234)),
-    ];
-    im.handle_read_reqs(&handler, input, expected);
+    im.run_one(
+        &handler, 
+        AttrReadTest::new(
+            &[AttrPath::new(&wc_att1)],
+            &[
+                AttrReadResp::data(&ep0_att1, ElementType::U16(0x1234)),
+                AttrReadResp::data(&ep1_att1, ElementType::U16(0x1234)),
+            ],
+        ),
+    );
 }
 
 #[test]
@@ -119,8 +109,8 @@ fn exact_read_attribute() {
         Some(echo_cluster::AttributesDiscriminants::Att1 as u32),
     );
 
-    let im = ImEngine::new_default();
-    let handler = im.handler();
+    let im = ImEngine::new();
+    let handler = im.default_handler();
 
     // Test1: Unsupported Access error as no ACL matches
     let input = &[AttrPath::new(&wc_att1)];
@@ -569,8 +559,8 @@ fn test_write_data_ver() {
     // - 2 responses are expected
     init_env_logger();
 
-    let im = ImEngine::new_default();
-    let handler = im.handler();
+    let im = ImEngine::new();
+    let handler = im.default_handler();
 
     // Add ACL to allow our peer with only OPERATE permission
     let acl = AclEntry::new(FAB_1, Privilege::ADMIN, AuthMode::Case);
@@ -589,13 +579,13 @@ fn test_write_data_ver() {
 
     let val0 = 10u16;
     let val1 = 11u16;
-    let attr_data0 = EncodeValue::Value(&val0);
-    let attr_data1 = EncodeValue::Value(&val1);
+    let attr_data0 = TLVValue::U16(val0);
+    let attr_data1 = TLVValue::U16(val1);
 
     let initial_data_ver = handler.echo_cluster(0).data_ver.get();
 
     // Test 1: Write with correct dataversion should succeed
-    let input_correct_dataver = &[AttrData::new(
+    let input_correct_dataver = &[AttrTLVData::new(
         Some(initial_data_ver),
         AttrPath::new(&ep0_attwrite),
         attr_data0,
@@ -609,7 +599,7 @@ fn test_write_data_ver() {
 
     // Test 2: Write with incorrect dataversion should fail
     // Now the data version would have incremented due to the previous write
-    let input_correct_dataver = &[AttrData::new(
+    let input_correct_dataver = &[AttrTLVData::new(
         Some(initial_data_ver),
         AttrPath::new(&ep0_attwrite),
         attr_data1.clone(),
@@ -630,7 +620,7 @@ fn test_write_data_ver() {
     //   data version would not match
     let new_data_ver = handler.echo_cluster(0).data_ver.get();
 
-    let input_correct_dataver = &[AttrData::new(
+    let input_correct_dataver = &[AttrTLVData::new(
         Some(new_data_ver),
         AttrPath::new(&wc_ep_attwrite),
         attr_data1,

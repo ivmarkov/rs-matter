@@ -36,7 +36,7 @@ use crate::error::{Error, ErrorCode};
 use crate::utils::init::{self, init, IntoFallibleInit};
 use crate::utils::vec::Vec;
 
-use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV};
+use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV, TLV};
 
 /// For backwards compatibility
 pub type OctetStr<'a> = Octets<'a>;
@@ -67,8 +67,8 @@ impl<'a> Deref for Octets<'a> {
 }
 
 impl<'a> FromTLV<'a> for Octets<'a> {
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
-        Ok(Octets(tlv.str()?))
+    fn from_tlv(element: &TLVElement<'a>) -> Result<Self, Error> {
+        Ok(Octets(element.str()?))
     }
 }
 
@@ -77,16 +77,8 @@ impl<'a> ToTLV for Octets<'a> {
         tw.str(tag, self.0)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv::toiter::ToTLVIter;
-
-        core::iter::empty().str(tag, self.0)
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv::toiter::ToTLVIter;
-
-        core::iter::empty().str(tag, self.0)
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
+        TLV::str(tag, self.0).into_tlv_iter()
     }
 }
 
@@ -147,17 +139,17 @@ impl<const N: usize> DerefMut for OctetsOwned<N> {
 }
 
 impl<'a, const N: usize> FromTLV<'a> for OctetsOwned<N> {
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
+    fn from_tlv(element: &TLVElement<'a>) -> Result<Self, Error> {
         Ok(Self {
-            vec: tlv.str()?.try_into().map_err(|_| ErrorCode::NoSpace)?,
+            vec: element.str()?.try_into().map_err(|_| ErrorCode::NoSpace)?,
         })
     }
 
-    fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
+    fn init_from_tlv(element: TLVElement<'a>) -> impl init::Init<Self, Error> {
         init::Init::chain(OctetsOwned::init().into_fallible(), move |bytes| {
             bytes
                 .vec
-                .extend_from_slice(tlv.str()?)
+                .extend_from_slice(element.str()?)
                 .map_err(|_| ErrorCode::NoSpace)?;
 
             Ok(())
@@ -170,15 +162,7 @@ impl<const N: usize> ToTLV for OctetsOwned<N> {
         tw.str(tag, &self.vec)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv::toiter::ToTLVIter;
-
-        core::iter::empty().str(tag, &self.vec)
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv::toiter::ToTLVIter;
-
-        core::iter::empty().stri(tag, self.vec.len(), self.vec.into_iter().map(Result::Ok))
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
+        TLV::str(tag, self.vec.as_slice()).into_tlv_iter()
     }
 }

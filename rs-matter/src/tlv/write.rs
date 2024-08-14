@@ -103,10 +103,11 @@ pub trait TLVWrite {
             | TLVValue::Str16l(a)
             | TLVValue::Str32l(a)
             | TLVValue::Str64l(a) => self.write_raw_data(a.iter().copied()),
-            TLVValue::Null => Ok(()),
-            TLVValue::Struct(seq) | TLVValue::Array(seq) | TLVValue::List(seq) => {
-                self.write_raw_data(seq.0.iter().copied())
-            }
+            TLVValue::Null
+            | TLVValue::Struct
+            | TLVValue::Array
+            | TLVValue::List
+            | TLVValue::EndCnt => Ok(()),
         }
     }
 

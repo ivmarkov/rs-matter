@@ -47,7 +47,7 @@ use crate::error::Error;
 use crate::utils::init;
 use crate::utils::maybe::Maybe;
 
-use super::{FromTLV, TLVElement, TLVTag, TLVValueType, TLVWrite, ToTLV};
+use super::{EitherIter, FromTLV, TLVElement, TLVTag, TLVValueType, TLVWrite, ToTLV, TLV};
 
 /// A tag for `Maybe` that makes it behave as an optional struct value per the TLV spec.
 pub type AsOptional = ();
@@ -68,19 +68,19 @@ pub type Optional<T> = Maybe<T, AsOptional>;
 pub type Nullable<T> = Maybe<T, AsNullable>;
 
 impl<'a, T: FromTLV<'a>> FromTLV<'a> for Maybe<T, AsNullable> {
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
-        match tlv.control()?.value_type {
+    fn from_tlv(element: &TLVElement<'a>) -> Result<Self, Error> {
+        match element.control()?.value_type {
             TLVValueType::Null => Ok(Maybe::none()),
-            _ => Ok(Maybe::some(T::from_tlv(tlv)?)),
+            _ => Ok(Maybe::some(T::from_tlv(element)?)),
         }
     }
 
-    fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
+    fn init_from_tlv(element: TLVElement<'a>) -> impl init::Init<Self, Error> {
         unsafe {
             init::init_from_closure(move |slot| {
-                let init = match tlv.control()?.value_type {
+                let init = match element.control()?.value_type {
                     TLVValueType::Null => None,
-                    _ => Some(T::init_from_tlv(tlv)),
+                    _ => Some(T::init_from_tlv(element)),
                 };
 
                 init::Init::__init(Maybe::init(init), slot)
@@ -97,44 +97,28 @@ impl<T: ToTLV> ToTLV for Maybe<T, AsNullable> {
         }
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv::toiter::ToTLVIter;
-        use crate::tlv::EitherIter;
-
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
         match self.as_ref() {
-            None => EitherIter::First(empty().null(tag)),
-            Some(s) => EitherIter::Second(s.to_tlv_iter(tag)),
-        }
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>>
-    where
-        Self: Sized,
-    {
-        use crate::tlv::toiter::ToTLVIter;
-        use crate::tlv::EitherIter;
-
-        match self.into_option() {
-            None => EitherIter::First(empty().null(tag)),
-            Some(s) => EitherIter::Second(s.into_tlv_iter(tag)),
+            None => EitherIter::First(TLV::null(tag).into_tlv_iter()),
+            Some(s) => EitherIter::Second(s.tlv_iter(tag)),
         }
     }
 }
 
 impl<'a, T: FromTLV<'a> + 'a> FromTLV<'a> for Maybe<T, AsOptional> {
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
-        if tlv.is_empty() {
+    fn from_tlv(element: &TLVElement<'a>) -> Result<Self, Error> {
+        if element.is_empty() {
             Ok(Self::none())
         } else {
-            Ok(Self::some(T::from_tlv(tlv)?))
+            Ok(Self::some(T::from_tlv(element)?))
         }
     }
 
-    fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
-        if tlv.is_empty() {
+    fn init_from_tlv(element: TLVElement<'a>) -> impl init::Init<Self, Error> {
+        if element.is_empty() {
             Self::init(None)
         } else {
-            Self::init(Some(T::init_from_tlv(tlv)))
+            Self::init(Some(T::init_from_tlv(element)))
         }
     }
 }
@@ -147,35 +131,23 @@ impl<T: ToTLV> ToTLV for Maybe<T, AsOptional> {
         }
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
         use crate::tlv::EitherIter;
 
         match self.as_ref() {
             None => EitherIter::First(empty()),
-            Some(s) => EitherIter::Second(s.to_tlv_iter(tag)),
-        }
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>>
-    where
-        Self: Sized,
-    {
-        use crate::tlv::EitherIter;
-
-        match self.into_option() {
-            None => EitherIter::First(empty()),
-            Some(s) => EitherIter::Second(s.into_tlv_iter(tag)),
+            Some(s) => EitherIter::Second(s.tlv_iter(tag)),
         }
     }
 }
 
 impl<'a, T: FromTLV<'a>> FromTLV<'a> for Option<T> {
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
-        if tlv.is_empty() {
+    fn from_tlv(element: &TLVElement<'a>) -> Result<Self, Error> {
+        if element.is_empty() {
             return Ok(None);
         }
 
-        Ok(Some(T::from_tlv(tlv)?))
+        Ok(Some(T::from_tlv(element)?))
     }
 }
 
@@ -187,24 +159,10 @@ impl<T: ToTLV> ToTLV for Option<T> {
         }
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        use crate::tlv::EitherIter;
-
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
         match self.as_ref() {
             None => EitherIter::First(empty()),
-            Some(s) => EitherIter::Second(s.to_tlv_iter(tag)),
-        }
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>>
-    where
-        Self: Sized,
-    {
-        use crate::tlv::EitherIter;
-
-        match self {
-            None => EitherIter::First(empty()),
-            Some(s) => EitherIter::Second(s.into_tlv_iter(tag)),
+            Some(s) => EitherIter::Second(s.tlv_iter(tag)),
         }
     }
 }

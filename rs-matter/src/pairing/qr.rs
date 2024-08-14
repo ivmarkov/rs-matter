@@ -24,7 +24,7 @@ use qrcodegen_no_heap::{QrCode, QrCodeEcc, Version};
 use crate::codec::base38;
 use crate::data_model::cluster_basic_information::BasicInfoConfig;
 use crate::error::{Error, ErrorCode};
-use crate::tlv::{EitherIter, TLVTag, ToTLVIter};
+use crate::tlv::{EitherIter, TLVTag, TLV};
 use crate::utils::writebuf::WriteBuf;
 use crate::CommissioningData;
 
@@ -289,17 +289,22 @@ where
             EitherIter::First(core::iter::empty())
         } else {
             EitherIter::Second(
-                core::iter::empty()
-                    .utf8(TLVTag::Context(SERIAL_NUMBER_TAG), self.dev_det.serial_no),
+                TLV::utf8(TLVTag::Context(SERIAL_NUMBER_TAG), self.dev_det.serial_no)
+                    .into_tlv_iter(),
             )
         };
 
         EitherIter::Second(
-            core::iter::empty()
-                .start_struct(TLVTag::Anonymous)
+            TLV::structure(TLVTag::Anonymous)
+                .into_tlv_iter()
                 .chain(serial_no)
+                .flat_map(TLV::result_into_bytes_iter)
                 .chain((self.optional_data)())
-                .end_container(),
+                .chain(
+                    TLV::end_container()
+                        .into_tlv_iter()
+                        .flat_map(TLV::result_into_bytes_iter),
+                ),
         )
     }
 }
@@ -620,15 +625,19 @@ mod tests {
 
         let disc_cap = DiscoveryCapabilities::new(true, false, false);
         let optional_data = || {
-            core::iter::empty()
-                .utf8(
-                    TLVTag::Context(OPTIONAL_DEFAULT_STRING_TAG),
-                    OPTIONAL_DEFAULT_STRING_VALUE,
-                )
-                .i32(
+            TLV::utf8(
+                TLVTag::Context(OPTIONAL_DEFAULT_STRING_TAG),
+                OPTIONAL_DEFAULT_STRING_VALUE,
+            )
+            .into_tlv_iter()
+            .chain(
+                TLV::i32(
                     TLVTag::Context(OPTIONAL_DEFAULT_INT_TAG),
                     OPTIONAL_DEFAULT_INT_VALUE,
                 )
+                .into_tlv_iter(),
+            )
+            .flat_map(TLV::result_into_bytes_iter)
         };
 
         let qr_code_data = QrSetupPayload::new(&dev_det, &comm_data, disc_cap, optional_data);

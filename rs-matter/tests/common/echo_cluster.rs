@@ -28,7 +28,7 @@ use rs_matter::{
     },
     error::{Error, ErrorCode},
     interaction_model::messages::ib::{attr_list_write, ListOperation},
-    tlv::{TLVElement, TagType},
+    tlv::{TLVElement, TLVTag, TLVWrite},
     transport::exchange::Exchange,
 };
 use strum::{EnumDiscriminants, FromRepr};
@@ -159,9 +159,9 @@ impl EchoCluster {
                         let tc_handle = TestChecker::get().unwrap();
                         let tc = tc_handle.lock().unwrap();
 
-                        writer.start_array(AttrDataWriter::TAG)?;
+                        writer.start_array(&AttrDataWriter::TAG)?;
                         for i in tc.write_list.iter().flatten() {
-                            writer.u16(TagType::Anonymous, *i)?;
+                            writer.u16(&TLVTag::Anonymous, *i)?;
                         }
                         writer.end_container()?;
 
@@ -207,9 +207,9 @@ impl EchoCluster {
 
                 let mut writer = encoder.with_command(RespCommands::EchoResp as _)?;
 
-                writer.start_struct(CmdDataWriter::TAG)?;
+                writer.start_struct(&CmdDataWriter::TAG)?;
                 // Echo = input * self.multiplier
-                writer.u8(TagType::Context(0), a * self.multiplier)?;
+                writer.u8(&TLVTag::Context(0), a * self.multiplier)?;
                 writer.end_container()?;
 
                 writer.complete()

@@ -15,18 +15,18 @@
  *    limitations under the License.
  */
 
-use core::iter::empty;
-
 use crate::error::Error;
 use crate::utils::init;
 
 use super::{
-    EitherIter, TLVElement, TLVSequenceIter, TLVTag, TLVValue, TLVValueType, TLVWrite, ToTLVIter,
+    EitherIter, TLVElement, TLVSequenceIter, TLVSequenceTLVIter, TLVTag, TLVValue, TLVValueType,
+    TLVWrite, TLV,
 };
 
 pub use container::*;
 pub use maybe::*;
 pub use octets::*;
+pub use slice::*;
 pub use str::*;
 
 mod array;
@@ -43,34 +43,20 @@ mod vec;
 /// a TLV-encoded byte slice.
 pub trait FromTLV<'a>: Sized + 'a {
     /// Deserialize the type from a TLV-encoded element.
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error>;
+    fn from_tlv(element: &TLVElement<'a>) -> Result<Self, Error>;
 
     /// Generate an in-place initializer for the type that initializes
     /// the type from a TLV-encoded element.
-    fn init_from_tlv(tlv: TLVElement<'a>) -> impl init::Init<Self, Error> {
+    fn init_from_tlv(element: TLVElement<'a>) -> impl init::Init<Self, Error> {
         unsafe {
             init::init_from_closure(move |slot| {
-                core::ptr::write(slot, Self::from_tlv(&tlv)?);
+                core::ptr::write(slot, Self::from_tlv(&element)?);
 
                 Ok(())
             })
         }
     }
 }
-
-// pub trait ToTLV {
-//     /// Serialize the type to a TLV-encoded stream.
-//     fn to_tlv(&self, tw: &mut TLVWriter, tag: TLVTag) -> Result<(), Error>;
-// }
-
-// impl<T> ToTLV for T
-// where
-//     T: ToTLV,
-// {
-//     fn to_tlv(&self, tw: &mut TLVWriter, tag: TLVTag) -> Result<(), Error> {
-//         self.to_tlv2(&tag, tw)
-//     }
-// }
 
 /// A trait representing Rust types that can serialize themselves to
 /// a TLV-encoded stream.
@@ -80,10 +66,7 @@ pub trait ToTLV {
 
     /// Serialize the type as an iterator of bytes by potentially borrowing
     /// data from the type.
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>>;
-
-    /// Serialize the type as an iterator of bytes by consuming the type.
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>>;
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>>;
 }
 
 impl<T> ToTLV for &T
@@ -94,18 +77,14 @@ where
         (*self).to_tlv(tag, tw)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        (*self).to_tlv_iter(tag)
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        self.to_tlv_iter(tag)
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
+        (*self).tlv_iter(tag)
     }
 }
 
 impl<'a> FromTLV<'a> for TLVElement<'a> {
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
-        Ok(tlv.clone())
+    fn from_tlv(element: &TLVElement<'a>) -> Result<Self, Error> {
+        Ok(element.clone())
     }
 }
 
@@ -114,38 +93,49 @@ impl<'a> ToTLV for TLVElement<'a> {
         tw.raw_value(tag, self.control()?.value_type, self.raw_value()?)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        ToTLVIter::flatten(
-            self.control()
-                .and_then(move |control| self.raw_value().map(|raw_value| (control, raw_value)))
-                .map(move |(control, raw_value)| {
-                    empty().raw_value(
-                        tag,
-                        control.value_type,
-                        raw_value.iter().copied().map(Result::Ok),
-                    )
-                }),
-        )
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
+        TLVElementTLVIter::Start(tag, self.clone())
     }
+}
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        ToTLVIter::flatten(
-            self.control()
-                .and_then(move |control| self.raw_value().map(|raw_value| (control, raw_value)))
-                .map(move |(control, raw_value)| {
-                    empty().raw_value(
-                        tag,
-                        control.value_type,
-                        raw_value.iter().copied().map(Result::Ok),
-                    )
-                }),
-        )
+enum TLVElementTLVIter<'a> {
+    Start(TLVTag, TLVElement<'a>),
+    Seq(TLVSequenceTLVIter<'a>),
+    Finished,
+}
+
+impl<'a> Iterator for TLVElementTLVIter<'a> {
+    type Item = Result<TLV<'a>, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match core::mem::replace(self, Self::Finished) {
+            TLVElementTLVIter::Start(tag, elem) => {
+                let value = elem.value().and_then(|value| Ok(TLV::new(tag, value)));
+
+                if let Ok(seq) = elem.container() {
+                    *self = Self::Seq(seq.tlv_iter());
+                } else {
+                    *self = TLVElementTLVIter::Finished;
+                }
+
+                Some(value)
+            }
+            TLVElementTLVIter::Seq(mut iter) => {
+                if let Some(value) = iter.next() {
+                    *self = TLVElementTLVIter::Seq(iter);
+                    Some(value)
+                } else {
+                    Some(Ok(TLV::end_container()))
+                }
+            }
+            TLVElementTLVIter::Finished => None,
+        }
     }
 }
 
 impl<'a> FromTLV<'a> for TLVValue<'a> {
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
-        tlv.value()
+    fn from_tlv(element: &TLVElement<'a>) -> Result<Self, Error> {
+        element.value()
     }
 }
 
@@ -154,12 +144,8 @@ impl<'a> ToTLV for TLVValue<'a> {
         tw.tlv(tag, self)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        empty().tlv(tag, self.clone())
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        empty().tlv(tag, self)
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
+        TLV::new(tag, self.clone()).into_tlv_iter()
     }
 }
 
@@ -170,7 +156,7 @@ mod tests {
 
     use rs_matter_macros::{FromTLV, ToTLV};
 
-    use crate::tlv::{Octets, TLVElement, TLVWriter};
+    use crate::tlv::{Octets, TLVElement, TLVWriter, TLV};
     use crate::utils::init::InitMaybeUninit;
     use crate::utils::writebuf::WriteBuf;
 
@@ -201,7 +187,9 @@ mod tests {
 
         writebuf.reset();
 
-        let mut iter = t.to_tlv_iter(TLVTag::Anonymous);
+        let mut iter = t
+            .tlv_iter(TLVTag::Anonymous)
+            .flat_map(TLV::result_into_bytes_iter);
         loop {
             match iter.next() {
                 Some(Ok(byte)) => writebuf.append(&[byte]).unwrap(),
@@ -211,19 +199,6 @@ mod tests {
         }
 
         assert_eq!(writebuf.as_slice(), expected);
-
-        drop(iter);
-
-        writebuf.reset();
-
-        let mut iter = t.into_tlv_iter(TLVTag::Anonymous);
-        loop {
-            match iter.next() {
-                Some(Ok(byte)) => writebuf.append(&[byte]).unwrap(),
-                None => break,
-                _ => panic!("Error in iterator"),
-            }
-        }
     }
 
     #[derive(ToTLV)]

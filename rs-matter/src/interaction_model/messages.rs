@@ -252,6 +252,8 @@ pub mod msg {
 
     // This enum is helpful when we are constructing the response
     // step by step in incremental manner
+    #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+    #[repr(u8)]
     pub enum InvRespTag {
         SupressResponse = 0,
         InvokeResponses = 1,
@@ -313,6 +315,18 @@ pub mod msg {
         }
     }
 
+    // This enum is helpful when we are constructing the request
+    // step by step in incremental manner
+    #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+    #[repr(u8)]
+    pub enum ReadReqTag {
+        AttrRequests = 0,
+        EventRequests = 1,
+        EventFilters = 2,
+        FabricFiltered = 3,
+        DataVersionFilters = 4,
+    }
+
     #[derive(Debug, Clone, FromTLV, ToTLV)]
     #[tlvargs(lifetime = "'a")]
     pub struct WriteReq<'a> {
@@ -320,6 +334,17 @@ pub mod msg {
         pub timed_request: Option<bool>,
         pub write_requests: TLVArray<'a, AttrData<'a>>,
         pub more_chunked: Option<bool>,
+    }
+
+    // This enum is helpful when we are constructing the request
+    // step by step in incremental manner
+    #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+    #[repr(u8)]
+    pub enum WriteReqTag {
+        SuppressResponse = 0,
+        TimedRequest = 1,
+        WriteRequests = 2,
+        MoreChunked = 3,
     }
 
     #[derive(Clone)]
@@ -412,7 +437,7 @@ pub mod ib {
         data_model::objects::{AttrDetails, AttrId, ClusterId, CmdId, EndptId},
         error::{Error, ErrorCode},
         interaction_model::core::IMStatusCode,
-        tlv::{FromTLV, Nullable, TLVElement, TLVTag, TLVWrite, ToTLV},
+        tlv::{FromTLV, Nullable, TLVElement, TLVTag, TLVWrite, ToTLV, TLV},
     };
     use log::error;
 
@@ -489,7 +514,7 @@ pub mod ib {
     }
 
     // Status
-    #[derive(Debug, Clone, PartialEq, FromTLV, ToTLV)]
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, FromTLV, ToTLV)]
     pub struct Status {
         pub status: IMStatusCode,
         pub cluster_status: u16,
@@ -654,7 +679,7 @@ pub mod ib {
         }
     }
 
-    #[derive(Debug, Clone, PartialEq, FromTLV, ToTLV)]
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, FromTLV, ToTLV)]
     pub struct AttrStatus {
         path: AttrPath,
         status: Status,
@@ -670,7 +695,7 @@ pub mod ib {
     }
 
     // Attribute Path
-    #[derive(Default, Clone, Debug, PartialEq, FromTLV, ToTLV)]
+    #[derive(Default, Clone, Debug, PartialEq, Eq, Hash, FromTLV, ToTLV)]
     #[tlvargs(datatype = "list")]
     pub struct AttrPath {
         pub tag_compression: Option<bool>,
@@ -828,12 +853,8 @@ pub mod ib {
             self.path.to_tlv(tag, tw)
         }
 
-        fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-            self.path.to_tlv_iter(tag)
-        }
-
-        fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-            self.path.into_tlv_iter(tag)
+        fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
+            self.path.tlv_iter(tag)
         }
     }
 

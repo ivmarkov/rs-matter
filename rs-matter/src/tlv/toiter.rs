@@ -1,16 +1,19 @@
+use core::iter::{Chain, Once};
+
 use crate::error::{Error, ErrorCode};
 
-use super::{TLVControl, TLVTag, TLVTagType, TLVValue, TLVValueType};
+use super::{EitherIter, OnceTLVIter, TLVTag, TLVValue, TLVValueType, TLV};
 
-type ByteResult = Result<u8, Error>;
+type TLVResult<'a> = Result<TLV<'a>, Error>;
+type ChainedTLVIter<'a, C> = Chain<C, OnceTLVIter<'a>>;
 
 /// A decorator trait for serializing data as TLV in the form of an
-/// `Iterator` of `Result<u8, Error>` bytes.
+/// `Iterator` of `Result<TLV<'a>, Error>` bytes.
 ///
 /// The trait provides additional combinators on top of the standard `Iterator`
 /// trait combinators (e.g. `map`, `filter`, `flat_map`, etc.) that allow for serializing TLV elements.
 ///
-/// The trait is already implemented for any `Iterator` with `Item = Result<u8, Error>`, so users are
+/// The trait is already implemented for any `Iterator` with `Item = Result<TLV<'a>, Error>`, so users are
 /// not expected to provide implementations of it.
 ///
 /// Using an Iterator approach to TLV serialization is useful when the data is not serialized to its
@@ -32,8 +35,8 @@ type ByteResult = Result<u8, Error>;
 /// For other cases, allocating a temporary memory buffer and serializing into it with `TLVWrite` might result
 /// in less memory overhead (and better performance when reading the raw serialized TLV data) by the code that
 /// opertates on it.
-pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
-    fn flatten(value: Result<Self, Error>) -> impl Iterator<Item = ByteResult> {
+pub trait TLVIter<'a>: Iterator<Item = TLVResult<'a>> + Sized {
+    fn flatten(value: Result<Self, Error>) -> EitherIter<Self, Once<TLVResult<'a>>> {
         match value {
             Ok(value) => EitherIter::First(value),
             Err(err) => EitherIter::Second(core::iter::once(Err(err))),
@@ -41,353 +44,167 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
     }
 
     /// Serialize a TLV element with the given tag and value.
-    fn tlv(self, tag: TLVTag, value: TLVValue) -> impl Iterator<Item = ByteResult> {
-        let tag = self._tag(tag, value.value_type());
-
-        let size = match value {
-            TLVValue::Str8l(a) => {
-                Either5Iter::Second(tag._raw_bytes((a.len() as u8).to_le_bytes()))
-            }
-            TLVValue::Str16l(a) => {
-                Either5Iter::Third(tag._raw_bytes((a.len() as u16).to_le_bytes()))
-            }
-            TLVValue::Str32l(a) => {
-                Either5Iter::Fourth(tag._raw_bytes((a.len() as u32).to_le_bytes()))
-            }
-            TLVValue::Str64l(a) => {
-                Either5Iter::Fifth(tag._raw_bytes((a.len() as u64).to_le_bytes()))
-            }
-            TLVValue::Utf8l(a) => {
-                Either5Iter::Second(tag._raw_bytes((a.len() as u8).to_le_bytes()))
-            }
-            TLVValue::Utf16l(a) => {
-                Either5Iter::Third(tag._raw_bytes((a.len() as u16).to_le_bytes()))
-            }
-            TLVValue::Utf32l(a) => {
-                Either5Iter::Fourth(tag._raw_bytes((a.len() as u32).to_le_bytes()))
-            }
-            TLVValue::Utf64l(a) => {
-                Either5Iter::Fifth(tag._raw_bytes((a.len() as u64).to_le_bytes()))
-            }
-            _ => Either5Iter::First(tag),
-        };
-
-        match value {
-            TLVValue::S8(a) => Either6Iter::Second(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::S16(a) => Either6Iter::Third(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::S32(a) => Either6Iter::Fourth(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::S64(a) => Either6Iter::Fifth(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::U8(a) => Either6Iter::Second(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::U16(a) => Either6Iter::Third(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::U32(a) => Either6Iter::Fourth(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::U64(a) => Either6Iter::Fifth(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::Struct(seq) | TLVValue::Array(seq) | TLVValue::List(seq) => {
-                Either6Iter::Sixth(size._raw_bytes(seq.0.iter().copied()))
-            }
-            TLVValue::Null | TLVValue::True | TLVValue::False => Either6Iter::First(size),
-            TLVValue::F32(a) => Either6Iter::Fourth(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::F64(a) => Either6Iter::Fifth(size._raw_bytes(a.to_le_bytes())),
-            TLVValue::Str8l(a)
-            | TLVValue::Str16l(a)
-            | TLVValue::Str32l(a)
-            | TLVValue::Str64l(a) => Either6Iter::Sixth(size._raw_bytes((*a).iter().copied())),
-            TLVValue::Utf8l(a)
-            | TLVValue::Utf16l(a)
-            | TLVValue::Utf32l(a)
-            | TLVValue::Utf64l(a) => {
-                Either6Iter::Sixth(size._raw_bytes((*a.as_bytes()).iter().copied()))
-            }
-        }
+    fn tlv(self, tag: TLVTag, value: TLVValue<'a>) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::new(tag, value).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as an S8 TLV value.
-    fn i8(self, tag: TLVTag, data: i8) -> impl Iterator<Item = ByteResult> {
-        self._tag(tag, TLVValueType::S8)
-            ._raw_bytes(data.to_le_bytes())
+    fn i8(self, tag: TLVTag, data: i8) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::i8(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as a U8 TLV value.
-    fn u8(self, tag: TLVTag, data: u8) -> impl Iterator<Item = ByteResult> {
-        self._tag(tag, TLVValueType::U8)._raw_byte(data)
+    fn u8(self, tag: TLVTag, data: u8) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::u8(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as an S16 TLV value,
     /// or as an S8 TLV value if the provided data can fit in the S8 domain range.
-    fn i16(self, tag: TLVTag, data: i16) -> impl Iterator<Item = ByteResult> {
-        if data >= i8::MIN as _ && data <= i8::MAX as _ {
-            EitherIter::First(
-                self._tag(tag, TLVValueType::S8)
-                    ._raw_bytes((data as i8).to_le_bytes()),
-            )
-        } else {
-            EitherIter::Second(
-                self._tag(tag, TLVValueType::S16)
-                    ._raw_bytes(data.to_le_bytes()),
-            )
-        }
+    fn i16(self, tag: TLVTag, data: i16) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::i16(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as a U16 TLV value,
     /// or as a U8 TLV value if the provided data can fit in the U8 domain range.
-    fn u16(self, tag: TLVTag, data: u16) -> impl Iterator<Item = ByteResult> {
-        if data <= u8::MAX as _ {
-            EitherIter::First(
-                self._tag(tag, TLVValueType::U8)
-                    ._raw_bytes((data as u8).to_le_bytes()),
-            )
-        } else {
-            EitherIter::Second(
-                self._tag(tag, TLVValueType::U16)
-                    ._raw_bytes(data.to_le_bytes()),
-            )
-        }
+    fn u16(self, tag: TLVTag, data: u16) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::u16(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as an S32 TLV value,
     /// or as an S16 / S8 TLV value if the provided data can fit in a smaller domain range.
-    fn i32(self, tag: TLVTag, data: i32) -> impl Iterator<Item = ByteResult> {
-        if data >= i8::MIN as _ && data <= i8::MAX as _ {
-            Either3Iter::First(
-                self._tag(tag, TLVValueType::S8)
-                    ._raw_bytes((data as i8).to_le_bytes()),
-            )
-        } else if data >= i16::MIN as _ && data <= i16::MAX as _ {
-            Either3Iter::Second(
-                self._tag(tag, TLVValueType::S16)
-                    ._raw_bytes((data as i16).to_le_bytes()),
-            )
-        } else {
-            Either3Iter::Third(
-                self._tag(tag, TLVValueType::S32)
-                    ._raw_bytes(data.to_le_bytes()),
-            )
-        }
+    fn i32(self, tag: TLVTag, data: i32) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::i32(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as a U32 TLV value,
     /// or as a U16 / U8 TLV value if the provided data can fit in a smaller domain range.
-    fn u32(self, tag: TLVTag, data: u32) -> impl Iterator<Item = ByteResult> {
-        if data <= u8::MAX as _ {
-            Either3Iter::First(
-                self._tag(tag, TLVValueType::U8)
-                    ._raw_bytes((data as u8).to_le_bytes()),
-            )
-        } else if data <= u16::MAX as _ {
-            Either3Iter::Second(
-                self._tag(tag, TLVValueType::U16)
-                    ._raw_bytes((data as u16).to_le_bytes()),
-            )
-        } else {
-            Either3Iter::Third(
-                self._tag(tag, TLVValueType::U32)
-                    ._raw_bytes(data.to_le_bytes()),
-            )
-        }
+    fn u32(self, tag: TLVTag, data: u32) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::u32(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as an S64 TLV value,
     /// or as an S32 / S16 / S8 TLV value if the provided data can fit in a smaller domain range.
-    fn i64(self, tag: TLVTag, data: i64) -> impl Iterator<Item = ByteResult> {
-        if data >= i8::MIN as _ && data <= i8::MAX as _ {
-            Either4Iter::First(
-                self._tag(tag, TLVValueType::S8)
-                    ._raw_bytes((data as i8).to_le_bytes()),
-            )
-        } else if data >= i16::MIN as _ && data <= i16::MAX as _ {
-            Either4Iter::Second(
-                self._tag(tag, TLVValueType::S16)
-                    ._raw_bytes((data as i16).to_le_bytes()),
-            )
-        } else if data >= i32::MIN as _ && data <= i32::MAX as _ {
-            Either4Iter::Third(
-                self._tag(tag, TLVValueType::S32)
-                    ._raw_bytes((data as i32).to_le_bytes()),
-            )
-        } else {
-            Either4Iter::Fourth(
-                self._tag(tag, TLVValueType::S64)
-                    ._raw_bytes(data.to_le_bytes()),
-            )
-        }
+    fn i64(self, tag: TLVTag, data: i64) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::i64(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as a U64 TLV value,
     /// or as a U32 / U16 / U8 TLV value if the provided data can fit in a smaller domain range.
-    fn u64(self, tag: TLVTag, data: u64) -> impl Iterator<Item = ByteResult> {
-        if data <= u8::MAX as _ {
-            Either4Iter::First(
-                self._tag(tag, TLVValueType::U8)
-                    ._raw_bytes((data as u8).to_le_bytes()),
-            )
-        } else if data <= u16::MAX as _ {
-            Either4Iter::Second(
-                self._tag(tag, TLVValueType::U16)
-                    ._raw_bytes((data as u16).to_le_bytes()),
-            )
-        } else if data <= u32::MAX as _ {
-            Either4Iter::Third(
-                self._tag(tag, TLVValueType::U32)
-                    ._raw_bytes((data as u32).to_le_bytes()),
-            )
-        } else {
-            Either4Iter::Fourth(
-                self._tag(tag, TLVValueType::U64)
-                    ._raw_bytes(data.to_le_bytes()),
-            )
-        }
+    fn u64(self, tag: TLVTag, data: u64) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::u64(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as an F32 TLV value.
-    fn f32(self, tag: TLVTag, data: f32) -> impl Iterator<Item = ByteResult> {
-        self._tag(tag, TLVValueType::F32)
-            ._raw_bytes(data.to_le_bytes())
+    fn f32(self, tag: TLVTag, data: f32) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::f32(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as an F64 TLV value.
-    fn f64(self, tag: TLVTag, data: f64) -> impl Iterator<Item = ByteResult> {
-        self._tag(tag, TLVValueType::F64)
-            ._raw_bytes(data.to_le_bytes())
+    fn f64(self, tag: TLVTag, data: f64) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::f64(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as a TLV Octet String.
     ///
     /// The exact octet string type (Str8l, Str16l, Str32l, or Str64l) is chosen based on the length of the data,
     /// whereas the smallest type filling the provided data length is chosen.
-    fn str(self, tag: TLVTag, data: &[u8]) -> impl Iterator<Item = ByteResult> {
-        self.stri(
-            tag,
-            data.len(),
-            core::iter::empty()._raw_bytes(data.iter().copied()),
-        )
-    }
-
-    /// Serialize the given tag and the provided value as a TLV Octet String.
-    ///
-    /// The exact octet string type (Str8l, Str16l, Str32l, or Str64l) is chosen based on the length of the data,
-    /// whereas the smallest type filling the provided data length is chosen.
-    ///
-    /// NOTE: The length of the Octet String must be provided by the user and it must match the
-    /// number of bytes returned by the provided iterator, or else the generated TLV stream will be invalid.
-    fn stri<I>(self, tag: TLVTag, len: usize, iter: I) -> impl Iterator<Item = ByteResult>
+    fn str(self, tag: TLVTag, data: &'a [u8]) -> ChainedTLVIter<'a, Self>
     where
-        I: Iterator<Item = ByteResult>,
+        Self: 'a,
     {
-        if len <= u8::MAX as usize {
-            Either4Iter::First(
-                self._tag(tag, TLVValueType::Str8l)
-                    ._raw_byte(len as u8)
-                    .chain(iter),
-            )
-        } else if len <= u16::MAX as usize {
-            Either4Iter::Second(
-                self._tag(tag, TLVValueType::Str16l)
-                    ._raw_bytes((len as u16).to_le_bytes())
-                    .chain(iter),
-            )
-        } else if len <= u32::MAX as usize {
-            Either4Iter::Third(
-                self._tag(tag, TLVValueType::Str32l)
-                    ._raw_bytes((len as u32).to_le_bytes())
-                    .chain(iter),
-            )
-        } else {
-            Either4Iter::Fourth(
-                self._tag(tag, TLVValueType::Str64l)
-                    ._raw_bytes((len as u64).to_le_bytes())
-                    .chain(iter),
-            )
-        }
+        self.chain(TLV::str(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and the provided value as a TLV UTF-8 String.
     ///
     /// The exact UTF-8 string type (Utf8l, Utf16l, Utf32l, or Utf64l) is chosen based on the length of the data,
     /// whereas the smallest type filling the provided data length is chosen.
-    fn utf8(self, tag: TLVTag, data: &str) -> impl Iterator<Item = ByteResult> {
-        self.utf8i(
-            tag,
-            data.len(),
-            core::iter::empty()._raw_bytes(data.as_bytes().iter().copied()),
-        )
-    }
-
-    /// Serialize the given tag and the provided value as a TLV UTF-8 String.
-    ///
-    /// The exact UTF-8 string type (Utf8l, Utf16l, Utf32l, or Utf64l) is chosen based on the length of the data,
-    /// whereas the smallest type filling the provided data length is chosen.
-    ///
-    /// NOTE 1: The length of the UTF-8 String must be provided by the user and it must match the
-    /// number of bytes returned by the provided iterator, or else the generated TLV stream will be invalid.
-    ///
-    /// NOTE 2: The provided iterator must return valid UTF-8 bytes, or else the generated TLV stream will be invalid.
-    fn utf8i<I>(self, tag: TLVTag, len: usize, iter: I) -> impl Iterator<Item = ByteResult>
+    fn utf8(self, tag: TLVTag, data: &'a str) -> ChainedTLVIter<'a, Self>
     where
-        I: Iterator<Item = ByteResult>,
+        Self: 'a,
     {
-        if len <= u8::MAX as usize {
-            Either4Iter::First(
-                self._tag(tag, TLVValueType::Utf8l)
-                    ._raw_byte(len as u8)
-                    .chain(iter),
-            )
-        } else if len <= u16::MAX as usize {
-            Either4Iter::Second(
-                self._tag(tag, TLVValueType::Utf16l)
-                    ._raw_bytes((len as u16).to_le_bytes())
-                    .chain(iter),
-            )
-        } else if len <= u32::MAX as usize {
-            Either4Iter::Third(
-                self._tag(tag, TLVValueType::Utf32l)
-                    ._raw_bytes((len as u32).to_le_bytes())
-                    .chain(iter),
-            )
-        } else {
-            Either4Iter::Fourth(
-                self._tag(tag, TLVValueType::Utf64l)
-                    ._raw_bytes((len as u64).to_le_bytes())
-                    .chain(iter),
-            )
-        }
+        self.chain(TLV::utf8(tag, data).into_tlv_iter())
     }
 
     /// Serialize the given tag and a value indicating the start of a Struct TLV container.
     ///
     /// NOTE: The user must call `end_container` after serializing all the Struct fields
     /// to close the Struct container or else the generated TLV stream will be invalid.
-    fn start_struct(self, tag: TLVTag) -> impl Iterator<Item = ByteResult> {
-        self._tag(tag, TLVValueType::Struct)
+    fn start_struct(self, tag: TLVTag) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::structure(tag).into_tlv_iter())
     }
 
     /// Serialize the given tag and a value indicating the start of an Array TLV container.
     ///
     /// NOTE: The user must call `end_container` after serializing all the Array elements
     /// to close the Array container or else the generated TLV stream will be invalid.
-    fn start_array(self, tag: TLVTag) -> impl Iterator<Item = ByteResult> {
-        self._tag(tag, TLVValueType::Array)
+    fn start_array(self, tag: TLVTag) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::array(tag).into_tlv_iter())
     }
 
     /// Serialize the given tag and a value indicating the start of a List TLV container.
     ///
     /// NOTE: The user must call `end_container` after serializing all the List elements
     /// to close the List container or else the generated TLV stream will be invalid.
-    fn start_list(self, tag: TLVTag) -> impl Iterator<Item = ByteResult> {
-        self._tag(tag, TLVValueType::List)
+    fn start_list(self, tag: TLVTag) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::list(tag).into_tlv_iter())
     }
 
     /// Serialize the given tag and a value indicating the start of a TLV container.
     ///
     /// NOTE: The user must call `end_container` after serializing all the container fields
     /// to close the Struct container or else the generated TLV stream will be invalid.
-    fn start_container(
-        self,
-        tag: TLVTag,
-        container_type: TLVValueType,
-    ) -> impl Iterator<Item = ByteResult> {
-        if container_type.is_container() {
-            EitherIter::First(self._tag(tag, container_type))
-        } else {
-            EitherIter::Second(core::iter::once(Err(ErrorCode::TLVTypeMismatch.into())))
+    fn start_container(self, tag: TLVTag, container_type: TLVValueType) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        match container_type {
+            TLVValueType::Struct => self.start_struct(tag),
+            TLVValueType::Array => self.start_array(tag),
+            TLVValueType::List => self.start_list(tag),
+            _ => self.chain(core::iter::once(Err(ErrorCode::TLVTypeMismatch.into()))),
         }
     }
 
@@ -395,269 +212,409 @@ pub trait ToTLVIter: Iterator<Item = ByteResult> + Sized {
     ///
     /// NOTE: This method must be called only when the corresponding container has been opened
     /// using `start_struct`, `start_array`, or `start_list`, or else the generated TLV stream will be invalid.
-    fn end_container(self) -> impl Iterator<Item = ByteResult> {
-        self._raw_byte(TLVControl::new(TLVTagType::Anonymous, TLVValueType::EndCnt).as_raw())
+    fn end_container(self) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::end_container().into_tlv_iter())
     }
 
     /// Serialize the given tag and a value indicating a Null TLV value.
-    fn null(self, tag: TLVTag) -> impl Iterator<Item = ByteResult> {
-        self._tag(tag, TLVValueType::Null)
+    fn null(self, tag: TLVTag) -> ChainedTLVIter<'a, Self>
+    where
+        Self: 'a,
+    {
+        self.chain(TLV::null(tag).into_tlv_iter())
     }
 
     /// Serialize the given tag and a value indicating a True or False TLV value.
-    fn bool(self, tag: TLVTag, val: bool) -> impl Iterator<Item = ByteResult> {
-        self._tag(
-            tag,
-            if val {
-                TLVValueType::True
-            } else {
-                TLVValueType::False
-            },
-        )
-    }
-
-    fn raw_value<I>(
-        self,
-        tag: TLVTag,
-        value_type: TLVValueType,
-        raw_value: I,
-    ) -> impl Iterator<Item = ByteResult>
+    fn bool(self, tag: TLVTag, data: bool) -> ChainedTLVIter<'a, Self>
     where
-        I: Iterator<Item = ByteResult>,
+        Self: 'a,
     {
-        self._tag(tag, value_type).chain(raw_value)
+        self.chain(TLV::bool(tag, data).into_tlv_iter())
     }
+}
 
-    /// Serialize a tag by encoding in the control byte preceding the tag
-    /// the supplied TLV value type.
-    ///
-    /// Note that this is a low-level method which is not expected to be called directly by users.
-    fn _tag(self, tag: TLVTag, value_type: TLVValueType) -> impl Iterator<Item = ByteResult> {
-        let control = self._raw_byte(TLVControl::new(tag.tag_type(), value_type).as_raw());
+impl<'a, T> TLVIter<'a> for T where T: Iterator<Item = TLVResult<'a>> {}
 
-        match tag {
-            TLVTag::Anonymous => Either6Iter::First(control),
-            TLVTag::Context(v) => Either6Iter::Second(control._raw_byte(v)),
-            TLVTag::CommonPrf16(v) => Either6Iter::Third(control._raw_bytes(v.to_le_bytes())),
-            TLVTag::CommonPrf32(v) => Either6Iter::Fourth(control._raw_bytes(v.to_le_bytes())),
-            TLVTag::ImplPrf16(v) => Either6Iter::Third(control._raw_bytes(v.to_le_bytes())),
-            TLVTag::ImplPrf32(v) => Either6Iter::Fourth(control._raw_bytes(v.to_le_bytes())),
-            TLVTag::FullQual48 {
-                vendor_id,
-                profile,
-                tag,
-            } => Either6Iter::Fifth(
-                control
-                    ._raw_bytes(vendor_id.to_le_bytes())
-                    ._raw_bytes(profile.to_le_bytes())
-                    ._raw_bytes(tag.to_le_bytes()),
-            ),
-            TLVTag::FullQual64 {
-                vendor_id,
-                profile,
-                tag,
-            } => Either6Iter::Sixth(
-                control
-                    ._raw_bytes(vendor_id.to_le_bytes())
-                    ._raw_bytes(profile.to_le_bytes())
-                    ._raw_bytes(tag.to_le_bytes()),
-            ),
-        }
-    }
+#[cfg(test)]
+mod tests {
+    use core::{f32, iter::empty};
 
-    /// Serialize a raw byte array representing already-encoded TLV bytes.
-    ///
-    /// Note that this is a low-level method which is not expected to be called directly by users.
-    fn _raw_bytes<I>(self, bytes: I) -> impl Iterator<Item = ByteResult>
+    use crate::tlv::TLV;
+
+    use super::{TLVIter, TLVResult, TLVTag};
+
+    fn expect<'a, I>(iter: I, expected: &[u8])
     where
-        I: IntoIterator<Item = u8>,
+        I: Iterator<Item = TLVResult<'a>>,
     {
-        self.chain(bytes.into_iter().map(Result::Ok))
-    }
+        let mut iter = iter.map(|r| r.unwrap()).flat_map(TLV::into_bytes_iter);
+        let mut expected = expected.iter().copied();
 
-    /// Serialize a raw, already encoded TLV byte.
-    ///
-    /// Note that this is a low-level method which is not expected to be called directly by users.
-    fn _raw_byte(self, byte: u8) -> impl Iterator<Item = ByteResult> {
-        self.chain(core::iter::once(Ok(byte)))
-    }
-}
-
-impl<T> ToTLVIter for T where T: Iterator<Item = ByteResult> {}
-
-/// A newtype wrapping a single iterator and implementing
-/// the `Iterator` trait.
-///
-/// This type is not really that useful outside of the `ToTLV` proc macro
-/// implementation where it simplifies the implementation.
-pub enum Either1Iter<F> {
-    First(F),
-}
-
-impl<F> Iterator for Either1Iter<F>
-where
-    F: Iterator,
-{
-    type Item = <F as Iterator>::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::First(i) => i.next(),
+        loop {
+            match (iter.next(), expected.next()) {
+                (Some(a), Some(b)) => assert_eq!(a, b),
+                (None, None) => break,
+                (Some(_), None) => panic!("Iterator has more bytes than expected"),
+                (None, Some(_)) => panic!("Iterator has fewer bytes than expected"),
+            }
         }
     }
-}
 
-/// A decorator enum type wrapping two iterators and implementing
-/// the `Iterator` trait.
-///
-/// Useful when the "to-tlv-iter" implementation needs to return
-/// one of two iterators based on some condition.
-pub enum EitherIter<F, S> {
-    First(F),
-    Second(S),
-}
-
-impl<F, S> Iterator for EitherIter<F, S>
-where
-    F: Iterator,
-    S: Iterator<Item = F::Item>,
-{
-    type Item = <F as Iterator>::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::First(i) => i.next(),
-            Self::Second(i) => i.next(),
-        }
+    #[test]
+    fn test_write_success() {
+        expect(
+            empty()
+                .start_struct(TLVTag::Anonymous)
+                .u8(TLVTag::Anonymous, 12)
+                .u8(TLVTag::Context(1), 13)
+                .u16(TLVTag::Anonymous, 0x1212)
+                .u16(TLVTag::Context(2), 0x1313)
+                .start_array(TLVTag::Context(3))
+                .bool(TLVTag::Anonymous, true)
+                .end_container()
+                .end_container(),
+            &[
+                21, 4, 12, 36, 1, 13, 5, 0x12, 0x012, 37, 2, 0x13, 0x13, 54, 3, 9, 24, 24,
+            ],
+        );
     }
-}
 
-/// A decorator enum type wrapping three iterators and implementing
-/// the `Iterator` trait.
-///
-/// Useful when the "to-tlv-iter" implementation needs to return
-/// one of three iterators based on some condition.
-pub enum Either3Iter<F, S, T> {
-    First(F),
-    Second(S),
-    Third(T),
-}
-
-impl<F, S, T> Iterator for Either3Iter<F, S, T>
-where
-    F: Iterator,
-    S: Iterator<Item = F::Item>,
-    T: Iterator<Item = F::Item>,
-{
-    type Item = <F as Iterator>::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::First(i) => i.next(),
-            Self::Second(i) => i.next(),
-            Self::Third(i) => i.next(),
-        }
+    #[test]
+    fn test_put_str8() {
+        expect(
+            empty()
+                .u8(TLVTag::Context(1), 13)
+                .str(TLVTag::Anonymous, &[10, 11, 12, 13, 14])
+                .u16(TLVTag::Context(2), 0x1313)
+                .str(TLVTag::Context(3), &[20, 21, 22]),
+            &[
+                36, 1, 13, 16, 5, 10, 11, 12, 13, 14, 37, 2, 0x13, 0x13, 48, 3, 3, 20, 21, 22,
+            ],
+        );
     }
-}
 
-/// A decorator enum type wrapping four iterators and implementing
-/// the `Iterator` trait.
-///
-/// Useful when the "to-tlv-iter" implementation needs to return
-/// one of four iterators based on some condition.
-pub enum Either4Iter<F, S, T, U> {
-    First(F),
-    Second(S),
-    Third(T),
-    Fourth(U),
-}
+    #[test]
+    fn test_matter_spec_examples() {
+        // Boolean false
 
-impl<F, S, T, U> Iterator for Either4Iter<F, S, T, U>
-where
-    F: Iterator,
-    S: Iterator<Item = F::Item>,
-    T: Iterator<Item = F::Item>,
-    U: Iterator<Item = F::Item>,
-{
-    type Item = <F as Iterator>::Item;
+        expect(empty().bool(TLVTag::Anonymous, false), &[0x08]);
 
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::First(i) => i.next(),
-            Self::Second(i) => i.next(),
-            Self::Third(i) => i.next(),
-            Self::Fourth(i) => i.next(),
-        }
-    }
-}
+        // Boolean true
 
-/// A decorator enum type wrapping five iterators and implementing
-/// the `Iterator` trait.
-///
-/// Useful when the "to-tlv-iter" implementation needs to return
-/// one of five iterators based on some condition.
-pub enum Either5Iter<F, S, T, U, I> {
-    First(F),
-    Second(S),
-    Third(T),
-    Fourth(U),
-    Fifth(I),
-}
+        expect(empty().bool(TLVTag::Anonymous, true), &[0x09]);
 
-impl<F, S, T, U, I> Iterator for Either5Iter<F, S, T, U, I>
-where
-    F: Iterator,
-    S: Iterator<Item = F::Item>,
-    T: Iterator<Item = F::Item>,
-    U: Iterator<Item = F::Item>,
-    I: Iterator<Item = F::Item>,
-{
-    type Item = <F as Iterator>::Item;
+        // Signed Integer, 1-octet, value 42
 
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::First(i) => i.next(),
-            Self::Second(i) => i.next(),
-            Self::Third(i) => i.next(),
-            Self::Fourth(i) => i.next(),
-            Self::Fifth(i) => i.next(),
-        }
-    }
-}
+        expect(empty().i8(TLVTag::Anonymous, 42), &[0x00, 0x2a]);
 
-/// A decorator enum type wrapping six iterators and implementing
-/// the `Iterator` trait.
-///
-/// Useful when the "to-tlv-iter" implementation needs to return
-/// one of six iterators based on some condition.
-pub enum Either6Iter<F, S, T, U, I, X> {
-    First(F),
-    Second(S),
-    Third(T),
-    Fourth(U),
-    Fifth(I),
-    Sixth(X),
-}
+        // Signed Integer, 1-octet, value -17
 
-impl<F, S, T, U, I, X> Iterator for Either6Iter<F, S, T, U, I, X>
-where
-    F: Iterator,
-    S: Iterator<Item = F::Item>,
-    T: Iterator<Item = F::Item>,
-    U: Iterator<Item = F::Item>,
-    I: Iterator<Item = F::Item>,
-    X: Iterator<Item = F::Item>,
-{
-    type Item = <F as Iterator>::Item;
+        expect(empty().i8(TLVTag::Anonymous, -17), &[0x00, 0xef]);
 
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::First(i) => i.next(),
-            Self::Second(i) => i.next(),
-            Self::Third(i) => i.next(),
-            Self::Fourth(i) => i.next(),
-            Self::Fifth(i) => i.next(),
-            Self::Sixth(i) => i.next(),
-        }
+        // Unsigned Integer, 1-octet, value 42U
+
+        expect(empty().u8(TLVTag::Anonymous, 42), &[0x04, 0x2a]);
+
+        // Signed Integer, 2-octet, value 422
+
+        expect(empty().i16(TLVTag::Anonymous, 422), &[0x01, 0xa6, 0x01]);
+
+        //     // Signed Integer, 4-octet, value -170000
+
+        //     tw.reset();
+        //     tw.i32(&TLVTag::Anonymous, -170000).unwrap();
+        //     assert_eq!(&[0x02, 0xf0, 0x67, 0xfd, 0xff], tw.as_slice());
+
+        //     // Signed Integer, 8-octet, value 40000000000
+
+        //     tw.reset();
+        //     tw.i64(&TLVTag::Anonymous, 40000000000).unwrap();
+        //     assert_eq!(
+        //         &[0x03, 0x00, 0x90, 0x2f, 0x50, 0x09, 0x00, 0x00, 0x00],
+        //         tw.as_slice()
+        //     );
+
+        //     // UTF-8 String, 1-octet length, "Hello!"
+
+        //     tw.reset();
+        //     tw.utf8(&TLVTag::Anonymous, "Hello!").unwrap();
+        //     assert_eq!(
+        //         &[0x0c, 0x06, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x21],
+        //         tw.as_slice()
+        //     );
+
+        //     // UTF-8 String, 1-octet length, "Tschüs"
+
+        //     tw.reset();
+        //     tw.utf8i(
+        //         &TLVTag::Anonymous,
+        //         "Tschüs".len(),
+        //         "Tschüs".as_bytes().iter().copied(),
+        //     )
+        //     .unwrap();
+        //     assert_eq!(
+        //         &[0x0c, 0x07, 0x54, 0x73, 0x63, 0x68, 0xc3, 0xbc, 0x73],
+        //         tw.as_slice()
+        //     );
+
+        //     // Octet String, 1-octet length, octets 00 01 02 03 04
+
+        //     tw.reset();
+        //     tw.str(&TLVTag::Anonymous, &[0x00, 0x01, 0x02, 0x03, 0x04])
+        //         .unwrap();
+        //     assert_eq!(&[0x10, 0x05, 0x00, 0x01, 0x02, 0x03, 0x04], tw.as_slice());
+
+        //     // Null
+
+        //     tw.reset();
+        //     tw.tlv(&TLVTag::Anonymous, &TLVValue::Null).unwrap();
+        //     assert_eq!(&[0x14], tw.as_slice());
+
+        //     // Single precision floating point 0.0
+
+        //     tw.reset();
+        //     tw.tlv(&TLVTag::Anonymous, &TLVValue::F32(0.0)).unwrap();
+        //     assert_eq!(&[0x0a, 0x00, 0x00, 0x00, 0x00], tw.as_slice());
+
+        //     // Single precision floating point (1.0 / 3.0)
+
+        //     tw.reset();
+        //     tw.f32(&TLVTag::Anonymous, 1.0 / 3.0).unwrap();
+        //     assert_eq!(&[0x0a, 0xab, 0xaa, 0xaa, 0x3e], tw.as_slice());
+
+        //     // Single precision floating point 17.9
+
+        //     tw.reset();
+        //     tw.f32(&TLVTag::Anonymous, 17.9).unwrap();
+        //     assert_eq!(&[0x0a, 0x33, 0x33, 0x8f, 0x41], tw.as_slice());
+
+        //     // Single precision floating point infinity
+
+        //     tw.reset();
+        //     tw.f32(&TLVTag::Anonymous, f32::INFINITY).unwrap();
+        //     assert_eq!(&[0x0a, 0x00, 0x00, 0x80, 0x7f], tw.as_slice());
+
+        //     // Single precision floating point negative infinity
+
+        //     tw.reset();
+        //     tw.f32(&TLVTag::Anonymous, f32::NEG_INFINITY).unwrap();
+        //     assert_eq!(&[0x0a, 0x00, 0x00, 0x80, 0xff], tw.as_slice());
+
+        //     // Double precision floating point 0.0
+
+        //     tw.reset();
+        //     tw.f64(&TLVTag::Anonymous, 0.0).unwrap();
+        //     assert_eq!(
+        //         &[0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        //         tw.as_slice()
+        //     );
+
+        //     // Double precision floating point (1.0 / 3.0)
+
+        //     tw.reset();
+        //     tw.f64(&TLVTag::Anonymous, 1.0 / 3.0).unwrap();
+        //     assert_eq!(
+        //         &[0x0b, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0xd5, 0x3f],
+        //         tw.as_slice()
+        //     );
+
+        //     // Double precision floating point 17.9
+
+        //     tw.reset();
+        //     tw.f64(&TLVTag::Anonymous, 17.9).unwrap();
+        //     assert_eq!(
+        //         &[0x0b, 0x66, 0x66, 0x66, 0x66, 0x66, 0xe6, 0x31, 0x40],
+        //         tw.as_slice()
+        //     );
+
+        //     // Double precision floating point infinity (∞)
+
+        //     tw.reset();
+        //     tw.f64(&TLVTag::Anonymous, f64::INFINITY).unwrap();
+        //     assert_eq!(
+        //         &[0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x7f],
+        //         tw.as_slice()
+        //     );
+
+        //     // Double precision floating point negative infinity
+
+        //     tw.reset();
+        //     tw.f64(&TLVTag::Anonymous, f64::NEG_INFINITY).unwrap();
+        //     assert_eq!(
+        //         &[0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0xff],
+        //         tw.as_slice()
+        //     );
+
+        //     // Empty Structure, {}
+
+        //     tw.reset();
+        //     tw.start_struct(&TLVTag::Anonymous).unwrap();
+        //     tw.end_container().unwrap();
+        //     assert_eq!(&[0x15, 0x18], tw.as_slice());
+
+        //     // Empty Array, []
+
+        //     tw.reset();
+        //     tw.start_array(&TLVTag::Anonymous).unwrap();
+        //     tw.end_container().unwrap();
+        //     assert_eq!(&[0x16, 0x18], tw.as_slice());
+
+        //     // Empty List, []
+
+        //     tw.reset();
+        //     tw.start_list(&TLVTag::Anonymous).unwrap();
+        //     tw.end_container().unwrap();
+        //     assert_eq!(&[0x17, 0x18], tw.as_slice());
+
+        //     // Structure, two context specific tags, Signed Integer, 1 octet values, {0 = 42, 1 = -17}
+
+        //     tw.reset();
+        //     tw.start_struct(&TLVTag::Anonymous).unwrap();
+        //     tw.i8(&TLVTag::Context(0), 42).unwrap();
+        //     tw.i32(&TLVTag::Context(1), -17).unwrap();
+        //     tw.end_container().unwrap();
+        //     assert_eq!(
+        //         &[0x15, 0x20, 0x00, 0x2a, 0x20, 0x01, 0xef, 0x18],
+        //         tw.as_slice()
+        //     );
+
+        //     // Array, Signed Integer, 1-octet values, [0, 1, 2, 3, 4]
+
+        //     tw.reset();
+        //     tw.start_array(&TLVTag::Anonymous).unwrap();
+        //     for i in 0..5 {
+        //         tw.i8(&TLVTag::Anonymous, i as i8).unwrap();
+        //     }
+        //     tw.end_container().unwrap();
+        //     assert_eq!(
+        //         &[0x16, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x18],
+        //         tw.as_slice()
+        //     );
+
+        //     // List, mix of anonymous and context tags, Signed Integer, 1 octet values, [[1, 0 = 42, 2, 3, 0 = -17]]
+
+        //     tw.reset();
+        //     tw.start_list(&TLVTag::Anonymous).unwrap();
+        //     tw.i64(&TLVTag::Anonymous, 1).unwrap();
+        //     tw.i16(&TLVTag::Context(0), 42).unwrap();
+        //     tw.i8(&TLVTag::Anonymous, 2).unwrap();
+        //     tw.i8(&TLVTag::Anonymous, 3).unwrap();
+        //     tw.i32(&TLVTag::Context(0), -17).unwrap();
+        //     tw.end_container().unwrap();
+        //     assert_eq!(
+        //         &[0x17, 0x00, 0x01, 0x20, 0x00, 0x2a, 0x00, 0x02, 0x00, 0x03, 0x20, 0x00, 0xef, 0x18],
+        //         tw.as_slice()
+        //     );
+
+        //     // Array, mix of element types, [42, -170000, {}, 17.9, "Hello!"]
+
+        //     tw.reset();
+        //     tw.start_array(&TLVTag::Anonymous).unwrap();
+        //     tw.i64(&TLVTag::Anonymous, 42).unwrap();
+        //     tw.i64(&TLVTag::Anonymous, -170000).unwrap();
+        //     tw.start_struct(&TLVTag::Anonymous).unwrap();
+        //     tw.end_container().unwrap();
+        //     tw.f32(&TLVTag::Anonymous, 17.9).unwrap();
+        //     tw.utf8(&TLVTag::Anonymous, "Hello!").unwrap();
+        //     tw.end_container().unwrap();
+        //     assert_eq!(
+        //         &[
+        //             0x16, 0x00, 0x2a, 0x02, 0xf0, 0x67, 0xfd, 0xff, 0x15, 0x18, 0x0a, 0x33, 0x33, 0x8f,
+        //             0x41, 0x0c, 0x06, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x21, 0x18,
+        //         ],
+        //         tw.as_slice()
+        //     );
+
+        //     // Anonymous tag, Unsigned Integer, 1-octet value, 42U
+
+        //     tw.reset();
+        //     tw.u64(&TLVTag::Anonymous, 42).unwrap();
+        //     assert_eq!(&[0x04, 0x2a], tw.as_slice());
+
+        //     // Context tag 1, Unsigned Integer, 1-octet value, 1 = 42U
+
+        //     tw.reset();
+        //     tw.u64(&TLVTag::Context(1), 42).unwrap();
+        //     assert_eq!(&[0x24, 0x01, 0x2a], tw.as_slice());
+
+        //     // Common profile tag 1, Unsigned Integer, 1-octet value, Matter::1 = 42U
+
+        //     tw.reset();
+        //     tw.u64(&TLVTag::CommonPrf16(1), 42).unwrap();
+        //     assert_eq!(&[0x44, 0x01, 0x00, 0x2a], tw.as_slice());
+
+        //     // Common profile tag 100000, Unsigned Integer, 1-octet value, Matter::100000 = 42U
+
+        //     tw.reset();
+        //     tw.u64(&TLVTag::CommonPrf32(100000), 42).unwrap();
+        //     assert_eq!(&[0x64, 0xa0, 0x86, 0x01, 0x00, 0x2a], tw.as_slice());
+
+        //     // Fully qualified tag, Vendor ID 0xFFF1/65521, pro­file number 0xDEED/57069,
+        //     // 2-octet tag 1, Unsigned Integer, 1-octet value 42, 65521::57069:1 = 42U
+
+        //     tw.reset();
+        //     tw.u64(
+        //         &TLVTag::FullQual48 {
+        //             vendor_id: 65521,
+        //             profile: 57069,
+        //             tag: 1,
+        //         },
+        //         42,
+        //     )
+        //     .unwrap();
+        //     assert_eq!(
+        //         &[0xc4, 0xf1, 0xff, 0xed, 0xde, 0x01, 0x00, 0x2a],
+        //         tw.as_slice()
+        //     );
+
+        //     // Fully qualified tag, Vendor ID 0xFFF1/65521, pro­file number 0xDEED/57069,
+        //     // 4-octet tag 0xAA55FEED/2857762541, Unsigned Integer, 1-octet value 42, 65521::57069:2857762541 = 42U
+
+        //     tw.reset();
+        //     tw.u64(
+        //         &TLVTag::FullQual64 {
+        //             vendor_id: 65521,
+        //             profile: 57069,
+        //             tag: 2857762541,
+        //         },
+        //         42,
+        //     )
+        //     .unwrap();
+        //     assert_eq!(
+        //         &[0xe4, 0xf1, 0xff, 0xed, 0xde, 0xed, 0xfe, 0x55, 0xaa, 0x2a],
+        //         tw.as_slice()
+        //     );
+
+        //     // Structure with the fully qualified tag, Vendor ID 0xFFF1/65521, profile number 0xDEED/57069,
+        //     // 2-octet tag 1. The structure contains a single ele­ment labeled using a fully qualified tag under
+        //     // the same profile, with 2-octet tag 0xAA55/43605. 65521::57069:1 = {65521::57069:43605 = 42U}
+
+        //     tw.reset();
+        //     tw.start_struct(&TLVTag::FullQual48 {
+        //         vendor_id: 65521,
+        //         profile: 57069,
+        //         tag: 1,
+        //     })
+        //     .unwrap();
+        //     tw.u64(
+        //         &TLVTag::FullQual48 {
+        //             vendor_id: 65521,
+        //             profile: 57069,
+        //             tag: 43605,
+        //         },
+        //         42,
+        //     )
+        //     .unwrap();
+        //     tw.end_container().unwrap();
+        //     assert_eq!(
+        //         &[
+        //             0xd5, 0xf1, 0xff, 0xed, 0xde, 0x01, 0x00, 0xc4, 0xf1, 0xff, 0xed, 0xde, 0x55, 0xaa,
+        //             0x2a, 0x18,
+        //         ],
+        //         tw.as_slice()
+        //     );
     }
 }

@@ -26,7 +26,7 @@ use crate::error::{Error, ErrorCode};
 use crate::fabric;
 use crate::interaction_model::messages::GenericPath;
 use crate::tlv::{
-    EitherIter, FromTLV, Nullable, TLVElement, TLVTag, TLVWrite, TLVWriter, ToTLV, ToTLVIter,
+    EitherIter, FromTLV, Nullable, TLVElement, TLVTag, TLVWrite, TLVWriter, ToTLV, TLV,
 };
 use crate::transport::session::{Session, SessionMode, MAX_CAT_IDS_PER_NOC};
 use crate::utils::init::{init, Init};
@@ -66,17 +66,10 @@ impl ToTLV for AuthMode {
         }
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
         match self {
             AuthMode::Invalid => EitherIter::First(core::iter::empty()),
-            _ => EitherIter::Second(core::iter::empty().u8(tag, *self as u8)),
-        }
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        match self {
-            AuthMode::Invalid => EitherIter::First(core::iter::empty()),
-            _ => EitherIter::Second(core::iter::empty().u8(tag, self as u8)),
+            _ => EitherIter::Second(TLV::u8(tag, *self as u8).into_tlv_iter()),
         }
     }
 }

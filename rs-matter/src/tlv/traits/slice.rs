@@ -27,11 +27,9 @@
 //! content 1:1 from inside the buffer of the deserializer, which is not possible for a generic
 //! `T` and only possible when `T` is a `u8`.)
 
-use core::iter::empty;
-
 use crate::error::Error;
 
-use super::{TLVTag, TLVWrite, ToTLV};
+use super::{TLVTag, TLVValue, TLVWrite, ToTLV, TLV};
 
 impl<'a, T: ToTLV> ToTLV for &'a [T]
 where
@@ -41,12 +39,22 @@ where
         to_tlv_array(tag, self.iter(), tw)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        into_tlv_array_iter(tag, self.iter())
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV<'_>, Error>> {
+        tlv_array_iter(tag, self.iter())
     }
+}
 
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        into_tlv_array_iter(tag, self.iter())
+pub struct IntoTLVIter<'a, T>(pub &'a TLVTag, pub T);
+
+impl<'a, T> IntoIterator for IntoTLVIter<'a, &'a [T]>
+where
+    T: ToTLV + 'a,
+{
+    type Item = Result<TLV<'a>, Error>;
+    type IntoIter = impl Iterator<Item = Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        tlv_array_iter(self.0.clone(), self.1.into_iter())
     }
 }
 
@@ -65,18 +73,26 @@ where
     tw.end_container()
 }
 
-pub(crate) fn into_tlv_array_iter<I>(
+pub(crate) fn tlv_array_iter<'s, I, T>(
     tag: TLVTag,
     iter: I,
-) -> impl Iterator<Item = Result<u8, Error>>
+) -> impl Iterator<Item = Result<TLV<'s>, Error>>
 where
-    I: Iterator,
-    I::Item: ToTLV,
+    I: Iterator<Item = &'s T> + 's,
+    T: ToTLV + 's,
 {
-    use crate::tlv::toiter::ToTLVIter;
+    tlv_container_iter(TLV::new(tag, TLVValue::Array), iter)
+}
 
-    empty()
-        .start_array(tag)
-        .chain(iter.flat_map(|t| t.into_tlv_iter(TLVTag::Anonymous)))
-        .end_container()
+pub(crate) fn tlv_container_iter<'s, I, T>(
+    tlv: TLV<'s>,
+    iter: I,
+) -> impl Iterator<Item = Result<TLV<'s>, Error>> + 's
+where
+    I: Iterator<Item = &'s T> + 's,
+    T: ToTLV + 's,
+{
+    tlv.into_tlv_iter()
+        .chain(iter.flat_map(|t| t.tlv_iter(TLVTag::Anonymous)))
+        .chain(TLV::end_container().into_tlv_iter())
 }

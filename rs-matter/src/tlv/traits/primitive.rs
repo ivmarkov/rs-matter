@@ -19,14 +19,12 @@
 
 use crate::error::{Error, ErrorCode};
 
-use super::{FromTLV, TLVElement, TLVTag, TLVWrite, ToTLV};
-
 macro_rules! fromtlv_for {
     ($($t:ident)*) => {
         $(
-            impl<'a> FromTLV<'a> for $t {
-                fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
-                    tlv.$t()
+            impl<'a> $crate::tlv::FromTLV<'a> for $t {
+                fn from_tlv(element: &$crate::tlv::TLVElement<'a>) -> Result<Self, Error> {
+                    element.$t()
                 }
             }
         )*
@@ -36,9 +34,9 @@ macro_rules! fromtlv_for {
 macro_rules! fromtlv_for_nonzero {
     ($($t:ident:$n:ty)*) => {
         $(
-            impl<'a> FromTLV<'a> for $n {
-                fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
-                    <$n>::new(tlv.$t()?).ok_or_else(|| ErrorCode::Invalid.into())
+            impl<'a> $crate::tlv::FromTLV<'a> for $n {
+                fn from_tlv(element: &$crate::tlv::TLVElement<'a>) -> Result<Self, Error> {
+                    <$n>::new(element.$t()?).ok_or_else(|| ErrorCode::Invalid.into())
                 }
             }
         )*
@@ -48,21 +46,13 @@ macro_rules! fromtlv_for_nonzero {
 macro_rules! totlv_for {
     ($($t:ident)*) => {
         $(
-            impl ToTLV for $t {
-                fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+            impl $crate::tlv::ToTLV for $t {
+                fn to_tlv<W: $crate::tlv::TLVWrite>(&self, tag: &$crate::tlv::TLVTag, mut tw: W) -> Result<(), Error> {
                     tw.$t(tag, *self)
                 }
 
-                fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-                    use $crate::tlv::toiter::ToTLVIter;
-
-                    core::iter::empty().$t(tag, *self)
-                }
-
-                fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-                    use $crate::tlv::toiter::ToTLVIter;
-
-                    core::iter::empty().$t(tag, self)
+                fn tlv_iter(&self, tag: $crate::tlv::TLVTag) -> impl Iterator<Item = Result<$crate::tlv::TLV, Error>> {
+                    $crate::tlv::TLV::$t(tag, *self).into_tlv_iter()
                 }
             }
         )*
@@ -72,21 +62,13 @@ macro_rules! totlv_for {
 macro_rules! totlv_for_nonzero {
     ($($t:ident:$n:ty)*) => {
         $(
-            impl ToTLV for $n {
-                fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+            impl $crate::tlv::ToTLV for $n {
+                fn to_tlv<W: $crate::tlv::TLVWrite>(&self, tag: &$crate::tlv::TLVTag, mut tw: W) -> Result<(), Error> {
                     tw.$t(tag, self.get())
                 }
 
-                fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-                    use $crate::tlv::toiter::ToTLVIter;
-
-                    core::iter::empty().$t(tag, self.get())
-                }
-
-                fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-                    use $crate::tlv::toiter::ToTLVIter;
-
-                    core::iter::empty().$t(tag, self.get())
+                fn tlv_iter(&self, tag: $crate::tlv::TLVTag) -> impl Iterator<Item = Result<$crate::tlv::TLV, Error>> {
+                    $crate::tlv::TLV::$t(tag, self.get()).into_tlv_iter()
                 }
             }
         )*

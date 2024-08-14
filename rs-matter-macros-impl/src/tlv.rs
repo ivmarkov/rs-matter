@@ -168,24 +168,12 @@ fn gen_totlv_for_struct(
                 }
             }
 
-            fn to_tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
-                use #krate::tlv::ToTLVIter;
+            fn tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<#krate::tlv::TLV, #krate::error::Error>> {
+                let iter = #krate::tlv::TLV::structure(tag).into_tlv_iter();
 
-                let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+                #(let iter = Iterator::chain(iter, self.#idents.tlv_iter(#krate::tlv::TLVTag::Context(#tags)));)*
 
-                #(let iter = Iterator::chain(iter, self.#idents.to_tlv_iter(#krate::tlv::TLVTag::Context(#tags)));)*
-
-                ToTLVIter::end_container(iter)
-            }
-
-            fn into_tlv_iter(self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
-                use #krate::tlv::ToTLVIter;
-
-                let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
-
-                #(let iter = Iterator::chain(iter, self.#idents.into_tlv_iter(#krate::tlv::TLVTag::Context(#tags)));)*
-
-                ToTLVIter::end_container(iter)
+                Iterator::chain(iter, #krate::tlv::TLV::end_container().into_tlv_iter())
             }
         }
     }
@@ -265,19 +253,9 @@ fn gen_totlv_for_enum(
                     }
                 }
 
-                fn to_tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
-                    use #krate::tlv::ToTLVIter;
-
+                fn tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<#krate::tlv::TLV, #krate::error::Error>> {
                     match self {
-                        #( Self::#variant_names => ToTLVIter::#write_func(core::iter::empty(), tag, #tags), )*
-                    }
-                }
-
-                fn into_tlv_iter(self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
-                    use #krate::tlv::ToTLVIter;
-
-                    match self {
-                        #( Self::#variant_names => ToTLVIter::#write_func(core::iter::empty(), tag, #tags), )*
+                        #( Self::#variant_names => #krate::tlv::TLV::#write_func(tag, #tags).into_tlv_iter(), )*
                     }
                 }
             }
@@ -339,22 +317,10 @@ fn gen_totlv_for_enum(
                         }
                     }
 
-                    fn to_tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
-                        use #krate::tlv::ToTLVIter;
-
+                    fn tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<#krate::tlv::TLV, #krate::error::Error>> {
                         match self {
                             #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
-                            )*
-                        }
-                    }
-
-                    fn into_tlv_iter(self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
-                        use #krate::tlv::ToTLVIter;
-
-                        match self {
-                            #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
                             )*
                         }
                     }
@@ -382,32 +348,16 @@ fn gen_totlv_for_enum(
                         }
                     }
 
-                    fn to_tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
-                        use #krate::tlv::ToTLVIter;
-
-                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+                    fn tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<#krate::tlv::TLV, #krate::error::Error>> {
+                        let iter = #krate::tlv::TLV::structure(tag).into_tlv_iter();
 
                         let iter = Iterator::chain(iter, match self {
                             #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.to_tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
                             )*
                         });
 
-                        ToTLVIter::end_container(iter)
-                    }
-
-                    fn into_tlv_iter(self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<u8, #krate::error::Error>> {
-                        use #krate::tlv::ToTLVIter;
-
-                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
-
-                        let iter = Iterator::chain(iter, match self {
-                            #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.into_tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
-                            )*
-                        });
-
-                        ToTLVIter::end_container(iter)
+                        Iterator::chain(iter, #krate::tlv::TLV::end_container().into_tlv_iter())
                     }
                 }
             }
@@ -826,50 +776,25 @@ mod tests {
                         }
                     }
 
-                    fn to_tlv_iter(
+                    fn tlv_iter(
                         &self,
                         tag: rs_matter_maybe_renamed::tlv::TLVTag,
-                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
-                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
-
-                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+                    ) -> impl Iterator<Item = Result<rs_matter_maybe_renamed::tlv::TLV, rs_matter_maybe_renamed::error::Error>> {
+                        let iter = rs_matter_maybe_renamed::tlv::TLV::structure(tag).into_tlv_iter();
 
                         let iter = Iterator::chain(
                             iter,
                             self.field1
-                                .to_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
+                                .tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
                         );
 
                         let iter = Iterator::chain(
                             iter,
                             self.field2
-                                .to_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
+                                .tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
                         );
 
-                        ToTLVIter::end_container(iter)
-                    }
-
-                    fn into_tlv_iter(
-                        self,
-                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
-                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
-                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
-
-                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
-
-                        let iter = Iterator::chain(
-                            iter,
-                            self.field1
-                                .into_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
-                        );
-
-                        let iter = Iterator::chain(
-                            iter,
-                            self.field2
-                                .into_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
-                        );
-
-                        ToTLVIter::end_container(iter)
+                        Iterator::chain(iter, rs_matter_maybe_renamed::tlv::TLV::end_container().into_tlv_iter())
                     }
                 }
             )
@@ -956,50 +881,25 @@ mod tests {
                         }
                     }
 
-                    fn to_tlv_iter(
+                    fn tlv_iter(
                         &self,
                         tag: rs_matter_maybe_renamed::tlv::TLVTag,
-                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
-                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
-
-                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
+                    ) -> impl Iterator<Item = Result<rs_matter_maybe_renamed::tlv::TLV, rs_matter_maybe_renamed::error::Error>> {
+                        let iter = rs_matter_maybe_renamed::tlv::TLV::structure(tag).into_tlv_iter();
 
                         let iter = Iterator::chain(
                             iter,
                             match self {
                                 Self::ValueA(c) => rs_matter_maybe_renamed::tlv::EitherIter::First(
-                                    c.to_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
+                                    c.tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
                                 ),
                                 Self::ValueB(c) => rs_matter_maybe_renamed::tlv::EitherIter::Second(
-                                    c.to_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
+                                    c.tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
                                 ),
                             },
                         );
 
-                        ToTLVIter::end_container(iter)
-                    }
-
-                    fn into_tlv_iter(
-                        self,
-                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
-                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
-                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
-
-                        let iter = ToTLVIter::start_struct(core::iter::empty(), tag);
-
-                        let iter = Iterator::chain(
-                            iter,
-                            match self {
-                                Self::ValueA(c) => rs_matter_maybe_renamed::tlv::EitherIter::First(
-                                    c.into_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
-                                ),
-                                Self::ValueB(c) => rs_matter_maybe_renamed::tlv::EitherIter::Second(
-                                    c.into_tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
-                                ),
-                            },
-                        );
-
-                        ToTLVIter::end_container(iter)
+                        Iterator::chain(iter, rs_matter_maybe_renamed::tlv::TLV::end_container().into_tlv_iter())
                     }
                 }
             )
@@ -1039,27 +939,13 @@ mod tests {
                         }
                     }
 
-                    fn to_tlv_iter(
+                    fn tlv_iter(
                         &self,
                         tag: rs_matter_maybe_renamed::tlv::TLVTag,
-                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
-                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
-
+                    ) -> impl Iterator<Item = Result<rs_matter_maybe_renamed::tlv::TLV, rs_matter_maybe_renamed::error::Error>> {
                         match self {
-                            Self::ValueA => ToTLVIter::u8(core::iter::empty(), tag, 0u8),
-                            Self::ValueB => ToTLVIter::u8(core::iter::empty(), tag, 1u8),
-                        }
-                    }
-
-                    fn into_tlv_iter(
-                        self,
-                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
-                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
-                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
-
-                        match self {
-                            Self::ValueA => ToTLVIter::u8(core::iter::empty(), tag, 0u8),
-                            Self::ValueB => ToTLVIter::u8(core::iter::empty(), tag, 1u8),
+                            Self::ValueA => rs_matter_maybe_renamed::tlv::TLV::u8(tag, 0u8).into_tlv_iter(),
+                            Self::ValueB => rs_matter_maybe_renamed::tlv::TLV::u8(tag, 1u8).into_tlv_iter(),
                         }
                     }
                 }
@@ -1107,31 +993,15 @@ mod tests {
                         }
                     }
 
-                    fn to_tlv_iter(
+                    fn tlv_iter(
                         &self,
                         tag: rs_matter_maybe_renamed::tlv::TLVTag,
-                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
-                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
-
+                    ) -> impl Iterator<Item = Result<rs_matter_maybe_renamed::tlv::TLV, rs_matter_maybe_renamed::error::Error>> {
                         match self {
-                            Self::ValueA => ToTLVIter::u16(core::iter::empty(), tag, 0u16),
-                            Self::ValueB => ToTLVIter::u16(core::iter::empty(), tag, 1u16),
-                            Self::ValueC => ToTLVIter::u16(core::iter::empty(), tag, 100u16),
-                            Self::ValueD => ToTLVIter::u16(core::iter::empty(), tag, 4660u16),
-                        }
-                    }
-
-                    fn into_tlv_iter(
-                        self,
-                        tag: rs_matter_maybe_renamed::tlv::TLVTag,
-                    ) -> impl Iterator<Item = Result<u8, rs_matter_maybe_renamed::error::Error>> {
-                        use rs_matter_maybe_renamed::tlv::ToTLVIter;
-
-                        match self {
-                            Self::ValueA => ToTLVIter::u16(core::iter::empty(), tag, 0u16),
-                            Self::ValueB => ToTLVIter::u16(core::iter::empty(), tag, 1u16),
-                            Self::ValueC => ToTLVIter::u16(core::iter::empty(), tag, 100u16),
-                            Self::ValueD => ToTLVIter::u16(core::iter::empty(), tag, 4660u16),
+                            Self::ValueA => rs_matter_maybe_renamed::tlv::TLV::u16(tag, 0u16).into_tlv_iter(),
+                            Self::ValueB => rs_matter_maybe_renamed::tlv::TLV::u16(tag, 1u16).into_tlv_iter(),
+                            Self::ValueC => rs_matter_maybe_renamed::tlv::TLV::u16(tag, 100u16).into_tlv_iter(),
+                            Self::ValueD => rs_matter_maybe_renamed::tlv::TLV::u16(tag, 4660u16).into_tlv_iter(),
                         }
                     }
                 }

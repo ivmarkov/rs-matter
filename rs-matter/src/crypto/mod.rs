@@ -16,7 +16,7 @@
  */
 use crate::{
     error::{Error, ErrorCode},
-    tlv::{FromTLV, TLVTag, TLVWrite, ToTLV},
+    tlv::{FromTLV, TLVTag, TLVWrite, ToTLV, TLV},
 };
 
 pub const SYMM_KEY_LEN_BITS: usize = 128;
@@ -88,13 +88,7 @@ impl ToTLV for KeyPair {
         tw.end_container()
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        todo!();
-
-        core::iter::empty()
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
         todo!();
 
         core::iter::empty()

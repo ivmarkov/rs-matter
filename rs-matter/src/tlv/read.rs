@@ -215,10 +215,10 @@ impl<'a> TLVElement<'a> {
             TLVValueType::Str32l => TLVValue::Str32l(slice),
             TLVValueType::Str64l => TLVValue::Str64l(slice),
             TLVValueType::Null => TLVValue::Null,
-            TLVValueType::Struct => TLVValue::Struct(TLVSequence(slice)),
-            TLVValueType::Array => TLVValue::Array(TLVSequence(slice)),
-            TLVValueType::List => TLVValue::List(TLVSequence(slice)),
-            TLVValueType::EndCnt => Err(ErrorCode::TLVTypeMismatch)?,
+            TLVValueType::Struct => TLVValue::Struct,
+            TLVValueType::Array => TLVValue::Array,
+            TLVValueType::List => TLVValue::List,
+            TLVValueType::EndCnt => TLVValue::EndCnt,
         };
 
         Ok(value)
@@ -668,7 +668,26 @@ impl<'a> TLVElement<'a> {
 
         let value = self.value().map_err(|_| fmt::Error)?;
 
-        value.fmt(indent, f)
+        value.fmt(f)?;
+
+        if value.value_type().is_container() {
+            writeln!(f)?;
+
+            for elem in self.container().map_err(|_| fmt::Error)?.iter() {
+                elem.map_err(|_| fmt::Error)?.fmt(indent + 2, f)?;
+            }
+
+            pad(indent, f)?;
+
+            match value.value_type() {
+                TLVValueType::Struct => writeln!(f, "}}"),
+                TLVValueType::Array => writeln!(f, "]"),
+                TLVValueType::List => writeln!(f, ")"),
+                _ => unreachable!(),
+            }?;
+        }
+
+        Ok(())
     }
 }
 
@@ -686,7 +705,7 @@ impl<'a> fmt::Display for TLVElement<'a> {
 
 /// A newtype for iterating over the `TLVElement` "child" instances contained in `TLVElement` which is a TLV container
 /// (array, struct or list).
-/// (Internally, `TLVSequence` might be used for other purposes, but the external contract is that only the one from above.)
+/// (Internally, `TLVSequence` might be used for other purposes, but the external contract is only the one from above.)
 ///
 /// Just like `TLVElement`, `TLVSequence` is a newtype over a byte slice - the byte sub-slice of the parent `TLVElement`
 /// container where its value starts.
@@ -705,6 +724,10 @@ impl<'a> TLVSequence<'a> {
     #[inline(always)]
     pub fn iter(&self) -> TLVSequenceIter<'a> {
         TLVSequenceIter::new(self.clone())
+    }
+
+    pub fn tlv_iter(&self) -> TLVSequenceTLVIter<'a> {
+        TLVSequenceTLVIter::new(self.clone())
     }
 
     /// A convenience utility that returns the first `TLVElement` in the sequence
@@ -1061,6 +1084,55 @@ impl<'a> fmt::Debug for TLVSequence<'a> {
 impl<'a> fmt::Display for TLVSequence<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.fmt(0, f)
+    }
+}
+
+/// A type representing an iterator over the elements of a `TLVSequence` returning `TLV` instances.
+#[derive(Clone)]
+pub struct TLVSequenceTLVIter<'a> {
+    seq: TLVSequence<'a>,
+    nesting: usize,
+}
+
+impl<'a> TLVSequenceTLVIter<'a> {
+    /// Create a new `TLVContainerIter` instance.
+    const fn new(seq: TLVSequence<'a>) -> Self {
+        Self { seq, nesting: 0 }
+    }
+
+    fn try_next(&mut self) -> Result<Option<TLV<'a>>, Error> {
+        let current = self.seq.current()?;
+        if current.is_empty() {
+            return Ok(None);
+        }
+
+        self.advance()?;
+
+        Ok(Some(TLV::new(current.tag()?, current.value()?)))
+    }
+
+    fn advance(&mut self) -> Result<(), Error> {
+        if self.nesting > 0 || !self.seq.0.is_empty() && !self.seq.control()?.is_container_end() {
+            self.seq = self.seq.next_enter()?;
+
+            let control = self.seq.control()?;
+
+            if control.is_container_start() {
+                self.nesting += 1;
+            } else if control.is_container_end() {
+                self.nesting -= 1;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<'a> Iterator for TLVSequenceTLVIter<'a> {
+    type Item = Result<TLV<'a>, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.try_next().transpose()
     }
 }
 
@@ -1509,7 +1581,7 @@ mod tests {
             struct0.element().tlv().unwrap(),
             TLV {
                 tag: TLVTag::Anonymous,
-                value: TLVValue::Struct(TLVSequence(&data[1..]))
+                value: TLVValue::Struct,
             }
         );
         assert_eq!(struct0.iter().count(), 1);
@@ -1520,7 +1592,7 @@ mod tests {
             array.element().tlv().unwrap(),
             TLV {
                 tag: TLVTag::Context(0),
-                value: TLVValue::Array(TLVSequence(&data[3..data.len() - 1]))
+                value: TLVValue::Array,
             }
         );
         assert_eq!(array.iter().count(), 1);
@@ -1530,7 +1602,7 @@ mod tests {
             struct1.element().tlv().unwrap(),
             TLV {
                 tag: TLVTag::Anonymous,
-                value: TLVValue::Struct(TLVSequence(&data[4..data.len() - 2]))
+                value: TLVValue::Struct,
             }
         );
         assert_eq!(struct1.iter().count(), 2);
@@ -1542,7 +1614,7 @@ mod tests {
             list.element().tlv().unwrap(),
             TLV {
                 tag: TLVTag::Context(0),
-                value: TLVValue::List(TLVSequence(&data[6..data.len() - 6]))
+                value: TLVValue::List,
             }
         );
         assert_eq!(list.iter().count(), 3);
@@ -1583,7 +1655,7 @@ mod tests {
             struct2.element().tlv().unwrap(),
             TLV {
                 tag: TLVTag::Context(1),
-                value: TLVValue::Struct(TLVSequence(&data[18..18 + 1]))
+                value: TLVValue::Struct,
             }
         );
         assert_eq!(struct2.iter().count(), 0);
@@ -1819,7 +1891,7 @@ mod tests {
             tlv(&[0x15, 0x18]),
             TLV {
                 tag: TLVTag::Anonymous,
-                value: TLVValue::Struct(TLVSequence(&[0x18])),
+                value: TLVValue::Struct,
             }
         );
 
@@ -1836,7 +1908,7 @@ mod tests {
             tlv(&[0x16, 0x18]),
             TLV {
                 tag: TLVTag::Anonymous,
-                value: TLVValue::Array(TLVSequence(&[0x18])),
+                value: TLVValue::Array,
             }
         );
 
@@ -1853,7 +1925,7 @@ mod tests {
             tlv(&[0x17, 0x18]),
             TLV {
                 tag: TLVTag::Anonymous,
-                value: TLVValue::List(TLVSequence(&[0x18])),
+                value: TLVValue::List,
             }
         );
 
@@ -1872,7 +1944,7 @@ mod tests {
             tlv(data),
             TLV {
                 tag: TLVTag::Anonymous,
-                value: TLVValue::Struct(TLVSequence(&data[1..])),
+                value: TLVValue::Struct,
             }
         );
 
@@ -1898,7 +1970,7 @@ mod tests {
             tlv(data),
             TLV {
                 tag: TLVTag::Anonymous,
-                value: TLVValue::Array(TLVSequence(&data[1..])),
+                value: TLVValue::Array,
             }
         );
 
@@ -1921,7 +1993,7 @@ mod tests {
             tlv(data),
             TLV {
                 tag: TLVTag::Anonymous,
-                value: TLVValue::List(TLVSequence(&data[1..])),
+                value: TLVValue::List,
             }
         );
 
@@ -1967,7 +2039,7 @@ mod tests {
             tlv(data),
             TLV {
                 tag: TLVTag::Anonymous,
-                value: TLVValue::Array(TLVSequence(&data[1..])),
+                value: TLVValue::Array,
             }
         );
 
@@ -1993,7 +2065,7 @@ mod tests {
             iter.next().unwrap().unwrap().tlv().unwrap(),
             TLV {
                 tag: TLVTag::Anonymous,
-                value: TLVValue::Struct(TLVSequence(&[0x18])),
+                value: TLVValue::Struct,
             }
         );
 
@@ -2100,7 +2172,7 @@ mod tests {
                     profile: 57069,
                     tag: 1,
                 },
-                value: TLVValue::Struct(TLVSequence(&data[7..])),
+                value: TLVValue::Struct,
             }
         );
 

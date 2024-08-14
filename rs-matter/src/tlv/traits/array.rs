@@ -34,17 +34,16 @@
 use crate::error::{Error, ErrorCode};
 use crate::utils::vec::Vec;
 
-use super::slice::into_tlv_array_iter;
-use super::{FromTLV, TLVArray, TLVElement, TLVTag, TLVWrite, ToTLV};
+use super::{tlv_array_iter, FromTLV, TLVArray, TLVElement, TLVTag, TLVWrite, ToTLV, TLV};
 
 impl<'a, T, const N: usize> FromTLV<'a> for [T; N]
 where
     T: FromTLV<'a> + Default,
 {
-    fn from_tlv(tlv: &TLVElement<'a>) -> Result<Self, Error> {
+    fn from_tlv(element: &TLVElement<'a>) -> Result<Self, Error> {
         let mut vec = Vec::<T, N>::new();
 
-        for item in TLVArray::new(tlv.clone())? {
+        for item in TLVArray::new(element.clone())? {
             vec.push(item?).map_err(|_| ErrorCode::NoSpace)?;
         }
 
@@ -65,11 +64,7 @@ where
         self.as_slice().to_tlv(tag, tw)
     }
 
-    fn to_tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        self.as_slice().into_tlv_iter(tag)
-    }
-
-    fn into_tlv_iter(self, tag: TLVTag) -> impl Iterator<Item = Result<u8, Error>> {
-        into_tlv_array_iter(tag, self.into_iter())
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
+        tlv_array_iter(tag, self.iter())
     }
 }

@@ -15,9 +15,13 @@
  *    limitations under the License.
  */
 
+use core::borrow::Borrow;
 use core::fmt;
+use core::iter::Once;
+use core::marker::PhantomData;
 
 use num::FromPrimitive;
+use num_traits::ToBytes;
 
 use crate::error::{Error, ErrorCode};
 
@@ -183,6 +187,16 @@ impl TLVValueType {
             Self::Utf8l | Self::Utf16l | Self::Utf32l | Self::Utf64l
         )
     }
+
+    pub fn container_value<'a>(&self) -> Result<TLVValue<'a>, Error> {
+        Ok(match self {
+            Self::Struct => TLVValue::Struct,
+            Self::Array => TLVValue::Array,
+            Self::List => TLVValue::List,
+            Self::EndCnt => TLVValue::EndCnt,
+            _ => Err(ErrorCode::TLVTypeMismatch)?,
+        })
+    }
 }
 
 impl fmt::Display for TLVValueType {
@@ -259,6 +273,11 @@ impl TLVControl {
     }
 
     #[inline(always)]
+    pub fn is_container_start(&self) -> bool {
+        self.value_type.is_container_start()
+    }
+
+    #[inline(always)]
     pub fn is_container_end(&self) -> bool {
         matches!(self.tag_type, TLVTagType::Anonymous) && self.value_type.is_container_end()
     }
@@ -284,6 +303,196 @@ pub struct TLV<'a> {
     pub tag: TLVTag,
     pub value: TLVValue<'a>,
 }
+
+impl<'a> TLV<'a> {
+    pub const fn new(tag: TLVTag, value: TLVValue<'a>) -> Self {
+        Self { tag, value }
+    }
+
+    pub const fn i8(tag: TLVTag, value: i8) -> Self {
+        Self::new(tag, TLVValue::i8(value))
+    }
+
+    pub const fn i16(tag: TLVTag, value: i16) -> Self {
+        Self::new(tag, TLVValue::i16(value))
+    }
+
+    pub const fn i32(tag: TLVTag, value: i32) -> Self {
+        Self::new(tag, TLVValue::i32(value))
+    }
+
+    pub const fn i64(tag: TLVTag, value: i64) -> Self {
+        Self::new(tag, TLVValue::i64(value))
+    }
+
+    pub const fn u8(tag: TLVTag, value: u8) -> Self {
+        Self::new(tag, TLVValue::u8(value))
+    }
+
+    pub const fn u16(tag: TLVTag, value: u16) -> Self {
+        Self::new(tag, TLVValue::u16(value))
+    }
+
+    pub const fn u32(tag: TLVTag, value: u32) -> Self {
+        Self::new(tag, TLVValue::u32(value))
+    }
+
+    pub const fn u64(tag: TLVTag, value: u64) -> Self {
+        Self::new(tag, TLVValue::u64(value))
+    }
+
+    pub const fn f32(tag: TLVTag, value: f32) -> Self {
+        Self::new(tag, TLVValue::f32(value))
+    }
+
+    pub const fn f64(tag: TLVTag, value: f64) -> Self {
+        Self::new(tag, TLVValue::f64(value))
+    }
+
+    pub const fn utf8(tag: TLVTag, value: &'a str) -> Self {
+        Self::new(tag, TLVValue::utf8(value))
+    }
+
+    pub const fn str(tag: TLVTag, value: &'a [u8]) -> Self {
+        Self::new(tag, TLVValue::str(value))
+    }
+
+    pub const fn r#struct(tag: TLVTag) -> Self {
+        Self::new(tag, TLVValue::r#struct())
+    }
+
+    pub const fn structure(tag: TLVTag) -> Self {
+        Self::new(tag, TLVValue::structure())
+    }
+
+    pub const fn array(tag: TLVTag) -> Self {
+        Self::new(tag, TLVValue::array())
+    }
+
+    pub const fn list(tag: TLVTag) -> Self {
+        Self::new(tag, TLVValue::list())
+    }
+
+    pub const fn end_container() -> Self {
+        Self::new(TLVTag::Anonymous, TLVValue::end_container())
+    }
+
+    pub const fn null(tag: TLVTag) -> Self {
+        Self::new(tag, TLVValue::null())
+    }
+
+    pub const fn bool(tag: TLVTag, value: bool) -> Self {
+        Self::new(tag, TLVValue::bool(value))
+    }
+
+    pub fn into_tlv_iter(self) -> OnceTLVIter<'a> {
+        core::iter::once(Ok(self))
+    }
+
+    pub fn bytes_iter(&self) -> TLVBytesIter<'a, &TLVTag, &TLVValue<'a>> {
+        TLVBytesIter {
+            control: core::iter::once(
+                TLVControl::new(self.tag.tag_type(), self.value.value_type()).as_raw(),
+            ),
+            tag: self.tag.iter(),
+            value: self.value.iter(),
+        }
+    }
+
+    pub fn into_bytes_iter(self) -> TLVBytesIter<'a, TLVTag, TLVValue<'a>> {
+        TLVBytesIter {
+            control: core::iter::once(
+                TLVControl::new(self.tag.tag_type(), self.value.value_type()).as_raw(),
+            ),
+            tag: self.tag.into_iter(),
+            value: self.value.into_iter(),
+        }
+    }
+
+    pub fn result_into_bytes_iter(
+        result: Result<Self, Error>,
+    ) -> TLVResultBytesIter<'a, TLVTag, TLVValue<'a>> {
+        TLVResultBytesIter::new(result)
+    }
+}
+
+impl<'a> IntoIterator for TLV<'a> {
+    type Item = u8;
+    type IntoIter = TLVBytesIter<'a, TLVTag, TLVValue<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TLV::into_bytes_iter(self)
+    }
+}
+
+impl<'s, 'a> IntoIterator for &'s TLV<'a> {
+    type Item = u8;
+    type IntoIter = TLVBytesIter<'a, &'s TLVTag, &'s TLVValue<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TLV::bytes_iter(self)
+    }
+}
+
+pub enum TLVResultBytesIter<'a, T, V>
+where
+    T: Borrow<TLVTag>,
+    V: Borrow<TLVValue<'a>>,
+{
+    Ok(TLVBytesIter<'a, T, V>),
+    Err(core::iter::Once<Result<u8, Error>>),
+}
+
+impl<'a> TLVResultBytesIter<'a, TLVTag, TLVValue<'a>> {
+    pub fn new(result: Result<TLV<'a>, Error>) -> Self {
+        match result {
+            Ok(tlv) => Self::Ok(tlv.into_bytes_iter()),
+            Err(err) => Self::Err(core::iter::once(Err(err))),
+        }
+    }
+}
+
+impl<'a, T, V> Iterator for TLVResultBytesIter<'a, T, V>
+where
+    T: Borrow<TLVTag>,
+    V: Borrow<TLVValue<'a>>,
+{
+    type Item = Result<u8, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Ok(iter) => iter.next().map(Ok),
+            Self::Err(iter) => iter.next(),
+        }
+    }
+}
+
+pub struct TLVBytesIter<'a, T, V>
+where
+    T: Borrow<TLVTag>,
+    V: Borrow<TLVValue<'a>>,
+{
+    control: Once<u8>,
+    tag: TLVTagIter<T>,
+    value: TLVValueIter<'a, V>,
+}
+
+impl<'a, T, V> Iterator for TLVBytesIter<'a, T, V>
+where
+    T: Borrow<TLVTag>,
+    V: Borrow<TLVValue<'a>>,
+{
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.control
+            .next()
+            .or_else(|| self.tag.next())
+            .or_else(|| self.value.next())
+    }
+}
+
+pub type OnceTLVIter<'s> = core::iter::Once<Result<TLV<'s>, Error>>;
 
 /// For backwards compatibility
 pub type TagType = TLVTag;
@@ -324,6 +533,20 @@ impl TLVTag {
         }
     }
 
+    pub fn iter(&self) -> TLVTagIter<&Self> {
+        TLVTagIter {
+            value: self,
+            index: 0,
+        }
+    }
+
+    pub fn into_iter(self) -> TLVTagIter<Self> {
+        TLVTagIter {
+            value: self,
+            index: 0,
+        }
+    }
+
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TLVTag::Anonymous => Ok(()),
@@ -346,6 +569,97 @@ impl TLVTag {
     }
 }
 
+impl IntoIterator for TLVTag {
+    type Item = u8;
+    type IntoIter = TLVTagIter<Self>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TLVTag::into_iter(self)
+    }
+}
+
+impl<'a> IntoIterator for &'a TLVTag {
+    type Item = u8;
+    type IntoIter = TLVTagIter<Self>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TLVTag::iter(self)
+    }
+}
+
+pub struct TLVTagIter<T>
+where
+    T: Borrow<TLVTag>,
+{
+    value: T,
+    index: usize,
+}
+
+impl<T> TLVTagIter<T>
+where
+    T: Borrow<TLVTag>,
+{
+    fn next_byte(&mut self, bytes: &[u8]) -> Option<u8> {
+        self.next_byte_offset(0, bytes)
+    }
+
+    fn next_byte_offset(&mut self, offset: usize, bytes: &[u8]) -> Option<u8> {
+        if self.index - offset < bytes.len() {
+            let byte = bytes[self.index - offset];
+
+            self.index += 1;
+
+            Some(byte)
+        } else {
+            None
+        }
+    }
+}
+
+impl<T> Iterator for TLVTagIter<T>
+where
+    T: Borrow<TLVTag>,
+{
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.value.borrow() {
+            TLVTag::Anonymous => None,
+            TLVTag::Context(tag) => self.next_byte(&tag.to_le_bytes()),
+            TLVTag::CommonPrf16(tag) => self.next_byte(&tag.to_le_bytes()),
+            TLVTag::CommonPrf32(tag) => self.next_byte(&tag.to_le_bytes()),
+            TLVTag::ImplPrf16(tag) => self.next_byte(&tag.to_le_bytes()),
+            TLVTag::ImplPrf32(tag) => self.next_byte(&tag.to_le_bytes()),
+            TLVTag::FullQual48 {
+                vendor_id,
+                profile,
+                tag,
+            } => {
+                if self.index < 2 {
+                    self.next_byte(&vendor_id.to_le_bytes())
+                } else if self.index < 4 {
+                    self.next_byte_offset(2, &profile.to_le_bytes())
+                } else {
+                    self.next_byte_offset(4, &tag.to_le_bytes())
+                }
+            }
+            TLVTag::FullQual64 {
+                vendor_id,
+                profile,
+                tag,
+            } => {
+                if self.index < 2 {
+                    self.next_byte(&vendor_id.to_le_bytes())
+                } else if self.index < 4 {
+                    self.next_byte_offset(2, &profile.to_le_bytes())
+                } else {
+                    self.next_byte_offset(4, &tag.to_le_bytes())
+                }
+            }
+        }
+    }
+}
+
 impl fmt::Display for TLVTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -360,6 +674,19 @@ impl fmt::Display for TLVTag {
 pub type ElementType<'a> = TLVValue<'a>;
 
 /// A high-level representation of a TLV value.
+/// Useful im various circumstances, but most often than not -
+/// when there is a need to emit a TLV sequence with an iterator apprroach.
+///
+/// I.e.
+/// ```rust
+/// let tlvs = &[
+///     TLV::new(TLVTag::Anonymous, TLVValue::Struct),
+///     TLV::new(TLVTag::Context(0), TLVValue::Utf8l("Hello, World!")),
+///     TLV::new(TLVTag::Anonymous, TLVValue::EndCnt),
+/// ];
+///
+/// tlvs.iter().flat_map(|tlv| tlv.to_iter())
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum TLVValue<'a> {
     S8(i8),
@@ -383,9 +710,10 @@ pub enum TLVValue<'a> {
     Str32l(&'a [u8]),
     Str64l(&'a [u8]),
     Null,
-    Struct(TLVSequence<'a>),
-    Array(TLVSequence<'a>),
-    List(TLVSequence<'a>),
+    Struct,
+    Array,
+    List,
+    EndCnt,
 }
 
 impl<'a> TLVValue<'a> {
@@ -413,13 +741,154 @@ impl<'a> TLVValue<'a> {
             Self::Str32l(_) => TLVValueType::Str32l,
             Self::Str64l(_) => TLVValueType::Str64l,
             Self::Null => TLVValueType::Null,
-            Self::Struct(_) => TLVValueType::Struct,
-            Self::Array(_) => TLVValueType::Array,
-            Self::List(_) => TLVValueType::List,
+            Self::Struct => TLVValueType::Struct,
+            Self::Array => TLVValueType::Array,
+            Self::List => TLVValueType::List,
+            Self::EndCnt => TLVValueType::EndCnt,
         }
     }
 
-    fn fmt(&self, indent: usize, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    pub const fn i8(value: i8) -> Self {
+        Self::S8(value)
+    }
+
+    pub const fn i16(value: i16) -> Self {
+        if value >= i8::MIN as _ && value <= i8::MAX as _ {
+            Self::i8(value as i8)
+        } else {
+            Self::S16(value)
+        }
+    }
+
+    pub const fn i32(value: i32) -> Self {
+        if value >= i16::MIN as _ && value <= i16::MAX as _ {
+            Self::i16(value as i16)
+        } else {
+            Self::S32(value)
+        }
+    }
+
+    pub const fn i64(value: i64) -> Self {
+        if value >= i32::MIN as _ && value <= i32::MAX as _ {
+            Self::i32(value as i32)
+        } else {
+            Self::S64(value)
+        }
+    }
+
+    pub const fn u8(value: u8) -> Self {
+        Self::U8(value)
+    }
+
+    pub const fn u16(value: u16) -> Self {
+        if value <= u8::MAX as _ {
+            Self::u8(value as u8)
+        } else {
+            Self::U16(value)
+        }
+    }
+
+    pub const fn u32(value: u32) -> Self {
+        if value <= u16::MAX as _ {
+            Self::u16(value as u16)
+        } else {
+            Self::U32(value)
+        }
+    }
+
+    pub const fn u64(value: u64) -> Self {
+        if value <= u32::MAX as _ {
+            Self::u32(value as u32)
+        } else {
+            Self::U64(value)
+        }
+    }
+
+    pub const fn f32(value: f32) -> Self {
+        Self::F32(value)
+    }
+
+    pub const fn f64(value: f64) -> Self {
+        Self::F64(value)
+    }
+
+    pub const fn utf8(value: &'a str) -> Self {
+        let len = value.len();
+
+        if len <= u8::MAX as _ {
+            Self::Utf8l(value)
+        } else if len <= u16::MAX as _ {
+            Self::Utf16l(value)
+        } else if len <= u32::MAX as _ {
+            Self::Utf32l(value)
+        } else {
+            Self::Utf64l(value)
+        }
+    }
+
+    pub const fn str(value: &'a [u8]) -> Self {
+        let len = value.len();
+
+        if len <= u8::MAX as _ {
+            Self::Str8l(value)
+        } else if len <= u16::MAX as _ {
+            Self::Str16l(value)
+        } else if len <= u32::MAX as _ {
+            Self::Str32l(value)
+        } else {
+            Self::Str64l(value)
+        }
+    }
+
+    pub const fn r#struct() -> Self {
+        Self::Struct
+    }
+
+    pub const fn structure() -> Self {
+        Self::Struct
+    }
+
+    pub const fn array() -> Self {
+        Self::Array
+    }
+
+    pub const fn list() -> Self {
+        Self::List
+    }
+
+    pub const fn end_container() -> Self {
+        Self::EndCnt
+    }
+
+    pub const fn null() -> Self {
+        Self::Null
+    }
+
+    pub const fn bool(value: bool) -> Self {
+        if value {
+            Self::True
+        } else {
+            Self::False
+        }
+    }
+
+    pub fn iter(&self) -> TLVValueIter<'a, &Self> {
+        TLVValueIter {
+            value: self,
+            _p: PhantomData,
+            index: 0,
+        }
+    }
+
+    pub fn into_iter(self) -> TLVValueIter<'a, Self> {
+        TLVValueIter {
+            value: self,
+            _p: PhantomData,
+            index: 0,
+        }
+    }
+
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::S8(a) => write!(f, "S8({a})"),
             Self::S16(a) => write!(f, "S16({a})"),
@@ -432,24 +901,9 @@ impl<'a> TLVValue<'a> {
             Self::F32(a) => write!(f, "F32({a})"),
             Self::F64(a) => write!(f, "F64({a})"),
             Self::Null => write!(f, "Null"),
-            Self::Struct(elements) => {
-                writeln!(f, "{{")?;
-                elements.fmt(indent + 1, f)?;
-                pad(indent, f)?;
-                write!(f, "}}")
-            }
-            Self::Array(elements) => {
-                writeln!(f, "[")?;
-                elements.fmt(indent + 1, f)?;
-                pad(indent, f)?;
-                write!(f, "]")
-            }
-            Self::List(elements) => {
-                writeln!(f, "(")?;
-                elements.fmt(indent + 1, f)?;
-                pad(indent, f)?;
-                write!(f, ")")
-            }
+            Self::Struct => writeln!(f, "{{"),
+            Self::Array => writeln!(f, "["),
+            Self::List => writeln!(f, "("),
             Self::True => write!(f, "True"),
             Self::False => write!(f, "False"),
             Self::Utf8l(a) | Self::Utf16l(a) | Self::Utf32l(a) | Self::Utf64l(a) => {
@@ -458,6 +912,104 @@ impl<'a> TLVValue<'a> {
             Self::Str8l(a) | Self::Str16l(a) | Self::Str32l(a) | Self::Str64l(a) => {
                 write!(f, "({}){a:02X?}", a.len())
             }
+            Self::EndCnt => writeln!(f, ">"),
+        }
+    }
+}
+
+impl<'a> IntoIterator for TLVValue<'a> {
+    type Item = u8;
+    type IntoIter = TLVValueIter<'a, Self>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TLVValue::into_iter(self)
+    }
+}
+
+impl<'s, 'a> IntoIterator for &'s TLVValue<'a> {
+    type Item = u8;
+    type IntoIter = TLVValueIter<'a, Self>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TLVValue::iter(self)
+    }
+}
+
+pub struct TLVValueIter<'a, T>
+where
+    T: Borrow<TLVValue<'a>>,
+{
+    value: T,
+    _p: PhantomData<&'a ()>,
+    index: usize,
+}
+
+impl<'a, T> TLVValueIter<'a, T>
+where
+    T: Borrow<TLVValue<'a>>,
+{
+    fn variable_len_len(&self) -> usize {
+        match self.value.borrow() {
+            TLVValue::Utf8l(_) | TLVValue::Str8l(_) => 1,
+            TLVValue::Utf16l(_) | TLVValue::Str16l(_) => 2,
+            TLVValue::Utf32l(_) | TLVValue::Str32l(_) => 4,
+            TLVValue::Utf64l(_) | TLVValue::Str64l(_) => 8,
+            _ => 0,
+        }
+    }
+
+    fn next_byte(&mut self, bytes: &[u8]) -> Option<u8> {
+        self.next_byte_offset(0, bytes)
+    }
+
+    fn next_byte_offset(&mut self, offset: usize, bytes: &[u8]) -> Option<u8> {
+        if self.index - offset < bytes.len() {
+            let byte = bytes[self.index - offset];
+
+            self.index += 1;
+
+            Some(byte)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, T> Iterator for TLVValueIter<'a, T>
+where
+    T: Borrow<TLVValue<'a>>,
+{
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.value.borrow() {
+            TLVValue::S8(a) => self.next_byte(&a.to_le_bytes()),
+            TLVValue::S16(a) => self.next_byte(&a.to_le_bytes()),
+            TLVValue::S32(a) => self.next_byte(&a.to_le_bytes()),
+            TLVValue::S64(a) => self.next_byte(&a.to_le_bytes()),
+            TLVValue::U8(a) => self.next_byte(&a.to_le_bytes()),
+            TLVValue::U16(a) => self.next_byte(&a.to_le_bytes()),
+            TLVValue::U32(a) => self.next_byte(&a.to_le_bytes()),
+            TLVValue::U64(a) => self.next_byte(&a.to_le_bytes()),
+            TLVValue::F32(a) => self.next_byte(&a.to_le_bytes()),
+            TLVValue::F64(a) => self.next_byte(&a.to_le_bytes()),
+            TLVValue::Utf8l(a) | TLVValue::Utf16l(a) | TLVValue::Utf32l(a) => {
+                let len_len = self.variable_len_len();
+                if self.index < len_len {
+                    self.next_byte(&a.len().to_le_bytes())
+                } else {
+                    self.next_byte_offset(len_len, a.as_bytes())
+                }
+            }
+            TLVValue::Str8l(a) | TLVValue::Str16l(a) | TLVValue::Str32l(a) => {
+                let len_len = self.variable_len_len();
+                if self.index < len_len {
+                    self.next_byte(&a.len().to_le_bytes())
+                } else {
+                    self.next_byte_offset(len_len, a)
+                }
+            }
+            _ => None,
         }
     }
 }
@@ -474,7 +1026,7 @@ pub fn get_root_node_struct(data: &[u8]) -> Result<TLVElement<'_>, Error> {
 
 impl<'a> fmt::Display for TLVValue<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt(0, f)
+        self.fmt(f)
     }
 }
 
@@ -484,4 +1036,29 @@ pub(crate) fn pad(ident: usize, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     }
 
     Ok(())
+}
+
+/// A decorator enum type wrapping two iterators and implementing
+/// the `Iterator` trait.
+///
+/// Useful when the "to-tlv-iter" implementation needs to return
+/// one of two iterators based on some condition.
+pub enum EitherIter<F, S> {
+    First(F),
+    Second(S),
+}
+
+impl<F, S> Iterator for EitherIter<F, S>
+where
+    F: Iterator,
+    S: Iterator<Item = F::Item>,
+{
+    type Item = <F as Iterator>::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::First(i) => i.next(),
+            Self::Second(i) => i.next(),
+        }
+    }
 }

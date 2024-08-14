@@ -46,6 +46,6 @@ pub trait DevAttDataFetcher {
     fn with_devatt_data(
         &self,
         data_type: DataType,
-        f: &mut dyn FnOnce(&[u8]) -> Result<(), Error>,
+        f: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
     ) -> Result<(), Error>;
 }

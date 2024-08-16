@@ -44,7 +44,7 @@ pub trait TLVIter<'a>: Iterator<Item = TLVResult<'a>> + Sized {
         }
     }
 
-    /// Serialize a TLV element with the given tag and value.
+    /// Serialize a TLV tag and value.
     fn tlv(self, tag: TLVTag, value: TLVValue<'a>) -> ChainedTLVIter<'a, Self>
     where
         Self: 'a,

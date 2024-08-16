@@ -46,8 +46,7 @@ pub type OctetStrOwned<const N: usize> = OctetsOwned<N>;
 
 /// Newtype for borrowed byte arrays
 ///
-/// When deserializing, this type grabs the octet slice directly from the byte reader and therefore requires
-/// the reader to have in-memory representation of its data (i.e. a `ByteSlice` reader)
+/// When deserializing, this type grabs the octet slice directly from the `TLVElement`.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 #[repr(transparent)]
 pub struct Octets<'a>(pub &'a [u8]);

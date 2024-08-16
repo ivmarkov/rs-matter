@@ -272,16 +272,19 @@ impl TLVControl {
         ((self.tag_type as u8) << Self::TAG_SHIFT_BITS) | (self.value_type as u8)
     }
 
+    /// Return `true` if the control byte represents a container start (struct, array or list).
     #[inline(always)]
     pub fn is_container_start(&self) -> bool {
         self.value_type.is_container_start()
     }
 
+    /// Return `true` if the control byte represents a container end.
     #[inline(always)]
     pub fn is_container_end(&self) -> bool {
         matches!(self.tag_type, TLVTagType::Anonymous) && self.value_type.is_container_end()
     }
 
+    /// Return an error if the control byte does not represent a container start.
     #[inline(always)]
     pub fn confirm_container_end(&self) -> Result<(), Error> {
         if !self.is_container_end() {
@@ -329,90 +332,122 @@ pub struct TLV<'a> {
 }
 
 impl<'a> TLV<'a> {
+    /// Create a new TLV instance with the provided tag and value.
     pub const fn new(tag: TLVTag, value: TLVValue<'a>) -> Self {
         Self { tag, value }
     }
 
+    /// Create a TLV with the given tag and the provided value as an S8 TLV.
     pub const fn i8(tag: TLVTag, value: i8) -> Self {
         Self::new(tag, TLVValue::i8(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as an S8 or S16 TLV,
+    /// depending on whether the value is small enough to fit in an S8 TLV.
     pub const fn i16(tag: TLVTag, value: i16) -> Self {
         Self::new(tag, TLVValue::i16(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as an S8, S16, or S32 TLV,
+    /// depending on whether the value is small enough to fit in an S8 or S16 TLV.
     pub const fn i32(tag: TLVTag, value: i32) -> Self {
         Self::new(tag, TLVValue::i32(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as an S8, S16, S32, or S64 TLV,
+    /// depending on whether the value is small enough to fit in an S8, S16, or S32 TLV.
     pub const fn i64(tag: TLVTag, value: i64) -> Self {
         Self::new(tag, TLVValue::i64(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as a U8 TLV.
     pub const fn u8(tag: TLVTag, value: u8) -> Self {
         Self::new(tag, TLVValue::u8(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as a U8 or U16 TLV,
+    /// depending on whether the value is small enough to fit in a U8 TLV.
     pub const fn u16(tag: TLVTag, value: u16) -> Self {
         Self::new(tag, TLVValue::u16(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as a U8, U16, or U32 TLV,
+    /// depending on whether the value is small enough to fit in a U8 or U16 TLV.
     pub const fn u32(tag: TLVTag, value: u32) -> Self {
         Self::new(tag, TLVValue::u32(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as a U8, U16, U32, or U64 TLV,
+    /// depending on whether the value is small enough to fit in a U8, U16, or U32 TLV.
     pub const fn u64(tag: TLVTag, value: u64) -> Self {
         Self::new(tag, TLVValue::u64(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as a F32 TLV.
     pub const fn f32(tag: TLVTag, value: f32) -> Self {
         Self::new(tag, TLVValue::f32(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as a F64 TLV.
     pub const fn f64(tag: TLVTag, value: f64) -> Self {
         Self::new(tag, TLVValue::f64(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as a UTF-8 TLV.
+    /// The length of the string is encoded as 1, 2, 4 or 8 octets,
+    /// depending on the length of the string.
     pub const fn utf8(tag: TLVTag, value: &'a str) -> Self {
         Self::new(tag, TLVValue::utf8(value))
     }
 
+    /// Create a TLV with the given tag and the provided value as an octet string TLV.
+    /// The length of the string is encoded as 1, 2, 4 or 8 octets,
+    /// depending on the length of the string.
     pub const fn str(tag: TLVTag, value: &'a [u8]) -> Self {
         Self::new(tag, TLVValue::str(value))
     }
 
+    /// Create a TLV with the given tag which will have a value of type Struct (start).
     pub const fn r#struct(tag: TLVTag) -> Self {
         Self::new(tag, TLVValue::r#struct())
     }
 
+    /// Create a TLV with the given tag which will have a value of type Struct (start).
     pub const fn structure(tag: TLVTag) -> Self {
         Self::new(tag, TLVValue::structure())
     }
 
+    /// Create a TLV with the given tag which will have a value of type Array (start).
     pub const fn array(tag: TLVTag) -> Self {
         Self::new(tag, TLVValue::array())
     }
 
+    /// Create a TLV with the given tag which will have a value of type List (start).
     pub const fn list(tag: TLVTag) -> Self {
         Self::new(tag, TLVValue::list())
     }
 
+    /// Create a TLV with the given tag which will have a value of type EndCnt (container end).
     pub const fn end_container() -> Self {
         Self::new(TLVTag::Anonymous, TLVValue::end_container())
     }
 
+    /// Create a TLV with the given tag which will have a value of type Null.
     pub const fn null(tag: TLVTag) -> Self {
         Self::new(tag, TLVValue::null())
     }
 
+    /// Create a TLV with the given tag which will have a value of type True.
     pub const fn bool(tag: TLVTag, value: bool) -> Self {
         Self::new(tag, TLVValue::bool(value))
     }
 
+    /// Converts the TLV into an iterator with a single item - the TLV.
     pub fn into_tlv_iter(self) -> OnceTLVIter<'a> {
         core::iter::once(Ok(self))
     }
 
+    /// Returns an iterator over the bytes of the TLV.
     pub fn bytes_iter(&self) -> TLVBytesIter<'a, &TLVTag, &TLVValue<'a>> {
         TLVBytesIter {
             control: core::iter::once(
@@ -423,6 +458,7 @@ impl<'a> TLV<'a> {
         }
     }
 
+    /// Converts the TLV into an iterator over its bytes.
     pub fn into_bytes_iter(self) -> TLVBytesIter<'a, TLVTag, TLVValue<'a>> {
         TLVBytesIter {
             control: core::iter::once(
@@ -433,6 +469,7 @@ impl<'a> TLV<'a> {
         }
     }
 
+    /// Converts the provided result into an iterator over the bytes of the TLV.
     pub fn result_into_bytes_iter(
         result: Result<Self, Error>,
     ) -> TLVResultBytesIter<'a, TLVTag, TLVValue<'a>> {
@@ -458,6 +495,7 @@ impl<'s, 'a> IntoIterator for &'s TLV<'a> {
     }
 }
 
+/// An iterator over the bytes of a TLV that might return an error.
 pub enum TLVResultBytesIter<'a, T, V>
 where
     T: Borrow<TLVTag>,
@@ -491,6 +529,7 @@ where
     }
 }
 
+/// An iterator over the bytes of a TLV.
 pub struct TLVBytesIter<'a, T, V>
 where
     T: Borrow<TLVTag>,
@@ -516,6 +555,7 @@ where
     }
 }
 
+/// The iterator type for a TLV that returns the TLV itself.
 pub type OnceTLVIter<'s> = core::iter::Once<Result<TLV<'s>, Error>>;
 
 /// For backwards compatibility
@@ -559,6 +599,7 @@ impl TLVTag {
         }
     }
 
+    /// Return an iterator over the bytes of the TLV tag.
     pub fn iter(&self) -> TLVTagIter<&Self> {
         TLVTagIter {
             value: self,
@@ -566,6 +607,7 @@ impl TLVTag {
         }
     }
 
+    /// Converts itself into an iterator over the bytes of the TLV tag.
     pub fn into_iter(self) -> TLVTagIter<Self> {
         TLVTagIter {
             value: self,
@@ -613,6 +655,7 @@ impl<'a> IntoIterator for &'a TLVTag {
     }
 }
 
+/// An iterator over the bytes of a TLV tag.
 pub struct TLVTagIter<T>
 where
     T: Borrow<TLVTag>,
@@ -769,10 +812,13 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Create a TLV value as an S8 TLV value.
     pub const fn i8(value: i8) -> Self {
         Self::S8(value)
     }
 
+    /// Create a TLV value as an S8 or S16 TLV value,
+    /// depending on whether the value is small enough to fit in an S8 TLV value.
     pub const fn i16(value: i16) -> Self {
         if value >= i8::MIN as _ && value <= i8::MAX as _ {
             Self::i8(value as i8)
@@ -781,6 +827,8 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Create a TLV value as an S8, S16, or S32 TLV value,
+    /// depending on whether the value is small enough to fit in an S8 or S16 TLV value.
     pub const fn i32(value: i32) -> Self {
         if value >= i16::MIN as _ && value <= i16::MAX as _ {
             Self::i16(value as i16)
@@ -789,6 +837,8 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Create a TLV value as an S8, S16, S32, or S64 TLV value,
+    /// depending on whether the value is small enough to fit in an S8, S16, or S32 TLV value.
     pub const fn i64(value: i64) -> Self {
         if value >= i32::MIN as _ && value <= i32::MAX as _ {
             Self::i32(value as i32)
@@ -797,10 +847,13 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Create a TLV value as a U8 TLV value.
     pub const fn u8(value: u8) -> Self {
         Self::U8(value)
     }
 
+    /// Create a TLV value as a U8 or U16 TLV value,
+    /// depending on whether the value is small enough to fit in a U8 TLV value.
     pub const fn u16(value: u16) -> Self {
         if value <= u8::MAX as _ {
             Self::u8(value as u8)
@@ -809,6 +862,8 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Create a TLV value as a U8, U16, or U32 TLV value,
+    /// depending on whether the value is small enough to fit in a U8 or U16 TLV value.
     pub const fn u32(value: u32) -> Self {
         if value <= u16::MAX as _ {
             Self::u16(value as u16)
@@ -817,6 +872,8 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Create a TLV value as a U8, U16, U32, or U64 TLV value,
+    /// depending on whether the value is small enough to fit in a U8, U16, or U32 TLV value.
     pub const fn u64(value: u64) -> Self {
         if value <= u32::MAX as _ {
             Self::u32(value as u32)
@@ -825,14 +882,19 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Create a TLV value as an F32 TLV value.
     pub const fn f32(value: f32) -> Self {
         Self::F32(value)
     }
 
+    /// Create a TLV value as an F64 TLV value.
     pub const fn f64(value: f64) -> Self {
         Self::F64(value)
     }
 
+    /// Create a TLV value as a UTF-8 TLV value.
+    /// The length of the string is encoded as 1, 2, 4 or 8 octets,
+    /// depending on the length of the string.
     pub const fn utf8(value: &'a str) -> Self {
         let len = value.len();
 
@@ -847,6 +909,9 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Create a TLV value as an octet string TLV value.
+    /// The length of the string is encoded as 1, 2, 4 or 8 octets,
+    /// depending on the length of the string.
     pub const fn str(value: &'a [u8]) -> Self {
         let len = value.len();
 
@@ -861,30 +926,37 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Create a TLV value of type Struct (start).
     pub const fn r#struct() -> Self {
         Self::Struct
     }
 
+    /// Create a TLV value of type Struct (start).
     pub const fn structure() -> Self {
         Self::Struct
     }
 
+    /// Create a TLV value of type Array (start).
     pub const fn array() -> Self {
         Self::Array
     }
 
+    /// Create a TLV value of type List (start).
     pub const fn list() -> Self {
         Self::List
     }
 
+    /// Create a TLV value of type EndCnt (container end).
     pub const fn end_container() -> Self {
         Self::EndCnt
     }
 
+    /// Create a TLV value of type Null.
     pub const fn null() -> Self {
         Self::Null
     }
 
+    /// Create a TLV value of type boolean (True or False).
     pub const fn bool(value: bool) -> Self {
         if value {
             Self::True
@@ -893,6 +965,7 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Return an iterator over the bytes of the TLV value.
     pub fn iter(&self) -> TLVValueIter<'a, &Self> {
         TLVValueIter {
             value: self,
@@ -901,6 +974,7 @@ impl<'a> TLVValue<'a> {
         }
     }
 
+    /// Converts itself into an iterator over the bytes of the TLV value.
     pub fn into_iter(self) -> TLVValueIter<'a, Self> {
         TLVValueIter {
             value: self,
@@ -956,6 +1030,7 @@ impl<'s, 'a> IntoIterator for &'s TLVValue<'a> {
     }
 }
 
+/// An iterator over the bytes of a TLV value.
 pub struct TLVValueIter<'a, T>
 where
     T: Borrow<TLVValue<'a>>,
@@ -1035,16 +1110,6 @@ where
     }
 }
 
-/// For backwards compatibility
-pub fn get_root_node_struct(data: &[u8]) -> Result<TLVElement<'_>, Error> {
-    // TODO: Check for trailing data
-    let element = TLVElement::new(data);
-
-    element.structure()?;
-
-    Ok(element)
-}
-
 impl<'a> fmt::Display for TLVValue<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.fmt(f)
@@ -1057,4 +1122,14 @@ pub(crate) fn pad(ident: usize, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     }
 
     Ok(())
+}
+
+/// For backwards compatibility
+pub fn get_root_node_struct(data: &[u8]) -> Result<TLVElement<'_>, Error> {
+    // TODO: Check for trailing data
+    let element = TLVElement::new(data);
+
+    element.structure()?;
+
+    Ok(element)
 }

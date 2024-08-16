@@ -18,7 +18,7 @@
 //! TLV support for the `Vec<T, N>` type.
 //! `Vec<T, N>` is serialized and deserialized as a TLV array.
 //!
-//! Unlike Rust `[T;N]` arrays, the `Vec` type can be efficiently deserialized in-place, so use it
+//! Unlike Rust `[T; N]` arrays, the `Vec` type can be efficiently deserialized in-place, so use it
 //! when the array holds large structures (like fabrics, certificates, sessions and so on).
 //!
 //! Of course, the `Vec` type is always owned (even if the deserialized elements `T` do borrow from the

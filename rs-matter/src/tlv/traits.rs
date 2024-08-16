@@ -64,7 +64,7 @@ pub trait ToTLV {
     /// Serialize the type to a TLV-encoded stream.
     fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, tw: W) -> Result<(), Error>;
 
-    /// Serialize the type as an iterator of bytes by potentially borrowing
+    /// Serialize the type as an iterator of `TLV` instances by potentially borrowing
     /// data from the type.
     fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>>;
 }

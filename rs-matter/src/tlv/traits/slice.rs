@@ -24,7 +24,7 @@
 //!
 //! (Deserializing strings as `&str` and octets as `Bytes<'a>` (which is really a newtype over
 //! `&'a [u8]`) is supported, but that's because their deserialization works by borrowing their
-//! content 1:1 from inside the buffer of the deserializer, which is not possible for a generic
+//! content 1:1 from inside the byte slice of the `TLVElement`, which is not possible for a generic
 //! `T` and only possible when `T` is a `u8`.)
 
 use crate::error::Error;

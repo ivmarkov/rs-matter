@@ -89,6 +89,7 @@ impl<'a> TLVElement<'a> {
         self.0 .0.is_empty()
     }
 
+    /// Return `Some(self)` if the wrapped byte slice is not empty, `None` otherwise.
     pub fn non_empty(&self) -> Option<&TLVElement<'a>> {
         if self.is_empty() {
             None
@@ -125,6 +126,8 @@ impl<'a> TLVElement<'a> {
         self.0.raw_value()
     }
 
+    /// Return a `TLV` struct representing the tag and value of this `TLVElement`.
+    /// This method is a convenience method that combines the `tag` and `value` methods.
     pub fn tlv(&self) -> Result<TLV<'a>, Error> {
         Ok(TLV {
             tag: self.tag()?,
@@ -178,8 +181,8 @@ impl<'a> TLVElement<'a> {
 
     /// Return a `TLVValue` enum representing the value of this `TLVElement`.
     ///
-    /// Returns an error with code `ErrorCode::TLVTypeMismatch` if the wrapped TLV byte slice
-    /// contains malformed TLV data.
+    /// Note that if the TLV element is a container, the return `TLV` value would only deisgnate
+    /// the container type (struct, array or list) and not the actual content of the container.
     pub fn value(&self) -> Result<TLVValue<'a>, Error> {
         let control = self.control()?;
 
@@ -726,6 +729,12 @@ impl<'a> TLVSequence<'a> {
         TLVSequenceIter::new(self.clone())
     }
 
+    /// Return an iterator over the `TLV` instances in this `TLVSequence`.
+    ///
+    /// The difference with `iter` is that for container elements, `tlv_iter`
+    /// will return separate `TLV` instances for the container start, the container
+    /// elements and the container end, where if an element in the container is
+    /// itself a container, the algorithm will be applied recursively to the inner container.
     pub fn tlv_iter(&self) -> TLVSequenceTLVIter<'a> {
         TLVSequenceTLVIter::new(self.clone())
     }
@@ -766,6 +775,17 @@ impl<'a> TLVSequence<'a> {
         Ok(TLVElement(Self::EMPTY))
     }
 
+    /// A convenience utility that returns the first `TLVElement` in the sequence
+    /// which is tagged with a context tag (`TLVTag::Context`) where the context ID
+    /// is equal to the ID passed in the `ctx` parameter.
+    ///
+    /// If there is no TLV element tagged with a context tag with the matching ID, the method
+    /// will return an empty TLV element.
+    ///
+    /// As a side effect of calling this method, the `TLVSequence` instance will be updated
+    /// to point to the next element after the found element, or if an element with the
+    /// provided context ID does not exist, to the first element with a bigger context ID than
+    /// the one we are looking for.
     pub fn scan_ctx(&mut self, ctx: u8) -> Result<TLVElement<'a>, Error> {
         self.scan_map(move |elem| {
             if elem.is_empty() {
@@ -784,9 +804,20 @@ impl<'a> TLVSequence<'a> {
         })
     }
 
-    pub fn scan_map<F>(&mut self, mut f: F) -> Result<TLVElement<'a>, Error>
+    /// A convenience utility that returns scans the elements in the sequence,
+    /// in-order and stops scanning once the provided mapping closure `f`
+    /// returns a non-empty result.
+    ///
+    /// As a side effect of calling this method, the `TLVSequence` instance will be updated
+    /// to point to the next element after the one on which the provided closure
+    /// returned a non-empty result.
+    ///
+    /// Note that the closure _must_ ultimately return a non-empty result - if for nothing else
+    /// then for the empty element that is passed to it when the sequence is exhausted,
+    /// or else the method would loop forever.
+    pub fn scan_map<F, T>(&mut self, mut f: F) -> Result<T, Error>
     where
-        F: FnMut(TLVElement<'a>) -> Result<Option<TLVElement<'a>>, Error>,
+        F: FnMut(TLVElement<'a>) -> Result<Option<T>, Error>,
     {
         loop {
             if let Some(elem) = f(self.current()?)? {
@@ -831,22 +862,6 @@ impl<'a> TLVSequence<'a> {
         Ok(Self(self.next_start(control)?))
     }
 
-    fn current(&self) -> Result<TLVElement<'a>, Error> {
-        if self.0.is_empty() {
-            return Ok(TLVElement(Self::EMPTY));
-        }
-
-        let control = self.control()?;
-
-        if control.value_type.is_container_end() {
-            control.confirm_container_end()?;
-
-            return Ok(TLVElement(Self::EMPTY));
-        }
-
-        return Ok(TLVElement::new(self.0));
-    }
-
     /// Return a sub-sequence representing the TLV-encoded elements after the first one on the sequence.
     ///
     /// As the name suggests, if the first TLV element in the sequence is a container, this method will return a sub-sequence
@@ -888,7 +903,27 @@ impl<'a> TLVSequence<'a> {
         Ok(next)
     }
 
+    /// Return the first TLV element in the sequence.
+    /// If the sequence is empty, or if the sequence starts with a container-end TLV,
+    /// an empty element will be returned.
+    fn current(&self) -> Result<TLVElement<'a>, Error> {
+        if self.0.is_empty() {
+            return Ok(TLVElement(Self::EMPTY));
+        }
+
+        let control = self.control()?;
+
+        if control.value_type.is_container_end() {
+            control.confirm_container_end()?;
+
+            return Ok(TLVElement(Self::EMPTY));
+        }
+
+        return Ok(TLVElement::new(self.0));
+    }
+
     /// Return the TLV control byte of the first TLV in the sequence.
+    /// If the sequence is empty, an error will be returned.
     #[inline(always)]
     fn control(&self) -> Result<TLVControl, Error> {
         TLVControl::parse(*self.0.first().ok_or(ErrorCode::TLVTypeMismatch)?)

@@ -298,6 +298,30 @@ impl fmt::Display for TLVControl {
     }
 }
 
+/// A high-level representation of a TLV tag + value.
+///
+/// Amongsat other things, it is a convenient way to emit TLV byte sequences.
+///
+/// A `TLV` can be constructed programmatically, or returned from a `TLVElement`.
+///
+/// Unlike a `TLVElement` however, a `TLV` does not represent a complete container,
+/// but rather, its beginning or end.
+///
+/// I.e.
+/// ```rust
+/// use rs_matter::tlv::{TLV, TLVTag, TLVValue};
+///
+/// let tlvs = &[
+///     TLV::new(TLVTag::Anonymous, TLVValue::Struct),
+///     TLV::new(TLVTag::Context(0), TLVValue::Utf8l("Hello, World!")),
+///     TLV::new(TLVTag::Anonymous, TLVValue::EndCnt),
+/// ];
+///
+/// let bytes_iter = tlvs.iter().flat_map(|tlv| tlv.bytes_iter());
+/// for byte in bytes_iter {
+///    println!("{:02X}", byte);
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct TLV<'a> {
     pub tag: TLVTag,
@@ -498,6 +522,8 @@ pub type OnceTLVIter<'s> = core::iter::Once<Result<TLV<'s>, Error>>;
 pub type TagType = TLVTag;
 
 /// A high-level representation of a TLV tag (tag type and tag value).
+///
+/// A `TLVTag` can be constructed programmatically, or returned from a `TLVElement`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TLVTag {
     Anonymous,
@@ -674,19 +700,14 @@ impl fmt::Display for TLVTag {
 pub type ElementType<'a> = TLVValue<'a>;
 
 /// A high-level representation of a TLV value.
-/// Useful im various circumstances, but most often than not -
-/// when there is a need to emit a TLV sequence with an iterator apprroach.
 ///
-/// I.e.
-/// ```rust
-/// let tlvs = &[
-///     TLV::new(TLVTag::Anonymous, TLVValue::Struct),
-///     TLV::new(TLVTag::Context(0), TLVValue::Utf8l("Hello, World!")),
-///     TLV::new(TLVTag::Anonymous, TLVValue::EndCnt),
-/// ];
+/// Combined with `TLVTag` into a `TLV` struct it is a convenient way
+/// to emit TLV byte sequences.
 ///
-/// tlvs.iter().flat_map(|tlv| tlv.to_iter())
-/// ```
+/// A `TLVValue` can be constructed programmatically, or returned from a `TLVElement`.
+///
+/// Unlike a `TLVElement` however, a `TLVValue` does not represent a complete container,
+/// but rather, its beginning or end.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TLVValue<'a> {
     S8(i8),
@@ -1036,29 +1057,4 @@ pub(crate) fn pad(ident: usize, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     }
 
     Ok(())
-}
-
-/// A decorator enum type wrapping two iterators and implementing
-/// the `Iterator` trait.
-///
-/// Useful when the "to-tlv-iter" implementation needs to return
-/// one of two iterators based on some condition.
-pub enum EitherIter<F, S> {
-    First(F),
-    Second(S),
-}
-
-impl<F, S> Iterator for EitherIter<F, S>
-where
-    F: Iterator,
-    S: Iterator<Item = F::Item>,
-{
-    type Item = <F as Iterator>::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::First(i) => i.next(),
-            Self::Second(i) => i.next(),
-        }
-    }
 }

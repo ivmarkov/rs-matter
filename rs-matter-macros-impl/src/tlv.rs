@@ -126,6 +126,51 @@ fn get_unit_enum_func_and_tags(
 
 /// Generate a ToTlv implementation for a structure
 fn gen_totlv_for_struct(
+    data_struct: &syn::DataStruct,
+    struct_name: &proc_macro2::Ident,
+    tlvargs: &TlvArgs,
+    generics: &syn::Generics,
+) -> TokenStream {
+    match &data_struct.fields {
+        syn::Fields::Named(fields) => {
+            gen_totlv_for_struct_named(fields, struct_name, tlvargs, generics)
+        }
+        syn::Fields::Unnamed(fields) => {
+            gen_totlv_for_struct_unnamed(fields, struct_name, tlvargs, generics)
+        }
+        _ => panic!("Union structs are not supported"),
+    }
+}
+
+/// Generate a ToTlv implementation for a structure with a single unnamed field
+/// The structure is behaving as a Newtype over the unnamed field
+fn gen_totlv_for_struct_unnamed(
+    fields: &syn::FieldsUnnamed,
+    struct_name: &proc_macro2::Ident,
+    tlvargs: &TlvArgs,
+    generics: &syn::Generics,
+) -> TokenStream {
+    if fields.unnamed.len() != 1 {
+        panic!("Only a single unnamed field supported for unnamed structures");
+    }
+
+    let krate = Ident::new(&tlvargs.rs_matter_crate, Span::call_site());
+
+    quote! {
+        impl #generics #krate::tlv::ToTLV for #struct_name #generics {
+            fn to_tlv<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
+                self.0.to_tlv(tag, &mut tw)
+            }
+
+            fn tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<#krate::tlv::TLV, #krate::error::Error>> {
+                self.0.tlv_iter(tag)
+            }
+        }
+    }
+}
+
+/// Generate a ToTlv implementation for a structure with named fields
+fn gen_totlv_for_struct_named(
     fields: &syn::FieldsNamed,
     struct_name: &proc_macro2::Ident,
     tlvargs: &TlvArgs,
@@ -308,7 +353,7 @@ fn gen_totlv_for_enum(
                                 #(
                                     Self::#variant_names(c) => { c.to_tlv(&#krate::tlv::TLVTag::Context(#tags), &mut tw) }
                                 )*
-                            }?;
+                            }
                         })() {
                             tw.rewind_to(anchor);
                             Err(err)
@@ -396,24 +441,70 @@ pub fn derive_totlv(ast: DeriveInput, rs_matter_crate: String) -> TokenStream {
     let tlvargs = parse_tlvargs(&ast, rs_matter_crate);
     let generics = ast.generics;
 
-    if let syn::Data::Struct(syn::DataStruct {
-        fields: syn::Fields::Named(ref fields),
-        ..
-    }) = ast.data
-    {
-        gen_totlv_for_struct(fields, name, &tlvargs, &generics)
-    } else if let syn::Data::Enum(data_enum) = ast.data {
-        gen_totlv_for_enum(&data_enum, name, &tlvargs, &generics)
-    } else {
-        panic!(
-            "Derive ToTLV - Only supported struct and enum for now {:?}",
-            ast.data
-        );
+    match &ast.data {
+        syn::Data::Struct(data_struct) => {
+            gen_totlv_for_struct(data_struct, name, &tlvargs, &generics)
+        }
+        syn::Data::Enum(data_enum) => gen_totlv_for_enum(data_enum, name, &tlvargs, &generics),
+        _ => panic!("Derive ToTLV - Only supported struct and enum for now"),
     }
 }
 
 /// Generate a FromTlv implementation for a structure
 fn gen_fromtlv_for_struct(
+    data_struct: &syn::DataStruct,
+    struct_name: &proc_macro2::Ident,
+    tlvargs: TlvArgs,
+    generics: &syn::Generics,
+) -> TokenStream {
+    match &data_struct.fields {
+        syn::Fields::Named(fields) => {
+            gen_fromtlv_for_struct_named(fields, struct_name, tlvargs, generics)
+        }
+        syn::Fields::Unnamed(fields) => {
+            gen_fromtlv_for_struct_unnamed(fields, struct_name, tlvargs, generics)
+        }
+        _ => panic!("Union structs are not supported"),
+    }
+}
+
+/// Generate a FromTlv implementation for a structure with a single unnamed field
+/// The structure is behaving as a Newtype over the unnamed field
+fn gen_fromtlv_for_struct_unnamed(
+    fields: &syn::FieldsUnnamed,
+    struct_name: &proc_macro2::Ident,
+    tlvargs: TlvArgs,
+    generics: &syn::Generics,
+) -> TokenStream {
+    if fields.unnamed.len() != 1 {
+        panic!("Only a single unnamed field supported for unnamed structures");
+    }
+
+    let krate = Ident::new(&tlvargs.rs_matter_crate, Span::call_site());
+    let lifetime = tlvargs.lifetime;
+    let ty = normalize_fromtlv_type(&fields.unnamed[0].ty);
+
+    quote! {
+        impl #generics #krate::tlv::FromTLV<#lifetime> for #struct_name #generics {
+            fn from_tlv(element: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, #krate::error::Error> {
+                Ok(Self(#ty::from_tlv(element)?))
+            }
+        }
+
+        impl #generics TryFrom<&#krate::tlv::TLVElement<#lifetime>> for #struct_name #generics {
+            type Error = #krate::error::Error;
+
+            fn try_from(element: &#krate::tlv::TLVElement<#lifetime>) -> Result<Self, Self::Error> {
+                use #krate::tlv::FromTLV;
+
+                Self::from_tlv(element)
+            }
+        }
+    }
+}
+
+/// Generate a ToTlv implementation for a structure with named fields
+fn gen_fromtlv_for_struct_named(
     fields: &syn::FieldsNamed,
     struct_name: &proc_macro2::Ident,
     tlvargs: TlvArgs,
@@ -428,7 +519,6 @@ fn gen_fromtlv_for_struct(
     let mut tags = Vec::new();
 
     for field in fields.named.iter() {
-        let type_name = &field.ty;
         if let Some(a) = parse_tag_val(&field.attrs) {
             // TODO: The current limitation with this is that a hard-coded integer
             // value has to be mentioned in the tagval attribute. This is because
@@ -441,20 +531,7 @@ fn gen_fromtlv_for_struct(
         }
         idents.push(&field.ident);
 
-        if let Type::Path(path) = type_name {
-            // When paths are like `matter_rs::tlv::Nullable<u32>`
-            // this ignores the arguments and just does:
-            // `matter_rs::tlv::Nullable`
-            let idents = path
-                .path
-                .segments
-                .iter()
-                .map(|s| s.ident.clone())
-                .collect::<Vec<_>>();
-            types.push(quote!(#(#idents)::*));
-        } else {
-            panic!("Don't know what to do {:?}", type_name);
-        }
+        types.push(normalize_fromtlv_type(&field.ty));
     }
 
     let krate = Ident::new(&tlvargs.rs_matter_crate, Span::call_site());
@@ -633,6 +710,24 @@ fn gen_fromtlv_for_enum(
     }
 }
 
+fn normalize_fromtlv_type(ty: &syn::Type) -> TokenStream {
+    let Type::Path(type_path) = ty else {
+        panic!("Don't know what to do {:?}", ty);
+    };
+
+    // When paths are like `matter_rs::tlv::Nullable<u32>`
+    // this ignores the arguments and just does:
+    // `matter_rs::tlv::Nullable`
+    let type_idents = type_path
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.clone())
+        .collect::<Vec<_>>();
+
+    quote!(#(#type_idents)::*)
+}
+
 /// Derive FromTLV Macro
 ///
 /// This macro works for structures. It will create an implementation
@@ -667,19 +762,12 @@ pub fn derive_fromtlv(ast: DeriveInput, rs_matter_crate: String) -> TokenStream 
 
     let generics = ast.generics;
 
-    if let syn::Data::Struct(syn::DataStruct {
-        fields: syn::Fields::Named(ref fields),
-        ..
-    }) = ast.data
-    {
-        gen_fromtlv_for_struct(fields, name, tlvargs, &generics)
-    } else if let syn::Data::Enum(data_enum) = ast.data {
-        gen_fromtlv_for_enum(&data_enum, name, tlvargs, &generics)
-    } else {
-        panic!(
-            "Derive FromTLV - Only supported Struct for now {:?}",
-            ast.data
-        )
+    match &ast.data {
+        syn::Data::Struct(data_struct) => {
+            gen_fromtlv_for_struct(data_struct, name, tlvargs, &generics)
+        }
+        syn::Data::Enum(data_enum) => gen_fromtlv_for_enum(data_enum, name, tlvargs, &generics),
+        _ => panic!("Derive FromTLV - Only supported struct and enum for now"),
     }
 }
 

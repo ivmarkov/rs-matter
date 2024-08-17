@@ -1222,13 +1222,12 @@ mod tests {
 
     // #[test]
     // fn test_short_length_tag() {
-    //     // The 0x36 is an array with a tag, but we leave out the tag field
+    //     // The [0x15] is a struct with a tag, but we leave out the tag field
     //     let b = [0x15, 0x36];
-    //     let tlvlist = TLVList::new(&b);
-    //     let mut tlv_iter = tlvlist.iter();
-    //     // Skip the 0x15
-    //     tlv_iter.next();
-    //     assert_eq!(tlv_iter.next(), None);
+    //     let element = TLVElement::new(&b);
+    //     let mut iter = element.structure().unwrap().iter();
+    //     iter.next();
+    //     assert!(iter.next().unwrap().unwrap().is_empty());
     // }
 
     // #[test]

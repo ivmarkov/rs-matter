@@ -264,6 +264,136 @@ where
     }
 }
 
+/// A decorator enum type wrapping three iterators and implementing
+/// the `Iterator` trait.
+///
+/// Useful when the "to-tlv-iter" implementation needs to return
+/// one of three iterators based on some condition.
+pub enum Either3Iter<F, S, T> {
+    First(F),
+    Second(S),
+    Third(T),
+}
+
+impl<F, S, T> Iterator for Either3Iter<F, S, T>
+where
+    F: Iterator,
+    S: Iterator<Item = F::Item>,
+    T: Iterator<Item = F::Item>,
+{
+    type Item = <F as Iterator>::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::First(i) => i.next(),
+            Self::Second(i) => i.next(),
+            Self::Third(i) => i.next(),
+        }
+    }
+}
+
+/// A decorator enum type wrapping four iterators and implementing
+/// the `Iterator` trait.
+///
+/// Useful when the "to-tlv-iter" implementation needs to return
+/// one of four iterators based on some condition.
+pub enum Either4Iter<F, S, T, U> {
+    First(F),
+    Second(S),
+    Third(T),
+    Fourth(U),
+}
+
+impl<F, S, T, U> Iterator for Either4Iter<F, S, T, U>
+where
+    F: Iterator,
+    S: Iterator<Item = F::Item>,
+    T: Iterator<Item = F::Item>,
+    U: Iterator<Item = F::Item>,
+{
+    type Item = <F as Iterator>::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::First(i) => i.next(),
+            Self::Second(i) => i.next(),
+            Self::Third(i) => i.next(),
+            Self::Fourth(i) => i.next(),
+        }
+    }
+}
+
+/// A decorator enum type wrapping five iterators and implementing
+/// the `Iterator` trait.
+///
+/// Useful when the "to-tlv-iter" implementation needs to return
+/// one of five iterators based on some condition.
+pub enum Either5Iter<F, S, T, U, I> {
+    First(F),
+    Second(S),
+    Third(T),
+    Fourth(U),
+    Fifth(I),
+}
+
+impl<F, S, T, U, I> Iterator for Either5Iter<F, S, T, U, I>
+where
+    F: Iterator,
+    S: Iterator<Item = F::Item>,
+    T: Iterator<Item = F::Item>,
+    U: Iterator<Item = F::Item>,
+    I: Iterator<Item = F::Item>,
+{
+    type Item = <F as Iterator>::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::First(i) => i.next(),
+            Self::Second(i) => i.next(),
+            Self::Third(i) => i.next(),
+            Self::Fourth(i) => i.next(),
+            Self::Fifth(i) => i.next(),
+        }
+    }
+}
+
+/// A decorator enum type wrapping six iterators and implementing
+/// the `Iterator` trait.
+///
+/// Useful when the "to-tlv-iter" implementation needs to return
+/// one of six iterators based on some condition.
+pub enum Either6Iter<F, S, T, U, I, X> {
+    First(F),
+    Second(S),
+    Third(T),
+    Fourth(U),
+    Fifth(I),
+    Sixth(X),
+}
+
+impl<F, S, T, U, I, X> Iterator for Either6Iter<F, S, T, U, I, X>
+where
+    F: Iterator,
+    S: Iterator<Item = F::Item>,
+    T: Iterator<Item = F::Item>,
+    U: Iterator<Item = F::Item>,
+    I: Iterator<Item = F::Item>,
+    X: Iterator<Item = F::Item>,
+{
+    type Item = <F as Iterator>::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::First(i) => i.next(),
+            Self::Second(i) => i.next(),
+            Self::Third(i) => i.next(),
+            Self::Fourth(i) => i.next(),
+            Self::Fifth(i) => i.next(),
+            Self::Sixth(i) => i.next(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::{f32, iter::empty};

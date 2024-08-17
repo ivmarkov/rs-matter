@@ -119,7 +119,7 @@ impl BasicConstraints {
 //     FutureExtensions = 6,
 // }
 
-#[derive(Debug, Clone, FromTLV)]
+#[derive(Debug, Clone, FromTLV, ToTLV, PartialEq, Eq, Hash)]
 #[tlvargs(start = 1, lifetime = "'a", datatype = "naked", unordered)]
 enum Extension<'a> {
     BasicConstraints(BasicConstraints),
@@ -351,14 +351,11 @@ enum DNValue<'a> {
     PrintableStr(&'a str),
 }
 
-#[derive(Debug, Clone)]
+#[derive(FromTLV, ToTLV, Debug, Clone, PartialEq, Eq, Hash)]
+#[tlvargs(lifetime = "'a")]
 struct DN<'a>(TLVElement<'a>);
 
 impl<'a> DN<'a> {
-    pub const fn new(element: TLVElement<'a>) -> Self {
-        Self(element)
-    }
-
     pub fn tag(&self) -> Result<DNTag, Error> {
         let ctx = self.0.try_ctx()?.ok_or(ErrorCode::Invalid)? & 0x7f;
 
@@ -538,12 +535,6 @@ impl<'a> DN<'a> {
         }
         w.end_seq()?;
         w.end_set()
-    }
-}
-
-impl<'a> FromTLV<'a> for DN<'a> {
-    fn from_tlv(t: &TLVElement<'a>) -> Result<Self, Error> {
-        Ok(Self::new(t.clone()))
     }
 }
 
@@ -786,6 +777,8 @@ enum IntToStringLen {
 //     }
 // }
 
+#[derive(FromTLV, ToTLV, Debug, Clone, PartialEq, Eq, Hash)]
+#[tlvargs(lifetime = "'a")]
 pub struct CertRef<'a>(TLVElement<'a>);
 
 impl<'a> CertRef<'a> {
@@ -836,8 +829,6 @@ impl<'a> CertRef<'a> {
     fn signature(&self) -> Result<&[u8], Error> {
         self.0.structure()?.find_ctx(11)?.str()
     }
-
-    ///////////////////////////////////
 
     pub fn get_node_id(&self) -> Result<u64, Error> {
         let dn = try_find(self.subject()?.iter(), |dn| Ok(dn.tag()? == DNTag::NodeId))?
@@ -900,13 +891,6 @@ impl<'a> CertRef<'a> {
 
         Ok(authority)
     }
-
-    // fn as_tlv(&self, buf: &mut [u8]) -> Result<usize, Error> {
-    //     let mut wb = WriteBuf::new(buf);
-    //     let mut tw = TLVWriter::new(&mut wb);
-    //     self.0.to_tlv(&TLVTag::Anonymous, &mut tw)?;
-    //     Ok(wb.as_slice().len())
-    // }
 
     fn as_asn1(&self, buf: &mut [u8]) -> Result<usize, Error> {
         let mut w = ASN1Writer::new(buf);
@@ -1099,7 +1083,10 @@ where
 mod tests {
     use log::info;
 
-    use crate::tlv::{FromTLV, TLVElement, TLVWriter, TagType, ToTLV};
+    use crate::{
+        tlv::{FromTLV, TLVElement, TLVWriter, TagType, ToTLV},
+        utils::writebuf::WriteBuf,
+    };
 
     use super::CertRef;
 
@@ -1203,29 +1190,29 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn test_tlv_conversions() {
-    //     let test_input: [&[u8]; 4] = [
-    //         &test_vectors::NOC1_SUCCESS,
-    //         &test_vectors::ICAC1_SUCCESS,
-    //         &test_vectors::ICAC2_SUCCESS,
-    //         &test_vectors::RCA1_SUCCESS,
-    //     ];
+    #[test]
+    fn test_tlv_conversions() {
+        let test_input: [&[u8]; 4] = [
+            &test_vectors::NOC1_SUCCESS,
+            &test_vectors::ICAC1_SUCCESS,
+            &test_vectors::ICAC2_SUCCESS,
+            &test_vectors::RCA1_SUCCESS,
+        ];
 
-    //     for input in test_input.iter() {
-    //         info!("Testing next input...");
-    //         let root = tlv::get_root_node(input).unwrap();
-    //         let cert = Cert::from_tlv(&root).unwrap();
-    //         let mut buf = [0u8; 1024];
-    //         let mut wb = WriteBuf::new(&mut buf);
-    //         let mut tw = TLVWriter::new(&mut wb);
-    //         cert.to_tlv(&mut tw, TagType::Anonymous).unwrap();
+        for input in test_input.iter() {
+            info!("Testing next input...");
+            let root = TLVElement::new(input);
+            let cert = CertRef::from_tlv(&root).unwrap();
+            let mut buf = [0u8; 1024];
+            let mut wb = WriteBuf::new(&mut buf);
+            let mut tw = TLVWriter::new(&mut wb);
+            cert.to_tlv(&TagType::Anonymous, &mut tw).unwrap();
 
-    //         let root2 = tlv::get_root_node(wb.as_slice()).unwrap();
-    //         let cert2 = Cert::from_tlv(&root2).unwrap();
-    //         assert_eq!(cert, cert2);
-    //     }
-    // }
+            let root2 = TLVElement::new(wb.as_slice());
+            let cert2 = CertRef::from_tlv(&root2).unwrap();
+            assert_eq!(cert, cert2);
+        }
+    }
 
     #[test]
     fn test_unordered_extensions() {

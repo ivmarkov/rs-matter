@@ -94,7 +94,8 @@ pub mod msg {
         pub dataver_filters: Option<TLVArray<'a, DataVersionFilter>>,
     }
 
-    #[derive(Clone)]
+    #[derive(FromTLV, ToTLV, Clone, PartialEq, Eq, Hash)]
+    #[tlvargs(lifetime = "'a")]
     pub struct SubscribeReqRef<'a>(TLVElement<'a>);
 
     impl<'a> SubscribeReqRef<'a> {
@@ -197,7 +198,8 @@ pub mod msg {
         pub inv_requests: Option<TLVArray<'a, CmdData<'a>>>,
     }
 
-    #[derive(Clone)]
+    #[derive(FromTLV, ToTLV, Clone, PartialEq, Eq, Hash)]
+    #[tlvargs(lifetime = "'a")]
     pub struct InvReqRef<'a>(TLVElement<'a>);
 
     impl<'a> InvReqRef<'a> {
@@ -269,7 +271,8 @@ pub mod msg {
         pub dataver_filters: Option<TLVArray<'a, DataVersionFilter>>,
     }
 
-    #[derive(Clone)]
+    #[derive(FromTLV, ToTLV, Clone, PartialEq, Eq, Hash)]
+    #[tlvargs(lifetime = "'a")]
     pub struct ReadReqRef<'a>(TLVElement<'a>);
 
     impl<'a> ReadReqRef<'a> {
@@ -347,7 +350,8 @@ pub mod msg {
         MoreChunked = 3,
     }
 
-    #[derive(Clone)]
+    #[derive(FromTLV, ToTLV, Clone, PartialEq, Eq, Hash)]
+    #[tlvargs(lifetime = "'a")]
     pub struct WriteReqRef<'a>(TLVElement<'a>);
 
     impl<'a> WriteReqRef<'a> {

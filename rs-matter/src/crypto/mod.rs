@@ -88,11 +88,12 @@ impl ToTLV for KeyPair {
         tw.end_container()
     }
 
-    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
-        todo!();
+    fn tlv_iter(&self, _tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
+        unimplemented!("Not implemented for `KeyPair`");
 
+        #[allow(unreachable_code)]
         core::iter::empty()
-    } // ### TODO
+    }
 }
 
 #[cfg(test)]

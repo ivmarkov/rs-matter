@@ -38,15 +38,15 @@ use super::{EitherIter, FromTLV, TLVElement, TLVSequenceIter, TLVTag, TLVWrite, 
 pub type AnyContainer = ();
 
 /// A type-state that indicates that the container should be an array.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ArrayContainer;
 
 /// A type-state that indicates that the container should be a list.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ListContainer;
 
 /// A type-state that indicates that the container should be a struct.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StructContainer;
 
 /// A type alias for an array TLV container.
@@ -60,7 +60,7 @@ pub type TLVStruct<'a, T> = TLVContainer<'a, T, StructContainer>;
 /// it does not materialize the container elements until the container is iterated over.
 ///
 /// Therefore, `TLVContainer` is just a wrapper (newtype) of the serialized TLV container `&[u8]` slice.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct TLVContainer<'a, T, C = AnyContainer> {
     element: TLVElement<'a>,

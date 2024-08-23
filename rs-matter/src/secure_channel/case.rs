@@ -562,7 +562,7 @@ impl Case {
         signature: &mut [u8],
     ) -> Result<usize, Error> {
         // We are guaranteed this unwrap will work
-        const MAX_TBS_SIZE: usize = 800;
+        const MAX_TBS_SIZE: usize = 800; // TODO LARGE BUFFER
         let mut buf = [0; MAX_TBS_SIZE];
         let mut write_buf = WriteBuf::new(&mut buf);
         let tw = &mut write_buf;

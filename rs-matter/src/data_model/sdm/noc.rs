@@ -555,7 +555,7 @@ impl NocCluster {
 
         let mut writer = encoder.with_command(RespCommands::AttReqResp as _)?;
 
-        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX];
+        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX]; // TODO LARGE BUFFER
         let mut attest_element = WriteBuf::new(&mut buf);
         writer.start_struct(&CmdDataWriter::TAG)?;
         add_attestation_element(
@@ -589,7 +589,7 @@ impl NocCluster {
         info!("Received data: {}", data);
         let cert_type = get_certchainrequest_params(data).map_err(Error::map_invalid_command)?;
 
-        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX];
+        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX]; // TODO LARGE BUFFER
         let len = exchange
             .matter()
             .dev_att()
@@ -631,7 +631,7 @@ impl NocCluster {
 
         let mut writer = encoder.with_command(RespCommands::CSRResp as _)?;
 
-        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX];
+        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX]; // TODO LARGE BUFFER
         let mut nocsr_element = WriteBuf::new(&mut buf);
         writer.start_struct(&CmdDataWriter::TAG)?;
         add_nocsrelement(&noc_keypair, req.str.0, &mut nocsr_element, &mut writer)?;
@@ -732,7 +732,7 @@ fn add_attestation_element(
     write_buf: &mut WriteBuf,
     t: &mut TLVWriter,
 ) -> Result<(), Error> {
-    let mut cert_dec: [u8; MAX_CERT_DECLARATION_LEN] = [0; MAX_CERT_DECLARATION_LEN];
+    let mut cert_dec: [u8; MAX_CERT_DECLARATION_LEN] = [0; MAX_CERT_DECLARATION_LEN]; // TODO LARGE BUFFER
     let len = dev_att.get_devatt_data(dev_att::DataType::CertDeclaration, &mut cert_dec)?;
     let cert_dec = &cert_dec[0..len];
 

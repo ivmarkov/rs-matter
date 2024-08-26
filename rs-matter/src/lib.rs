@@ -92,8 +92,6 @@ pub mod tlv;
 pub mod transport;
 pub mod utils;
 
-pub mod e2e;
-
 pub use crate::core::*;
 
 #[cfg(feature = "alloc")]

@@ -776,6 +776,8 @@ impl<'a> ReportDataReq<'a> {
 
         let mut tw = TLVWriter::new(wb);
 
+        tw.start_struct(&TLVTag::Anonymous)?;
+
         if let Some(subscription_id) = subscription_id {
             assert!(matches!(self, ReportDataReq::Subscribe(_)));
             tw.u32(
@@ -786,7 +788,7 @@ impl<'a> ReportDataReq<'a> {
             assert!(matches!(self, ReportDataReq::Read(_)));
         }
 
-        let has_requests = self.has_attr_requests()?;
+        let has_requests = self.attr_requests()?.is_some();
 
         if has_requests {
             tw.start_array(&TLVTag::Context(ReportDataTag::AttributeReports as u8))?;
@@ -894,7 +896,7 @@ impl<'a> InvReqRef<'a> {
         // Suppress Response -> TODO: Need to revisit this for cases where we send a command back
         tw.bool(&TLVTag::Context(InvRespTag::SupressResponse as u8), false)?;
 
-        let has_requests = self.has_inv_requests()?;
+        let has_requests = self.inv_requests()?.is_some();
 
         if has_requests {
             tw.start_array(&TLVTag::Context(InvRespTag::InvokeResponses as u8))?;

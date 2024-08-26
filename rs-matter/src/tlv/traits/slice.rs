@@ -31,6 +31,12 @@ use crate::error::Error;
 
 use super::{TLVTag, TLVValue, TLVWrite, ToTLV, TLV};
 
+/// This type alias is necessary, because `FromTLV` / `ToTLV` do not (yet) support
+/// members that are slices.
+///
+/// Therefore, use `Slice<'a, T>` instead of `&'a [T]` as a syntax in your structs.
+pub type Slice<'a, T> = &'a [T];
+
 impl<'a, T: ToTLV> ToTLV for &'a [T]
 where
     T: ToTLV,

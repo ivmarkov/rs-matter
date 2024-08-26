@@ -674,18 +674,29 @@ impl<'a> TLVElement<'a> {
         value.fmt(f)?;
 
         if value.value_type().is_container() {
-            writeln!(f)?;
+            let mut empty = true;
 
-            for elem in self.container().map_err(|_| fmt::Error)?.iter() {
+            for (index, elem) in self.container().map_err(|_| fmt::Error)?.iter().enumerate() {
+                if index > 0 {
+                    writeln!(f, ",")?;
+                } else {
+                    writeln!(f)?;
+                }
+
                 elem.map_err(|_| fmt::Error)?.fmt(indent + 2, f)?;
+
+                empty = false;
             }
 
-            pad(indent, f)?;
+            if !empty {
+                writeln!(f)?;
+                pad(indent, f)?;
+            }
 
             match value.value_type() {
-                TLVValueType::Struct => writeln!(f, "}}"),
-                TLVValueType::Array => writeln!(f, "]"),
-                TLVValueType::List => writeln!(f, ")"),
+                TLVValueType::Struct => write!(f, "}}"),
+                TLVValueType::Array => write!(f, "]"),
+                TLVValueType::List => write!(f, ")"),
                 _ => unreachable!(),
             }?;
         }

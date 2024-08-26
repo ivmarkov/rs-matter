@@ -15,26 +15,19 @@
  *    limitations under the License.
  */
 
-use rs_matter::{
-    data_model::objects::EncodeValue,
-    interaction_model::{
-        core::IMStatusCode,
-        messages::ib::{AttrData, AttrPath, AttrStatus},
-        messages::{ib::CmdData, ib::CmdPath, GenericPath},
-    },
-    tlv::TLVWriter,
-};
+use rs_matter::interaction_model::core::IMStatusCode;
+use rs_matter::interaction_model::messages::ib::{AttrPath, AttrStatus};
+use rs_matter::interaction_model::messages::msg::{StatusResp, TimedReq};
+use rs_matter::interaction_model::messages::GenericPath;
 
-use crate::{
-    common::{
-        commands::*,
-        echo_cluster,
-        handlers::{TimedInvResponse, WriteResponse},
-        im_engine::ImEngine,
-        init_env_logger,
-    },
-    echo_req, echo_resp,
-};
+use crate::e2e::im::attributes::TestAttrData;
+use crate::e2e::im::{echo_cluster, TestInvReq, TestInvResp, TestWriteReq, TestWriteResp};
+use crate::e2e::test::E2eTest;
+use crate::e2e::tlv::TlvTest;
+use crate::e2e::ImEngine;
+use crate::{echo_req, echo_resp};
+
+use crate::common::init_env_logger;
 
 #[test]
 fn test_timed_write_fail_and_success() {
@@ -42,20 +35,13 @@ fn test_timed_write_fail_and_success() {
     // - 1 Timed Attr Write Transaction should succeed
     let val0 = 10;
     init_env_logger();
-    let attr_data0 = |tag, t: &mut TLVWriter| {
-        let _ = t.u16(tag, val0);
-    };
 
     let ep_att = GenericPath::new(
         None,
         Some(echo_cluster::ID),
         Some(echo_cluster::AttributesDiscriminants::AttWrite as u32),
     );
-    let input = &[AttrData::new(
-        None,
-        AttrPath::new(&ep_att),
-        EncodeValue::Closure(&attr_data0),
-    )];
+    let input = &[TestAttrData::new(None, AttrPath::new(&ep_att), &val0 as _)];
 
     let ep0_att = GenericPath::new(
         Some(0),
@@ -73,20 +59,46 @@ fn test_timed_write_fail_and_success() {
         AttrStatus::new(&ep1_att, IMStatusCode::Success, 0),
     ];
 
-    // Test with incorrect handling
-    ImEngine::timed_write_reqs(input, &WriteResponse::TransactionError, 100, 500);
-
-    // Test with correct handling
     let im = ImEngine::new_default();
     let handler = im.handler();
     im.add_default_acl();
-    im.handle_timed_write_reqs(
+
+    // Test with incorrect handling
+    im.test_one(
         &handler,
-        input,
-        &WriteResponse::TransactionSuccess(expected),
-        400,
-        0,
+        TlvTest::write(
+            TestWriteReq {
+                timed_request: Some(true),
+                ..TestWriteReq::reqs(input)
+            },
+            StatusResp {
+                status: IMStatusCode::Timeout,
+            },
+        ),
     );
+
+    // Test with correct handling
+    let tests: [&dyn E2eTest; 2] = [
+        &TlvTest {
+            delay_ms: Some(100),
+            ..TlvTest::timed(
+                TimedReq { timeout: 500 },
+                StatusResp {
+                    status: IMStatusCode::Success,
+                },
+            )
+        } as _,
+        &TlvTest::write(
+            TestWriteReq {
+                timed_request: Some(true),
+                ..TestWriteReq::reqs(input)
+            },
+            TestWriteResp::resp(expected),
+        ) as _,
+    ];
+
+    im.test_all(&handler, tests);
+
     assert_eq!(val0, handler.echo_cluster(0).att_write.get());
 }
 
@@ -97,28 +109,67 @@ fn test_timed_cmd_success() {
 
     let input = &[echo_req!(0, 5), echo_req!(1, 10)];
     let expected = &[echo_resp!(0, 10), echo_resp!(1, 30)];
-    ImEngine::timed_commands(
-        input,
-        &TimedInvResponse::TransactionSuccess(expected),
-        2000,
-        0,
-        true,
-    );
+
+    let im = ImEngine::new_default();
+    let handler = im.handler();
+    im.add_default_acl();
+
+    // Test with correct handling
+    let tests: [&dyn E2eTest; 2] = [
+        &TlvTest {
+            delay_ms: Some(100),
+            ..TlvTest::timed(
+                TimedReq { timeout: 2000 },
+                StatusResp {
+                    status: IMStatusCode::Success,
+                },
+            )
+        } as _,
+        &TlvTest::invoke(
+            TestInvReq {
+                timed_request: Some(true),
+                ..TestInvReq::reqs(input)
+            },
+            TestInvResp::resp(expected),
+        ) as _,
+    ];
+
+    im.test_all(&handler, tests);
 }
 
 #[test]
 fn test_timed_cmd_timeout() {
-    // A timed request that is executed after t imeout
+    // A timed request that is executed after a timeout
     init_env_logger();
 
     let input = &[echo_req!(0, 5), echo_req!(1, 10)];
-    ImEngine::timed_commands(
-        input,
-        &TimedInvResponse::TransactionError(IMStatusCode::Timeout),
-        100,
-        500,
-        true,
-    );
+
+    let im = ImEngine::new_default();
+    let handler = im.handler();
+    im.add_default_acl();
+
+    let tests: [&dyn E2eTest; 2] = [
+        &TlvTest {
+            delay_ms: Some(2000),
+            ..TlvTest::timed(
+                TimedReq { timeout: 100 },
+                StatusResp {
+                    status: IMStatusCode::Success,
+                },
+            )
+        },
+        &TlvTest::invoke(
+            TestInvReq {
+                timed_request: Some(true),
+                ..TestInvReq::reqs(input)
+            },
+            StatusResp {
+                status: IMStatusCode::Timeout,
+            },
+        ),
+    ];
+
+    im.test_all(&handler, tests);
 }
 
 #[test]
@@ -127,20 +178,44 @@ fn test_timed_cmd_timedout_mismatch() {
     init_env_logger();
 
     let input = &[echo_req!(0, 5), echo_req!(1, 10)];
-    ImEngine::timed_commands(
-        input,
-        &TimedInvResponse::TransactionError(IMStatusCode::TimedRequestMisMatch),
-        2000,
-        0,
-        false,
-    );
 
-    let input = &[echo_req!(0, 5), echo_req!(1, 10)];
-    ImEngine::timed_commands(
-        input,
-        &TimedInvResponse::TransactionError(IMStatusCode::TimedRequestMisMatch),
-        0,
-        0,
-        true,
+    let im = ImEngine::new_default();
+    let handler = im.handler();
+    im.add_default_acl();
+
+    let tests: [&dyn E2eTest; 2] = [
+        &TlvTest {
+            delay_ms: Some(2000),
+            ..TlvTest::timed(
+                TimedReq { timeout: 0 },
+                StatusResp {
+                    status: IMStatusCode::Success,
+                },
+            )
+        },
+        &TlvTest::write(
+            TestInvReq {
+                timed_request: Some(false),
+                ..TestInvReq::reqs(input)
+            },
+            StatusResp {
+                status: IMStatusCode::TimedRequestMisMatch,
+            },
+        ),
+    ];
+
+    im.test_all(&handler, tests);
+
+    im.test_one(
+        &handler,
+        TlvTest::write(
+            TestInvReq {
+                timed_request: Some(true),
+                ..TestInvReq::reqs(input)
+            },
+            StatusResp {
+                status: IMStatusCode::TimedRequestMisMatch,
+            },
+        ),
     );
 }

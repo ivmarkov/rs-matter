@@ -21,7 +21,7 @@ use core::ops::{Deref, DerefMut};
 
 use crate::interaction_model::core::IMStatusCode;
 use crate::interaction_model::messages::ib::{
-    AttrPath, AttrResp, AttrStatus, CmdDataTag, CmdPath, CmdStatus, InvResp, InvRespTag,
+    AttrPath, AttrResp, AttrStatus, CmdDataTag, CmdPath, CmdResp, CmdStatus, InvRespTag,
 };
 use crate::tlv::TLVTag;
 use crate::transport::exchange::Exchange;
@@ -262,7 +262,7 @@ impl<'a, 'b, 'c> CmdDataEncoder<'a, 'b, 'c> {
         };
 
         if let Some(status) = status {
-            InvResp::Status(status).to_tlv(&TagType::Anonymous, tw)?;
+            CmdResp::Status(status).to_tlv(&TagType::Anonymous, tw)?;
         }
 
         Ok(())

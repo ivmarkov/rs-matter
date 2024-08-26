@@ -159,11 +159,11 @@ fn gen_totlv_for_struct_unnamed(
     quote! {
         impl #generics #krate::tlv::ToTLV for #struct_name #generics {
             fn to_tlv<W: #krate::tlv::TLVWrite>(&self, tag: &#krate::tlv::TLVTag, mut tw: W) -> Result<(), #krate::error::Error> {
-                self.0.to_tlv(tag, &mut tw)
+                #krate::tlv::ToTLV::to_tlv(&self.0, tag, &mut tw)
             }
 
             fn tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<#krate::tlv::TLV, #krate::error::Error>> {
-                self.0.tlv_iter(tag)
+                #krate::tlv::ToTLV::tlv_iter(&self.0, tag)
             }
         }
     }
@@ -202,7 +202,7 @@ fn gen_totlv_for_struct_named(
                 if let Err(err) = (|| {
                     tw.#datatype(tag)?;
                     #(
-                        self.#idents.to_tlv(&#krate::tlv::TLVTag::Context(#tags), &mut tw)?;
+                        #krate::tlv::ToTLV::to_tlv(&self.#idents, &#krate::tlv::TLVTag::Context(#tags), &mut tw)?;
                     )*
                     tw.end_container()
                 })() {
@@ -216,7 +216,7 @@ fn gen_totlv_for_struct_named(
             fn tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<#krate::tlv::TLV, #krate::error::Error>> {
                 let iter = #krate::tlv::TLV::structure(tag).into_tlv_iter();
 
-                #(let iter = Iterator::chain(iter, self.#idents.tlv_iter(#krate::tlv::TLVTag::Context(#tags)));)*
+                #(let iter = Iterator::chain(iter, #krate::tlv::ToTLV::tlv_iter(&self.#idents, #krate::tlv::TLVTag::Context(#tags)));)*
 
                 Iterator::chain(iter, #krate::tlv::TLV::end_container().into_tlv_iter())
             }
@@ -351,7 +351,7 @@ fn gen_totlv_for_enum(
                         if let Err(err) = (|| {
                             match self {
                                 #(
-                                    Self::#variant_names(c) => { c.to_tlv(&#krate::tlv::TLVTag::Context(#tags), &mut tw) }
+                                    Self::#variant_names(c) => { #krate::tlv::ToTLV::to_tlv(c, &#krate::tlv::TLVTag::Context(#tags), &mut tw) }
                                 )*
                             }
                         })() {
@@ -365,7 +365,7 @@ fn gen_totlv_for_enum(
                     fn tlv_iter(&self, tag: #krate::tlv::TLVTag) -> impl Iterator<Item = Result<#krate::tlv::TLV, #krate::error::Error>> {
                         match self {
                             #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(#krate::tlv::ToTLV::tlv_iter(c, #krate::tlv::TLVTag::Context(#tags))),
                             )*
                         }
                     }
@@ -381,7 +381,7 @@ fn gen_totlv_for_enum(
                             tw.start_struct(tag)?;
                             match self {
                                 #(
-                                    Self::#variant_names(c) => c.to_tlv(&#krate::tlv::TLVTag::Context(#tags), &mut tw),
+                                    Self::#variant_names(c) => #krate::tlv::ToTLV::to_tlv(c, &#krate::tlv::TLVTag::Context(#tags), &mut tw),
                                 )*
                             }?;
                             tw.end_container()
@@ -398,7 +398,7 @@ fn gen_totlv_for_enum(
 
                         let iter = Iterator::chain(iter, match self {
                             #(
-                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(c.tlv_iter(#krate::tlv::TLVTag::Context(#tags))),
+                                Self::#variant_names(c) => #krate::tlv::#either_ident::#either_variants(#krate::tlv::ToTLV::tlv_iter(c, #krate::tlv::TLVTag::Context(#tags))),
                             )*
                         });
 
@@ -851,10 +851,8 @@ mod tests {
                         let anchor = tw.get_tail();
                         if let Err(err) = (|| {
                             tw.start_struct(tag)?;
-                            self.field1
-                                .to_tlv(&rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8), &mut tw)?;
-                            self.field2
-                                .to_tlv(&rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8), &mut tw)?;
+                            rs_matter_maybe_renamed::tlv::ToTLV::to_tlv(&self.field1, &rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8), &mut tw)?;
+                            rs_matter_maybe_renamed::tlv::ToTLV::to_tlv(&self.field2, &rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8), &mut tw)?;
                             tw.end_container()
                         })() {
                             tw.rewind_to(anchor);
@@ -872,14 +870,12 @@ mod tests {
 
                         let iter = Iterator::chain(
                             iter,
-                            self.field1
-                                .tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
+                            rs_matter_maybe_renamed::tlv::ToTLV::tlv_iter(&self.field1,rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
                         );
 
                         let iter = Iterator::chain(
                             iter,
-                            self.field2
-                                .tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
+                            rs_matter_maybe_renamed::tlv::ToTLV::tlv_iter(&self.field2, rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
                         );
 
                         Iterator::chain(iter, rs_matter_maybe_renamed::tlv::TLV::end_container().into_tlv_iter())
@@ -957,8 +953,8 @@ mod tests {
                         if let Err(err) = (|| {
                             tw.start_struct(tag)?;
                             match self {
-                                Self::ValueA(c) => c.to_tlv(&rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8), &mut tw),
-                                Self::ValueB(c) => c.to_tlv(&rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8), &mut tw),
+                                Self::ValueA(c) => rs_matter_maybe_renamed::tlv::ToTLV::to_tlv(c, &rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8), &mut tw),
+                                Self::ValueB(c) => rs_matter_maybe_renamed::tlv::ToTLV::to_tlv(c, &rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8), &mut tw),
                             }?;
                             tw.end_container()
                         })() {
@@ -979,10 +975,10 @@ mod tests {
                             iter,
                             match self {
                                 Self::ValueA(c) => rs_matter_maybe_renamed::tlv::EitherIter::First(
-                                    c.tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
+                                    rs_matter_maybe_renamed::tlv::ToTLV::tlv_iter(c, rs_matter_maybe_renamed::tlv::TLVTag::Context(0u8)),
                                 ),
                                 Self::ValueB(c) => rs_matter_maybe_renamed::tlv::EitherIter::Second(
-                                    c.tlv_iter(rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
+                                    rs_matter_maybe_renamed::tlv::ToTLV::tlv_iter(c, rs_matter_maybe_renamed::tlv::TLVTag::Context(1u8)),
                                 ),
                             },
                         );

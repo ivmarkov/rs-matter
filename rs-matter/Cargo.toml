@@ -85,6 +85,7 @@ nix = { version = "0.27", features = ["net"] }
 futures-lite = "1"
 async-channel = "2"
 static_cell = "2"
+similar = "2.6"
 
 [[example]]
 name = "onoff_light"

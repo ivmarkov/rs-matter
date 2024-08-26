@@ -996,9 +996,9 @@ impl<'a> TLVValue<'a> {
             Self::F32(a) => write!(f, "F32({a})"),
             Self::F64(a) => write!(f, "F64({a})"),
             Self::Null => write!(f, "Null"),
-            Self::Struct => writeln!(f, "{{"),
-            Self::Array => writeln!(f, "["),
-            Self::List => writeln!(f, "("),
+            Self::Struct => write!(f, "{{"),
+            Self::Array => write!(f, "["),
+            Self::List => write!(f, "("),
             Self::True => write!(f, "True"),
             Self::False => write!(f, "False"),
             Self::Utf8l(a) | Self::Utf16l(a) | Self::Utf32l(a) | Self::Utf64l(a) => {
@@ -1007,7 +1007,7 @@ impl<'a> TLVValue<'a> {
             Self::Str8l(a) | Self::Str16l(a) | Self::Str32l(a) | Self::Str64l(a) => {
                 write!(f, "({}){a:02X?}", a.len())
             }
-            Self::EndCnt => writeln!(f, ">"),
+            Self::EndCnt => write!(f, ">"),
         }
     }
 }

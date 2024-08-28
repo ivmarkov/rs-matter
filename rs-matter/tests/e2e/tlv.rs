@@ -92,7 +92,6 @@ where
 
         let element = TLVElement::new(&buf2[..len]);
 
-        // TODO: Display a nice diff
         if expected_element != element {
             let expected_str = format!("{expected_element}");
             let actual_str = format!("{element}");
@@ -101,6 +100,7 @@ where
 
             let mut diff_str = String::new();
 
+            // TODO: Color the diff output
             for change in diff.iter_all_changes() {
                 let sign = match change.tag() {
                     similar::ChangeTag::Delete => "-",

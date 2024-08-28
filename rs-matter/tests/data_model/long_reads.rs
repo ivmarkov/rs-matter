@@ -114,15 +114,15 @@ static PART_1: &'static [TestAttrResp<'static>] = &[
     attr_data!(0, 60, GlobalElements::FeatureMap, None),
     attr_data!(0, 60, GlobalElements::AttributeList, None),
     attr_data!(0, 60, adm_comm::AttributesDiscriminants::WindowStatus, None),
-];
-
-static PART_2: &'static [TestAttrResp<'static>] = &[
     attr_data!(
         0,
         60,
         adm_comm::AttributesDiscriminants::AdminFabricIndex,
         None
     ),
+];
+
+static PART_2: &'static [TestAttrResp<'static>] = &[
     attr_data!(
         0,
         60,
@@ -191,7 +191,6 @@ fn test_long_read_success() {
                 TestReportDataMsg {
                     attr_reports: Some(PART_1),
                     more_chunks: Some(true),
-                    suppress_response: Some(false),
                     ..Default::default()
                 },
                 ReplyProcessor::remove_attr_data,
@@ -202,7 +201,7 @@ fn test_long_read_success() {
                 },
                 TestReportDataMsg {
                     attr_reports: Some(PART_2),
-                    more_chunks: Some(false),
+                    suppress_response: Some(true),
                     ..Default::default()
                 },
                 ReplyProcessor::remove_attr_data,
@@ -225,11 +224,15 @@ fn test_long_read_subscription_success() {
         &handler,
         [
             &TLVTest::subscribe(
-                TestSubscribeReq::reqs(&[AttrPath::new(&GenericPath::new(None, None, None))]),
+                TestSubscribeReq {
+                    min_int_floor: 1,
+                    max_int_ceil: 10,
+                    ..TestSubscribeReq::reqs(&[AttrPath::new(&GenericPath::new(None, None, None))])
+                },
                 TestReportDataMsg {
+                    subscription_id: Some(1),
                     attr_reports: Some(PART_1),
                     more_chunks: Some(true),
-                    suppress_response: Some(false),
                     ..Default::default()
                 },
                 ReplyProcessor::remove_attr_data,
@@ -239,9 +242,8 @@ fn test_long_read_subscription_success() {
                     status: IMStatusCode::Success,
                 },
                 TestReportDataMsg {
+                    subscription_id: Some(1),
                     attr_reports: Some(PART_2),
-                    more_chunks: Some(false),
-                    suppress_response: Some(false),
                     ..Default::default()
                 },
                 ReplyProcessor::remove_attr_data,
@@ -252,7 +254,7 @@ fn test_long_read_subscription_success() {
                 },
                 SubscribeResp {
                     subs_id: 1,
-                    max_int: 100,
+                    max_int: 40,
                     ..Default::default()
                 },
                 ReplyProcessor::none,

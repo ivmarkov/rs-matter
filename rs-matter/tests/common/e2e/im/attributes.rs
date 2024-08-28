@@ -21,14 +21,14 @@ use rs_matter::interaction_model::messages::ib::{AttrPath, AttrStatus};
 use rs_matter::interaction_model::messages::GenericPath;
 use rs_matter::tlv::{TLVTag, TLVWrite, TLVWriter};
 
-use crate::e2e::tlv::{TLVTest, TestToTLV};
-use crate::e2e::E2eRunner;
+use crate::common::e2e::tlv::{TLVTest, TestToTLV};
+use crate::common::e2e::E2eRunner;
 
 /// A macro for creating a `TestAttrResp` instance of variant `Status`.
 #[macro_export]
 macro_rules! attr_status {
     ($path:expr, $status:expr) => {
-        $crate::e2e::im::attributes::TestAttrResp::AttrStatus(
+        $crate::common::e2e::im::attributes::TestAttrResp::AttrStatus(
             rs_matter::interaction_model::messages::ib::AttrStatus::new($path, $status, 0),
         )
     };
@@ -39,8 +39,8 @@ macro_rules! attr_status {
 #[macro_export]
 macro_rules! attr_data_path {
     ($path:expr, $data:expr) => {
-        $crate::e2e::im::attributes::TestAttrResp::AttrData(
-            $crate::e2e::im::attributes::TestAttrData {
+        $crate::common::e2e::im::attributes::TestAttrResp::AttrData(
+            $crate::common::e2e::im::attributes::TestAttrData {
                 data_ver: None,
                 path: rs_matter::interaction_model::messages::ib::AttrPath::new(&$path),
                 data: $data,

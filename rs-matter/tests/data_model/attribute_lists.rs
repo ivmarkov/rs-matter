@@ -20,10 +20,9 @@ use rs_matter::interaction_model::messages::ib::{AttrPath, AttrStatus};
 use rs_matter::interaction_model::messages::GenericPath;
 use rs_matter::tlv::{Nullable, TLVValue};
 
-use crate::e2e::im::attributes::TestAttrData;
-use crate::e2e::im::echo_cluster::{self, TestChecker};
-use crate::e2e::ImEngine;
-
+use crate::common::e2e::im::attributes::TestAttrData;
+use crate::common::e2e::im::echo_cluster::{self, TestChecker};
+use crate::common::e2e::ImEngine;
 use crate::common::init_env_logger;
 
 // Helper for handling Write Attribute sequences

@@ -15,13 +15,9 @@
  *    limitations under the License.
  */
 
-pub mod e2e;
-
-pub fn init_env_logger() {
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
-    {
-        let _ = env_logger::try_init_from_env(
-            env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
-        );
-    }
-}
+mod acl_and_dataver;
+mod attribute_lists;
+mod attributes;
+mod commands;
+mod long_reads;
+mod timed_requests;

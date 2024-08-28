@@ -35,7 +35,7 @@ use rs_matter::tlv::TLVElement;
 use rs_matter::transport::exchange::Exchange;
 use rs_matter::Matter;
 
-use crate::e2e::E2eRunner;
+use crate::common::e2e::E2eRunner;
 
 use super::echo_cluster::{self, EchoCluster};
 

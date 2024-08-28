@@ -20,11 +20,10 @@ use rs_matter::interaction_model::core::IMStatusCode;
 use rs_matter::interaction_model::messages::ib::{AttrPath, AttrStatus};
 use rs_matter::interaction_model::messages::GenericPath;
 
-use crate::e2e::im::{attributes::TestAttrData, echo_cluster};
-use crate::e2e::ImEngine;
-use crate::{attr_data, attr_data_path, attr_status};
-
+use crate::common::e2e::im::{attributes::TestAttrData, echo_cluster};
+use crate::common::e2e::ImEngine;
 use crate::common::init_env_logger;
+use crate::{attr_data, attr_data_path, attr_status};
 
 #[test]
 fn test_read_success() {

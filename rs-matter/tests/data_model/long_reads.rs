@@ -27,13 +27,12 @@ use rs_matter::interaction_model::messages::msg::{StatusResp, SubscribeResp};
 use rs_matter::interaction_model::messages::GenericPath;
 
 use crate::attr_data;
-use crate::e2e::im::attributes::TestAttrResp;
-use crate::e2e::im::{echo_cluster as echo, ReplyProcessor, TestSubscribeReq};
-use crate::e2e::im::{TestReadReq, TestReportDataMsg};
-use crate::e2e::test::E2eTest;
-use crate::e2e::tlv::TLVTest;
-use crate::e2e::ImEngine;
-
+use crate::common::e2e::im::attributes::TestAttrResp;
+use crate::common::e2e::im::{echo_cluster as echo, ReplyProcessor, TestSubscribeReq};
+use crate::common::e2e::im::{TestReadReq, TestReportDataMsg};
+use crate::common::e2e::test::E2eTest;
+use crate::common::e2e::tlv::TLVTest;
+use crate::common::e2e::ImEngine;
 use crate::common::init_env_logger;
 
 static PART_1: &'static [TestAttrResp<'static>] = &[

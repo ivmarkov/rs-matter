@@ -25,14 +25,13 @@ use rs_matter::interaction_model::messages::ib::{
 };
 use rs_matter::interaction_model::messages::GenericPath;
 
-use crate::e2e::im::attributes::{TestAttrData, TestAttrResp};
-use crate::e2e::im::echo_cluster::ATTR_WRITE_DEFAULT_VALUE;
-use crate::e2e::im::{echo_cluster, TestReadReq, TestReportDataMsg};
-use crate::e2e::tlv::TLVTest;
-use crate::e2e::{ImEngine, IM_ENGINE_PEER_ID};
-use crate::{attr_data, attr_data_path, attr_status};
-
+use crate::common::e2e::im::attributes::{TestAttrData, TestAttrResp};
+use crate::common::e2e::im::echo_cluster::ATTR_WRITE_DEFAULT_VALUE;
+use crate::common::e2e::im::{echo_cluster, ReplyProcessor, TestReadReq, TestReportDataMsg};
+use crate::common::e2e::tlv::TLVTest;
+use crate::common::e2e::{ImEngine, IM_ENGINE_PEER_ID};
 use crate::common::init_env_logger;
+use crate::{attr_data, attr_data_path, attr_status};
 
 const FAB_1: NonZeroU8 = match NonZeroU8::new(1) {
     Some(f) => f,
@@ -438,71 +437,58 @@ fn test_read_data_ver() {
         ),
     ];
 
-    // TODO
+    // Test 1: Simple read without any data version filters
+    im.test_one(&handler, TLVTest::read_attrs(input, expected));
 
-    // let mut out = heapless::Vec::new();
+    let data_ver_cluster_at_0 = handler.echo_cluster(0).data_ver.get();
 
-    // // Test 1: Simple read to retrieve the current Data Version of Cluster at Endpoint 0
-    // let received = im.gen_read_reqs_output::<1>(&handler, input, None, &mut out);
-    // assert_attr_report(&received, expected);
+    let dataver_filter = &[DataVersionFilter {
+        path: ClusterPath {
+            node: None,
+            endpoint: 0,
+            cluster: echo_cluster::ID,
+        },
+        data_ver: data_ver_cluster_at_0,
+    }];
 
-    // let data_ver_cluster_at_0 = received
-    //     .attr_reports
-    //     .as_ref()
-    //     .unwrap()
-    //     .get_index(0)
-    //     .unwrap_data()
-    //     .data_ver
-    //     .unwrap();
+    // Test 2: Add Dataversion filter for cluster at endpoint 0 only single entry should be retrieved
+    let expected_only_one = &[attr_data!(
+        1,
+        echo_cluster::ID,
+        echo_cluster::AttributesDiscriminants::Att1,
+        Some(&0x1234u16)
+    )];
 
-    // let dataver_filter = DataVersionFilter {
-    //     path: ClusterPath {
-    //         node: None,
-    //         endpoint: 0,
-    //         cluster: echo_cluster::ID,
-    //     },
-    //     data_ver: data_ver_cluster_at_0,
-    // };
+    im.test_one(
+        &handler,
+        TLVTest::read(
+            TestReadReq {
+                dataver_filters: Some(dataver_filter),
+                ..TestReadReq::reqs(input)
+            },
+            TestReportDataMsg::reports(expected_only_one),
+            ReplyProcessor::remove_attr_dataver,
+        ),
+    );
 
-    // // Test 2: Add Dataversion filter for cluster at endpoint 0 only single entry should be retrieved
-    // let expected_only_one = &[attr_data_path!(
-    //     GenericPath::new(
-    //         Some(1),
-    //         Some(echo_cluster::ID),
-    //         Some(echo_cluster::AttributesDiscriminants::Att1 as u32)
-    //     ),
-    //     &0x1234u16
-    // )];
-
-    // im.test_one(
-    //     &handler,
-    //     TlvTest::read(
-    //         TestReadReq {
-    //             dataver_filters: Some(&[dataver_filter]),
-    //             ..TestReadReq::reqs(input)
-    //         },
-    //         TestReportDataMsg::reports(expected_only_one),
-    //     ),
-    // );
-
-    // // Test 3: Exact read attribute
-    // let expected_error = &[];
-    // let ep0_att1 = GenericPath::new(
-    //     Some(0),
-    //     Some(echo_cluster::ID),
-    //     Some(echo_cluster::AttributesDiscriminants::Att1 as u32),
-    // );
-    // let input = &[AttrPath::new(&ep0_att1)];
-    // im.test_one(
-    //     &handler,
-    //     TlvTest::read(
-    //         TestReadReq {
-    //             dataver_filters: Some(&[dataver_filter]),
-    //             ..TestReadReq::reqs(input)
-    //         },
-    //         TestReportDataMsg::reports(expected_error),
-    //     ),
-    // );
+    // Test 3: Exact read attribute
+    let ep0_att1 = GenericPath::new(
+        Some(0),
+        Some(echo_cluster::ID),
+        Some(echo_cluster::AttributesDiscriminants::Att1 as u32),
+    );
+    let input = &[AttrPath::new(&ep0_att1)];
+    im.test_one(
+        &handler,
+        TLVTest::read(
+            TestReadReq {
+                dataver_filters: Some(dataver_filter),
+                ..TestReadReq::reqs(input)
+            },
+            TestReportDataMsg::reports(&[]),
+            ReplyProcessor::none,
+        ),
+    );
 }
 
 #[test]
@@ -551,40 +537,40 @@ fn test_write_data_ver() {
     );
     assert_eq!(val0, handler.echo_cluster(0).att_write.get());
 
-    // // Test 2: Write with incorrect dataversion should fail
-    // // Now the data version would have incremented due to the previous write
-    // let input_correct_dataver = &[TestAttrData::new(
-    //     Some(initial_data_ver),
-    //     AttrPath::new(&ep0_attwrite),
-    //     &val1 as _,
-    // )];
-    // im.handle_write_reqs(
-    //     &handler,
-    //     input_correct_dataver,
-    //     &[AttrStatus::new(
-    //         &ep0_attwrite,
-    //         IMStatusCode::DataVersionMismatch,
-    //         0,
-    //     )],
-    // );
-    // assert_eq!(val0, handler.echo_cluster(0).att_write.get());
+    // Test 2: Write with incorrect dataversion should fail
+    // Now the data version would have incremented due to the previous write
+    let input_correct_dataver = &[TestAttrData::new(
+        Some(initial_data_ver),
+        AttrPath::new(&ep0_attwrite),
+        &val1 as _,
+    )];
+    im.handle_write_reqs(
+        &handler,
+        input_correct_dataver,
+        &[AttrStatus::new(
+            &ep0_attwrite,
+            IMStatusCode::DataVersionMismatch,
+            0,
+        )],
+    );
+    assert_eq!(val0, handler.echo_cluster(0).att_write.get());
 
-    // // Test 3: Wildcard write with incorrect dataversion should ignore that cluster
-    // //   In this case, while the data version is correct for endpoint 0, the endpoint 1's
-    // //   data version would not match
-    // let new_data_ver = handler.echo_cluster(0).data_ver.get();
+    // Test 3: Wildcard write with incorrect dataversion should ignore that cluster
+    //   In this case, while the data version is correct for endpoint 0, the endpoint 1's
+    //   data version would not match
+    let new_data_ver = handler.echo_cluster(0).data_ver.get();
 
-    // let input_correct_dataver = &[TestAttrData::new(
-    //     Some(new_data_ver),
-    //     AttrPath::new(&wc_ep_attwrite),
-    //     &val1 as _,
-    // )];
-    // im.handle_write_reqs(
-    //     &handler,
-    //     input_correct_dataver,
-    //     &[AttrStatus::new(&ep0_attwrite, IMStatusCode::Success, 0)],
-    // );
-    // assert_eq!(val1, handler.echo_cluster(0).att_write.get());
+    let input_correct_dataver = &[TestAttrData::new(
+        Some(new_data_ver),
+        AttrPath::new(&wc_ep_attwrite),
+        &val1 as _,
+    )];
+    im.handle_write_reqs(
+        &handler,
+        input_correct_dataver,
+        &[AttrStatus::new(&ep0_attwrite, IMStatusCode::Success, 0)],
+    );
+    assert_eq!(val1, handler.echo_cluster(0).att_write.get());
 
-    // assert_eq!(initial_data_ver + 1, new_data_ver);
+    assert_eq!(initial_data_ver + 1, new_data_ver);
 }

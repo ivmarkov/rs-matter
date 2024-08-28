@@ -21,16 +21,15 @@ use rs_matter::interaction_model::messages::msg::{StatusResp, TimedReq};
 use rs_matter::interaction_model::messages::GenericPath;
 use rs_matter::transport::exchange::MessageMeta;
 
-use crate::e2e::im::attributes::TestAttrData;
-use crate::e2e::im::{
+use crate::common::e2e::im::attributes::TestAttrData;
+use crate::common::e2e::im::{
     echo_cluster, ReplyProcessor, TestInvReq, TestInvResp, TestWriteReq, TestWriteResp,
 };
-use crate::e2e::test::E2eTest;
-use crate::e2e::tlv::TLVTest;
-use crate::e2e::ImEngine;
-use crate::{echo_req, echo_resp};
-
+use crate::common::e2e::test::E2eTest;
+use crate::common::e2e::tlv::TLVTest;
+use crate::common::e2e::ImEngine;
 use crate::common::init_env_logger;
+use crate::{echo_req, echo_resp};
 
 #[test]
 fn test_timed_write_fail_and_success() {

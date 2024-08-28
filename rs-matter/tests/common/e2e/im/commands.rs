@@ -20,25 +20,25 @@ use rs_matter::error::Error;
 use rs_matter::interaction_model::messages::ib::{CmdPath, CmdStatus};
 use rs_matter::tlv::{TLVTag, TLVWrite, TLVWriter};
 
-use crate::e2e::tlv::{TLVTest, TestToTLV};
-use crate::e2e::E2eRunner;
+use crate::common::e2e::tlv::{TLVTest, TestToTLV};
+use crate::common::e2e::E2eRunner;
 
 /// A macro for creating a `TestCmdData` instance by using literal values for data.
 #[macro_export]
 macro_rules! cmd_data {
     ($path:expr, $data:literal) => {
-        $crate::e2e::im::commands::TestCmdData::new($path, &($data as u32))
+        $crate::common::e2e::im::commands::TestCmdData::new($path, &($data as u32))
     };
 }
 
 #[macro_export]
 macro_rules! echo_req {
     ($endpoint:literal, $data:literal) => {
-        $crate::e2e::im::commands::TestCmdData::new(
+        $crate::common::e2e::im::commands::TestCmdData::new(
             rs_matter::interaction_model::messages::ib::CmdPath::new(
                 Some($endpoint),
-                Some($crate::e2e::im::echo_cluster::ID),
-                Some($crate::e2e::im::echo_cluster::Commands::EchoReq as u32),
+                Some($crate::common::e2e::im::echo_cluster::ID),
+                Some($crate::common::e2e::im::echo_cluster::Commands::EchoReq as u32),
             ),
             &($data as u32),
         )
@@ -48,14 +48,16 @@ macro_rules! echo_req {
 #[macro_export]
 macro_rules! echo_resp {
     ($endpoint:literal, $data:literal) => {
-        $crate::e2e::im::commands::TestCmdResp::Cmd($crate::e2e::im::commands::TestCmdData::new(
-            rs_matter::interaction_model::messages::ib::CmdPath::new(
-                Some($endpoint),
-                Some($crate::e2e::im::echo_cluster::ID),
-                Some($crate::e2e::im::echo_cluster::RespCommands::EchoResp as u32),
+        $crate::common::e2e::im::commands::TestCmdResp::Cmd(
+            $crate::common::e2e::im::commands::TestCmdData::new(
+                rs_matter::interaction_model::messages::ib::CmdPath::new(
+                    Some($endpoint),
+                    Some($crate::common::e2e::im::echo_cluster::ID),
+                    Some($crate::common::e2e::im::echo_cluster::RespCommands::EchoResp as u32),
+                ),
+                &($data as u32),
             ),
-            &($data as u32),
-        ))
+        )
     };
 }
 

@@ -19,12 +19,11 @@ use rs_matter::data_model::cluster_on_off;
 use rs_matter::interaction_model::core::IMStatusCode;
 use rs_matter::interaction_model::messages::ib::{CmdPath, CmdStatus};
 
-use crate::e2e::im::commands::TestCmdResp;
-use crate::e2e::im::echo_cluster;
-use crate::e2e::ImEngine;
-use crate::{cmd_data, echo_req, echo_resp};
-
+use crate::common::e2e::im::commands::TestCmdResp;
+use crate::common::e2e::im::echo_cluster;
+use crate::common::e2e::ImEngine;
 use crate::common::init_env_logger;
+use crate::{cmd_data, echo_req, echo_resp};
 
 #[test]
 fn test_invoke_cmds_success() {

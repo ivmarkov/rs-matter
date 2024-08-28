@@ -217,10 +217,8 @@ impl EchoCluster {
 
                 let mut writer = encoder.with_command(RespCommands::EchoResp as _)?;
 
-                writer.start_struct(&CmdDataWriter::TAG)?;
                 // Echo = input * self.multiplier
-                writer.u8(&TLVTag::Context(0), a * self.multiplier)?;
-                writer.end_container()?;
+                writer.u8(&CmdDataWriter::TAG, a * self.multiplier)?;
 
                 writer.complete()
             }

@@ -21,7 +21,7 @@ use core::ops::{Deref, DerefMut};
 
 use crate::interaction_model::core::IMStatusCode;
 use crate::interaction_model::messages::ib::{
-    AttrPath, AttrResp, AttrStatus, CmdDataTag, CmdPath, CmdResp, CmdStatus, InvRespTag,
+    AttrPath, AttrResp, AttrStatus, CmdDataTag, CmdPath, CmdResp, CmdRespTag, CmdStatus,
 };
 use crate::tlv::TLVTag;
 use crate::transport::exchange::Exchange;
@@ -284,7 +284,7 @@ impl<'a, 'b, 'c> CmdDataEncoder<'a, 'b, 'c> {
         let mut writer = CmdDataWriter::new(self.tracker, self.tw);
 
         writer.start_struct(&TLVTag::Anonymous)?;
-        writer.start_struct(&TLVTag::Context(InvRespTag::Cmd as _))?;
+        writer.start_struct(&TLVTag::Context(CmdRespTag::Cmd as _))?;
 
         self.path.path.leaf = Some(cmd as _);
         self.path

@@ -179,6 +179,7 @@ fn test_read_wc_endpoint_wc_attribute() {
         echo_cluster::AttributesDiscriminants::Att2 as u16,
         echo_cluster::AttributesDiscriminants::AttWrite as u16,
         echo_cluster::AttributesDiscriminants::AttCustom as u16,
+        echo_cluster::AttributesDiscriminants::AttWriteList as u16,
     ];
 
     let expected = &[

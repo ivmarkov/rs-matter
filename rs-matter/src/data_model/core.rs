@@ -349,13 +349,13 @@ where
 
             let req = InvReqRef::new(TLVElement::new(&rx));
 
-            req.respond(&self.handler, exchange, &metadata.node(), &mut wb)
+            req.respond(&self.handler, exchange, &metadata.node(), &mut wb, false)
                 .await?;
         } else {
             // No, they won't. Answer the request by directly using the RX packet
             // of the transport layer, as the operation won't await.
 
-            req.respond(&self.handler, exchange, &metadata.node(), &mut wb)
+            req.respond(&self.handler, exchange, &metadata.node(), &mut wb, false)
                 .await?;
         }
 
@@ -883,6 +883,7 @@ impl<'a> InvReqRef<'a> {
         exchange: &Exchange<'_>,
         node: &Node<'_>,
         wb: &mut WriteBuf<'_>,
+        suppress_resp: bool,
     ) -> Result<(), Error>
     where
         T: DataModelHandler,
@@ -894,7 +895,9 @@ impl<'a> InvReqRef<'a> {
         tw.start_struct(&TLVTag::Anonymous)?;
 
         // Suppress Response -> TODO: Need to revisit this for cases where we send a command back
-        tw.bool(&TLVTag::Context(InvRespTag::SupressResponse as u8), false)?;
+        if suppress_resp {
+            tw.bool(&TLVTag::Context(InvRespTag::SupressResponse as u8), true)?;
+        }
 
         let has_requests = self.inv_requests()?.is_some();
 

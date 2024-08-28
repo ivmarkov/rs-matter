@@ -15,7 +15,8 @@
  *    limitations under the License.
  */
 
-use bitflags::{bitflags, Flags};
+use bitflags::bitflags;
+
 use rs_matter::error::Error;
 use rs_matter::interaction_model::core::{OpCode, PROTO_ID_INTERACTION_MODEL};
 use rs_matter::interaction_model::messages::ib::{
@@ -380,11 +381,18 @@ impl<'a> TestToTLV for TestInvResp<'a> {
 }
 
 bitflags! {
+    /// Flags for trimming data from reply payloads.
+    ///
+    /// Useful when the E2E tests do now want to assert on e.g.
+    /// dataver, and/or concrete data returned by the Matter server.
+    ///
+    /// Currently, only trimming IM `ReportData` payloads is supported,
+    /// but if the end-to-end tests grow, this could be expanded to other IM messages.
     #[repr(transparent)]
-    //#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ReplyProcessor: u8 {
-        const REMOVE_ATTRDATA_DATAVER = 0;
-        const REMOVE_ATTRDATA_VALUE = 1;
+        const REMOVE_ATTRDATA_DATAVER = 0b01;
+        const REMOVE_ATTRDATA_VALUE = 0b10;
     }
 }
 
@@ -394,7 +402,7 @@ impl ReplyProcessor {
         let mut wb = WriteBuf::new(buf);
         let mut tw = TLVWriter::new(&mut wb);
 
-        if self.intersects(Self::all()) {
+        if self.is_empty() {
             element.to_tlv(&TLVTag::Anonymous, &mut tw)?;
 
             return Ok(wb.get_tail());

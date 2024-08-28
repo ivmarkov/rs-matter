@@ -117,6 +117,7 @@ impl E2eRunner {
     /// For backwards compatibility.
     pub fn commands<'a>(input: &'a [TestCmdData<'a>], expected: &'a [TestCmdResp<'a>]) {
         let runner = Self::new_default();
+        runner.add_default_acl();
         runner.handle_commands(runner.handler(), input, expected)
     }
 

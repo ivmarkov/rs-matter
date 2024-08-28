@@ -161,12 +161,14 @@ impl E2eRunner {
     /// For backwards compatibility.
     pub fn read_reqs<'a>(input: &'a [AttrPath], expected: &'a [TestAttrResp<'a>]) {
         let runner = Self::new_default();
+        runner.add_default_acl();
         runner.handle_read_reqs(runner.handler(), input, expected)
     }
 
     /// For backwards compatibility.
     pub fn write_reqs<'a>(input: &'a [TestAttrData<'a>], expected: &'a [AttrStatus]) {
         let runner = Self::new_default();
+        runner.add_default_acl();
         runner.handle_write_reqs(runner.handler(), input, expected)
     }
 

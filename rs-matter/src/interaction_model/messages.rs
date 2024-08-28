@@ -459,7 +459,7 @@ pub mod ib {
         }
     }
 
-    pub enum InvRespTag {
+    pub enum CmdRespTag {
         Cmd = 0,
         Status = 1,
     }

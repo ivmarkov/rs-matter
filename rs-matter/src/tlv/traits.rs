@@ -90,7 +90,13 @@ impl<'a> FromTLV<'a> for TLVElement<'a> {
 
 impl<'a> ToTLV for TLVElement<'a> {
     fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
-        tw.raw_value(tag, self.control()?.value_type, self.raw_value()?)
+        if self.is_empty() {
+            // Special-case serializing empty TLV elements to nothing
+            // Useful in tests
+            Ok(())
+        } else {
+            tw.raw_value(tag, self.control()?.value_type, self.raw_value()?)
+        }
     }
 
     fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
@@ -110,15 +116,21 @@ impl<'a> Iterator for TLVElementTLVIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         match core::mem::replace(self, Self::Finished) {
             TLVElementTLVIter::Start(tag, elem) => {
-                let value = elem.value().and_then(|value| Ok(TLV::new(tag, value)));
-
-                if let Ok(seq) = elem.container() {
-                    *self = Self::Seq(seq.tlv_iter());
+                if elem.is_empty() {
+                    // Special-case serializing empty TLV elements to nothing
+                    // Useful in tests
+                    None
                 } else {
-                    *self = TLVElementTLVIter::Finished;
-                }
+                    let value = elem.value().and_then(|value| Ok(TLV::new(tag, value)));
 
-                Some(value)
+                    if let Ok(seq) = elem.container() {
+                        *self = Self::Seq(seq.tlv_iter());
+                    } else {
+                        *self = TLVElementTLVIter::Finished;
+                    }
+
+                    Some(value)
+                }
             }
             TLVElementTLVIter::Seq(mut iter) => {
                 if let Some(value) = iter.next() {

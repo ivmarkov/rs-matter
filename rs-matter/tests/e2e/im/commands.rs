@@ -20,7 +20,7 @@ use rs_matter::error::Error;
 use rs_matter::interaction_model::messages::ib::{CmdPath, CmdStatus};
 use rs_matter::tlv::{TLVTag, TLVWrite, TLVWriter};
 
-use crate::e2e::tlv::{TestToTLV, TlvTest};
+use crate::e2e::tlv::{TLVTest, TestToTLV};
 use crate::e2e::E2eRunner;
 
 /// A macro for creating a `TestCmdData` instance by using literal values for data.
@@ -129,6 +129,6 @@ impl E2eRunner {
     ) where
         H: AsyncHandler + AsyncMetadata,
     {
-        self.test_one(handler, TlvTest::inv_cmds(input, expected))
+        self.test_one(handler, TLVTest::inv_cmds(input, expected))
     }
 }

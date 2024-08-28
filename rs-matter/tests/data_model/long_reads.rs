@@ -25,152 +25,95 @@ use rs_matter::interaction_model::core::IMStatusCode;
 use rs_matter::interaction_model::messages::ib::AttrPath;
 use rs_matter::interaction_model::messages::msg::{StatusResp, SubscribeResp};
 use rs_matter::interaction_model::messages::GenericPath;
-use rs_matter::tlv::ElementType;
 
 use crate::attr_data;
 use crate::e2e::im::attributes::TestAttrResp;
-use crate::e2e::im::{echo_cluster as echo, TestSubscribeReq};
+use crate::e2e::im::{echo_cluster as echo, ReplyProcessor, TestSubscribeReq};
 use crate::e2e::im::{TestReadReq, TestReportDataMsg};
-use crate::e2e::tlv::TlvTest;
+use crate::e2e::test::E2eTest;
+use crate::e2e::tlv::TLVTest;
 use crate::e2e::ImEngine;
 
 use crate::common::init_env_logger;
 
-static DONT_CARE: &'static ElementType = &ElementType::Null;
-
 static PART_1: &'static [TestAttrResp<'static>] = &[
-    attr_data!(0, 29, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(0, 29, GlobalElements::AttributeList, DONT_CARE),
-    attr_data!(0, 29, descriptor::Attributes::DeviceTypeList, DONT_CARE),
-    attr_data!(0, 29, descriptor::Attributes::ServerList, DONT_CARE),
-    attr_data!(0, 29, descriptor::Attributes::PartsList, DONT_CARE),
-    attr_data!(0, 29, descriptor::Attributes::ClientList, DONT_CARE),
-    attr_data!(0, 40, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(0, 40, GlobalElements::AttributeList, DONT_CARE),
-    attr_data!(
-        0,
-        40,
-        basic_info::AttributesDiscriminants::DMRevision,
-        DONT_CARE
-    ),
-    attr_data!(
-        0,
-        40,
-        basic_info::AttributesDiscriminants::VendorName,
-        DONT_CARE
-    ),
-    attr_data!(
-        0,
-        40,
-        basic_info::AttributesDiscriminants::VendorId,
-        DONT_CARE
-    ),
+    attr_data!(0, 29, GlobalElements::FeatureMap, None),
+    attr_data!(0, 29, GlobalElements::AttributeList, None),
+    attr_data!(0, 29, descriptor::Attributes::DeviceTypeList, None),
+    attr_data!(0, 29, descriptor::Attributes::ServerList, None),
+    attr_data!(0, 29, descriptor::Attributes::PartsList, None),
+    attr_data!(0, 29, descriptor::Attributes::ClientList, None),
+    attr_data!(0, 40, GlobalElements::FeatureMap, None),
+    attr_data!(0, 40, GlobalElements::AttributeList, None),
+    attr_data!(0, 40, basic_info::AttributesDiscriminants::DMRevision, None),
+    attr_data!(0, 40, basic_info::AttributesDiscriminants::VendorName, None),
+    attr_data!(0, 40, basic_info::AttributesDiscriminants::VendorId, None),
     attr_data!(
         0,
         40,
         basic_info::AttributesDiscriminants::ProductName,
-        DONT_CARE
+        None
     ),
-    attr_data!(
-        0,
-        40,
-        basic_info::AttributesDiscriminants::ProductId,
-        DONT_CARE
-    ),
-    attr_data!(
-        0,
-        40,
-        basic_info::AttributesDiscriminants::NodeLabel,
-        DONT_CARE
-    ),
-    attr_data!(0, 40, basic_info::AttributesDiscriminants::HwVer, DONT_CARE),
-    attr_data!(0, 40, basic_info::AttributesDiscriminants::SwVer, DONT_CARE),
+    attr_data!(0, 40, basic_info::AttributesDiscriminants::ProductId, None),
+    attr_data!(0, 40, basic_info::AttributesDiscriminants::NodeLabel, None),
+    attr_data!(0, 40, basic_info::AttributesDiscriminants::HwVer, None),
+    attr_data!(0, 40, basic_info::AttributesDiscriminants::SwVer, None),
     attr_data!(
         0,
         40,
         basic_info::AttributesDiscriminants::SwVerString,
-        DONT_CARE
+        None
     ),
-    attr_data!(
-        0,
-        40,
-        basic_info::AttributesDiscriminants::SerialNo,
-        DONT_CARE
-    ),
-    attr_data!(0, 48, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(0, 48, GlobalElements::AttributeList, DONT_CARE),
-    attr_data!(
-        0,
-        48,
-        gen_comm::AttributesDiscriminants::BreadCrumb,
-        DONT_CARE
-    ),
-    attr_data!(
-        0,
-        48,
-        gen_comm::AttributesDiscriminants::RegConfig,
-        DONT_CARE
-    ),
+    attr_data!(0, 40, basic_info::AttributesDiscriminants::SerialNo, None),
+    attr_data!(0, 48, GlobalElements::FeatureMap, None),
+    attr_data!(0, 48, GlobalElements::AttributeList, None),
+    attr_data!(0, 48, gen_comm::AttributesDiscriminants::BreadCrumb, None),
+    attr_data!(0, 48, gen_comm::AttributesDiscriminants::RegConfig, None),
     attr_data!(
         0,
         48,
         gen_comm::AttributesDiscriminants::LocationCapability,
-        DONT_CARE
+        None
     ),
     attr_data!(
         0,
         48,
         gen_comm::AttributesDiscriminants::BasicCommissioningInfo,
-        DONT_CARE
+        None
     ),
     attr_data!(
         0,
         48,
         gen_comm::AttributesDiscriminants::SupportsConcurrentConnection,
-        DONT_CARE
+        None
     ),
-    attr_data!(0, 49, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(0, 49, GlobalElements::AttributeList, DONT_CARE),
-    attr_data!(0, 49, nw_commissioning::Attributes::MaxNetworks, DONT_CARE),
-    attr_data!(0, 49, nw_commissioning::Attributes::Networks, DONT_CARE),
+    attr_data!(0, 49, GlobalElements::FeatureMap, None),
+    attr_data!(0, 49, GlobalElements::AttributeList, None),
+    attr_data!(0, 49, nw_commissioning::Attributes::MaxNetworks, None),
+    attr_data!(0, 49, nw_commissioning::Attributes::Networks, None),
     attr_data!(
         0,
         49,
         nw_commissioning::Attributes::ConnectMaxTimeSecs,
-        DONT_CARE
+        None
     ),
-    attr_data!(
-        0,
-        49,
-        nw_commissioning::Attributes::InterfaceEnabled,
-        DONT_CARE
-    ),
+    attr_data!(0, 49, nw_commissioning::Attributes::InterfaceEnabled, None),
     attr_data!(
         0,
         49,
         nw_commissioning::Attributes::LastNetworkingStatus,
-        DONT_CARE
+        None
     ),
-    attr_data!(
-        0,
-        49,
-        nw_commissioning::Attributes::LastNetworkID,
-        DONT_CARE
-    ),
+    attr_data!(0, 49, nw_commissioning::Attributes::LastNetworkID, None),
     attr_data!(
         0,
         49,
         nw_commissioning::Attributes::LastConnectErrorValue,
-        DONT_CARE
+        None
     ),
-    attr_data!(0, 60, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(0, 60, GlobalElements::AttributeList, DONT_CARE),
-    attr_data!(
-        0,
-        60,
-        adm_comm::AttributesDiscriminants::WindowStatus,
-        DONT_CARE
-    ),
+    attr_data!(0, 60, GlobalElements::FeatureMap, None),
+    attr_data!(0, 60, GlobalElements::AttributeList, None),
+    attr_data!(0, 60, adm_comm::AttributesDiscriminants::WindowStatus, None),
 ];
 
 static PART_2: &'static [TestAttrResp<'static>] = &[
@@ -178,86 +121,56 @@ static PART_2: &'static [TestAttrResp<'static>] = &[
         0,
         60,
         adm_comm::AttributesDiscriminants::AdminFabricIndex,
-        DONT_CARE
+        None
     ),
     attr_data!(
         0,
         60,
         adm_comm::AttributesDiscriminants::AdminVendorId,
-        DONT_CARE
+        None
     ),
-    attr_data!(0, 62, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(0, 62, GlobalElements::AttributeList, DONT_CARE),
+    attr_data!(0, 62, GlobalElements::FeatureMap, None),
+    attr_data!(0, 62, GlobalElements::AttributeList, None),
     attr_data!(
         0,
         62,
         noc::AttributesDiscriminants::CurrentFabricIndex,
-        DONT_CARE
+        None
     ),
-    attr_data!(0, 62, noc::AttributesDiscriminants::Fabrics, DONT_CARE),
-    attr_data!(
-        0,
-        62,
-        noc::AttributesDiscriminants::SupportedFabrics,
-        DONT_CARE
-    ),
+    attr_data!(0, 62, noc::AttributesDiscriminants::Fabrics, None),
+    attr_data!(0, 62, noc::AttributesDiscriminants::SupportedFabrics, None),
     attr_data!(
         0,
         62,
         noc::AttributesDiscriminants::CommissionedFabrics,
-        DONT_CARE
+        None
     ),
-    attr_data!(0, 31, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(0, 31, GlobalElements::AttributeList, DONT_CARE),
-    attr_data!(0, 31, acl::AttributesDiscriminants::Acl, DONT_CARE),
-    attr_data!(0, 31, acl::AttributesDiscriminants::Extension, DONT_CARE),
-    attr_data!(
-        0,
-        31,
-        acl::AttributesDiscriminants::SubjectsPerEntry,
-        DONT_CARE
-    ),
-    attr_data!(
-        0,
-        31,
-        acl::AttributesDiscriminants::TargetsPerEntry,
-        DONT_CARE
-    ),
-    attr_data!(
-        0,
-        31,
-        acl::AttributesDiscriminants::EntriesPerFabric,
-        DONT_CARE
-    ),
-    attr_data!(0, echo::ID, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(0, echo::ID, GlobalElements::AttributeList, DONT_CARE),
-    attr_data!(0, echo::ID, echo::AttributesDiscriminants::Att1, DONT_CARE),
-    attr_data!(0, echo::ID, echo::AttributesDiscriminants::Att2, DONT_CARE),
-    attr_data!(
-        0,
-        echo::ID,
-        echo::AttributesDiscriminants::AttCustom,
-        DONT_CARE
-    ),
-    attr_data!(1, 29, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(1, 29, GlobalElements::AttributeList, DONT_CARE),
-    attr_data!(1, 29, descriptor::Attributes::DeviceTypeList, DONT_CARE),
-    attr_data!(1, 29, descriptor::Attributes::ServerList, DONT_CARE),
-    attr_data!(1, 29, descriptor::Attributes::PartsList, DONT_CARE),
-    attr_data!(1, 29, descriptor::Attributes::ClientList, DONT_CARE),
-    attr_data!(1, 6, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(1, 6, GlobalElements::AttributeList, DONT_CARE),
-    attr_data!(1, 6, onoff::AttributesDiscriminants::OnOff, DONT_CARE),
-    attr_data!(1, echo::ID, GlobalElements::FeatureMap, DONT_CARE),
-    attr_data!(1, echo::ID, GlobalElements::AttributeList, DONT_CARE),
-    attr_data!(1, echo::ID, echo::AttributesDiscriminants::Att1, DONT_CARE),
-    attr_data!(1, echo::ID, echo::AttributesDiscriminants::Att2, DONT_CARE),
-    attr_data!(
-        1,
-        echo::ID,
-        echo::AttributesDiscriminants::AttCustom,
-        DONT_CARE
-    ),
+    attr_data!(0, 31, GlobalElements::FeatureMap, None),
+    attr_data!(0, 31, GlobalElements::AttributeList, None),
+    attr_data!(0, 31, acl::AttributesDiscriminants::Acl, None),
+    attr_data!(0, 31, acl::AttributesDiscriminants::Extension, None),
+    attr_data!(0, 31, acl::AttributesDiscriminants::SubjectsPerEntry, None),
+    attr_data!(0, 31, acl::AttributesDiscriminants::TargetsPerEntry, None),
+    attr_data!(0, 31, acl::AttributesDiscriminants::EntriesPerFabric, None),
+    attr_data!(0, echo::ID, GlobalElements::FeatureMap, None),
+    attr_data!(0, echo::ID, GlobalElements::AttributeList, None),
+    attr_data!(0, echo::ID, echo::AttributesDiscriminants::Att1, None),
+    attr_data!(0, echo::ID, echo::AttributesDiscriminants::Att2, None),
+    attr_data!(0, echo::ID, echo::AttributesDiscriminants::AttCustom, None),
+    attr_data!(1, 29, GlobalElements::FeatureMap, None),
+    attr_data!(1, 29, GlobalElements::AttributeList, None),
+    attr_data!(1, 29, descriptor::Attributes::DeviceTypeList, None),
+    attr_data!(1, 29, descriptor::Attributes::ServerList, None),
+    attr_data!(1, 29, descriptor::Attributes::PartsList, None),
+    attr_data!(1, 29, descriptor::Attributes::ClientList, None),
+    attr_data!(1, 6, GlobalElements::FeatureMap, None),
+    attr_data!(1, 6, GlobalElements::AttributeList, None),
+    attr_data!(1, 6, onoff::AttributesDiscriminants::OnOff, None),
+    attr_data!(1, echo::ID, GlobalElements::FeatureMap, None),
+    attr_data!(1, echo::ID, GlobalElements::AttributeList, None),
+    attr_data!(1, echo::ID, echo::AttributesDiscriminants::Att1, None),
+    attr_data!(1, echo::ID, echo::AttributesDiscriminants::Att2, None),
+    attr_data!(1, echo::ID, echo::AttributesDiscriminants::AttCustom, None),
 ];
 
 #[test]
@@ -270,31 +183,31 @@ fn test_long_read_success() {
 
     im.add_default_acl();
 
-    im.test_one(
+    im.test_all(
         &handler,
-        TlvTest::read(
-            TestReadReq::reqs(&[AttrPath::new(&GenericPath::new(None, None, None))]),
-            TestReportDataMsg {
-                attr_reports: Some(PART_1),
-                more_chunks: Some(true),
-                suppress_response: Some(false),
-                ..Default::default()
-            },
-        ),
-    );
-
-    im.test_one(
-        &handler,
-        TlvTest::read(
-            StatusResp {
-                status: IMStatusCode::Success,
-            },
-            TestReportDataMsg {
-                attr_reports: Some(PART_2),
-                more_chunks: Some(false),
-                ..Default::default()
-            },
-        ),
+        [
+            &TLVTest::read(
+                TestReadReq::reqs(&[AttrPath::new(&GenericPath::new(None, None, None))]),
+                TestReportDataMsg {
+                    attr_reports: Some(PART_1),
+                    more_chunks: Some(true),
+                    suppress_response: Some(false),
+                    ..Default::default()
+                },
+                ReplyProcessor::remove_attr_data,
+            ) as &dyn E2eTest,
+            &TLVTest::continue_report(
+                StatusResp {
+                    status: IMStatusCode::Success,
+                },
+                TestReportDataMsg {
+                    attr_reports: Some(PART_2),
+                    more_chunks: Some(false),
+                    ..Default::default()
+                },
+                ReplyProcessor::remove_attr_data,
+            ),
+        ],
     );
 }
 
@@ -308,45 +221,42 @@ fn test_long_read_subscription_success() {
 
     im.add_default_acl();
 
-    im.test_one(
+    im.test_all(
         &handler,
-        TlvTest::subscribe(
-            TestSubscribeReq::reqs(&[AttrPath::new(&GenericPath::new(None, None, None))]),
-            TestReportDataMsg {
-                attr_reports: Some(PART_1),
-                more_chunks: Some(true),
-                suppress_response: Some(false),
-                ..Default::default()
-            },
-        ),
-    );
-
-    im.test_one(
-        &handler,
-        TlvTest::read(
-            StatusResp {
-                status: IMStatusCode::Success,
-            },
-            TestReportDataMsg {
-                attr_reports: Some(PART_2),
-                more_chunks: Some(false),
-                suppress_response: Some(false),
-                ..Default::default()
-            },
-        ),
-    );
-
-    im.test_one(
-        &handler,
-        TlvTest::read(
-            StatusResp {
-                status: IMStatusCode::Success,
-            },
-            SubscribeResp {
-                subs_id: 1,
-                max_int: 100,
-                ..Default::default()
-            },
-        ),
+        [
+            &TLVTest::subscribe(
+                TestSubscribeReq::reqs(&[AttrPath::new(&GenericPath::new(None, None, None))]),
+                TestReportDataMsg {
+                    attr_reports: Some(PART_1),
+                    more_chunks: Some(true),
+                    suppress_response: Some(false),
+                    ..Default::default()
+                },
+                ReplyProcessor::remove_attr_data,
+            ) as &dyn E2eTest,
+            &TLVTest::continue_report(
+                StatusResp {
+                    status: IMStatusCode::Success,
+                },
+                TestReportDataMsg {
+                    attr_reports: Some(PART_2),
+                    more_chunks: Some(false),
+                    suppress_response: Some(false),
+                    ..Default::default()
+                },
+                ReplyProcessor::remove_attr_data,
+            ),
+            &TLVTest::subscribe_final(
+                StatusResp {
+                    status: IMStatusCode::Success,
+                },
+                SubscribeResp {
+                    subs_id: 1,
+                    max_int: 100,
+                    ..Default::default()
+                },
+                ReplyProcessor::none,
+            ),
+        ],
     );
 }

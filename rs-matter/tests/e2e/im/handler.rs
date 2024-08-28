@@ -67,7 +67,7 @@ impl<'a> E2eTestHandler<'a> {
                 clusters: &[
                     descriptor::CLUSTER,
                     cluster_on_off::CLUSTER,
-                    //echo_cluster::CLUSTER,
+                    echo_cluster::CLUSTER,
                 ],
                 device_type: DEV_TYPE_ON_OFF_LIGHT,
             },

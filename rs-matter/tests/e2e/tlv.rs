@@ -49,18 +49,20 @@ where
 ///
 /// It validates the differences between the output and the expected payload using a Diff
 /// algorithm, which provides a human readable output.
-pub struct TlvTest<I, E> {
+pub struct TLVTest<I, E, F> {
     pub input_meta: MessageMeta,
     pub input_payload: I,
     pub expected_meta: MessageMeta,
     pub expected_payload: E,
+    pub process_reply: F,
     pub delay_ms: Option<u64>,
 }
 
-impl<I, E> E2eTest for TlvTest<I, E>
+impl<I, E, F> E2eTest for TLVTest<I, E, F>
 where
     I: TestToTLV,
     E: TestToTLV,
+    F: Fn(&TLVElement, &mut [u8]) -> Result<usize, Error>,
 {
     fn fill_input(&self, message_buf: &mut WriteBuf) -> Result<MessageMeta, Error> {
         self.input_payload
@@ -84,6 +86,11 @@ where
         let expected_element = TLVElement::new(wb.as_slice());
 
         let element = TLVElement::new(message);
+
+        let mut buf2 = [0; 1500];
+        let len = (self.process_reply)(&element, &mut buf2)?;
+
+        let element = TLVElement::new(&buf2[..len]);
 
         // TODO: Display a nice diff
         if expected_element != element {

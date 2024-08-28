@@ -15,16 +15,18 @@
  *    limitations under the License.
  */
 
+use bitflags::{bitflags, Flags};
 use rs_matter::error::Error;
 use rs_matter::interaction_model::core::{OpCode, PROTO_ID_INTERACTION_MODEL};
 use rs_matter::interaction_model::messages::ib::{
-    AttrPath, AttrStatus, DataVersionFilter, EventFilter, EventPath,
+    AttrPath, AttrResp, AttrStatus, DataVersionFilter, EventFilter, EventPath,
 };
-use rs_matter::interaction_model::messages::msg::WriteReqTag;
-use rs_matter::tlv::{Slice, TLVTag, TLVWrite, TLVWriter, ToTLV};
+use rs_matter::interaction_model::messages::msg::{ReportDataMsg, WriteReqTag};
+use rs_matter::tlv::{FromTLV, Slice, TLVElement, TLVTag, TLVWrite, TLVWriter, ToTLV};
 use rs_matter::transport::exchange::MessageMeta;
+use rs_matter::utils::writebuf::WriteBuf;
 
-use super::tlv::{TestToTLV, TlvTest};
+use super::tlv::{TLVTest, TestToTLV};
 
 use attributes::{TestAttrData, TestAttrResp};
 use commands::{TestCmdData, TestCmdResp};
@@ -376,8 +378,93 @@ impl<'a> TestToTLV for TestInvResp<'a> {
         Ok(())
     }
 }
-impl<I, E> TlvTest<I, E> {
-    pub const fn read(input_payload: I, expected_payload: E) -> Self {
+
+bitflags! {
+    #[repr(transparent)]
+    //#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct ReplyProcessor: u8 {
+        const REMOVE_ATTRDATA_DATAVER = 0;
+        const REMOVE_ATTRDATA_VALUE = 1;
+    }
+}
+
+impl ReplyProcessor {
+    /// Remove the dataver and/or the data value from the `AttrData` payload, if so requested
+    pub fn process(&self, element: &TLVElement, buf: &mut [u8]) -> Result<usize, Error> {
+        let mut wb = WriteBuf::new(buf);
+        let mut tw = TLVWriter::new(&mut wb);
+
+        if self.intersects(Self::all()) {
+            element.to_tlv(&TLVTag::Anonymous, &mut tw)?;
+
+            return Ok(wb.get_tail());
+        }
+
+        let report_data = ReportDataMsg::from_tlv(&element)?;
+
+        tw.start_struct(&TLVTag::Anonymous)?;
+
+        if let Some(subscription_id) = report_data.subscription_id {
+            tw.u32(&TLVTag::Context(0), subscription_id)?;
+        }
+
+        if let Some(attr_reports) = report_data.attr_reports {
+            tw.start_array(&TLVTag::Context(1))?;
+
+            for attr_report in attr_reports {
+                let mut attr_report = attr_report?;
+
+                if let AttrResp::Data(data) = &mut attr_report {
+                    if self.contains(Self::REMOVE_ATTRDATA_DATAVER) {
+                        data.data_ver = None;
+                    }
+
+                    if self.contains(Self::REMOVE_ATTRDATA_VALUE) {
+                        data.data = TLVElement::new(&[]);
+                    }
+                }
+
+                attr_report.to_tlv(&TLVTag::Anonymous, &mut tw)?;
+            }
+
+            tw.end_container()?;
+        }
+
+        if let Some(event_reports) = report_data.event_reports {
+            tw.bool(&TLVTag::Context(2), event_reports)?;
+        }
+
+        if let Some(more_chunks) = report_data.more_chunks {
+            tw.bool(&TLVTag::Context(3), more_chunks)?;
+        }
+
+        if let Some(suppress_response) = report_data.suppress_response {
+            tw.bool(&TLVTag::Context(4), suppress_response)?;
+        }
+
+        tw.end_container()?;
+
+        Ok(wb.get_tail())
+    }
+
+    pub fn none(element: &TLVElement, buf: &mut [u8]) -> Result<usize, Error> {
+        Self::empty().process(element, buf)
+    }
+
+    pub fn remove_attr_dataver(element: &TLVElement, buf: &mut [u8]) -> Result<usize, Error> {
+        Self::REMOVE_ATTRDATA_DATAVER.process(element, buf)
+    }
+
+    pub fn remove_attr_data<'a>(element: &TLVElement, buf: &mut [u8]) -> Result<usize, Error> {
+        (Self::REMOVE_ATTRDATA_VALUE | Self::REMOVE_ATTRDATA_DATAVER).process(element, buf)
+    }
+}
+
+impl<I, E, F> TLVTest<I, E, F>
+where
+    F: Fn(&TLVElement, &mut [u8]) -> Result<usize, Error>,
+{
+    pub const fn read(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
                 PROTO_ID_INTERACTION_MODEL,
@@ -391,11 +478,31 @@ impl<I, E> TlvTest<I, E> {
                 true,
             ),
             expected_payload,
+            process_reply,
             delay_ms: None,
         }
     }
 
-    pub const fn write(input_payload: I, expected_payload: E) -> Self {
+    pub const fn continue_report(input_payload: I, expected_payload: E, process_reply: F) -> Self {
+        Self {
+            input_meta: MessageMeta::new(
+                PROTO_ID_INTERACTION_MODEL,
+                OpCode::StatusResponse as _,
+                true,
+            ),
+            input_payload,
+            expected_meta: MessageMeta::new(
+                PROTO_ID_INTERACTION_MODEL,
+                OpCode::ReportData as _,
+                true,
+            ),
+            expected_payload,
+            process_reply,
+            delay_ms: None,
+        }
+    }
+
+    pub const fn write(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
                 PROTO_ID_INTERACTION_MODEL,
@@ -409,11 +516,12 @@ impl<I, E> TlvTest<I, E> {
                 true,
             ),
             expected_payload,
+            process_reply,
             delay_ms: None,
         }
     }
 
-    pub const fn subscribe(input_payload: I, expected_payload: E) -> Self {
+    pub const fn subscribe(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
                 PROTO_ID_INTERACTION_MODEL,
@@ -427,11 +535,31 @@ impl<I, E> TlvTest<I, E> {
                 true,
             ),
             expected_payload,
+            process_reply,
             delay_ms: None,
         }
     }
 
-    pub const fn invoke(input_payload: I, expected_payload: E) -> Self {
+    pub const fn subscribe_final(input_payload: I, expected_payload: E, process_reply: F) -> Self {
+        Self {
+            input_meta: MessageMeta::new(
+                PROTO_ID_INTERACTION_MODEL,
+                OpCode::StatusResponse as _,
+                true,
+            ),
+            input_payload,
+            expected_meta: MessageMeta::new(
+                PROTO_ID_INTERACTION_MODEL,
+                OpCode::SubscribeResponse as _,
+                true,
+            ),
+            expected_payload,
+            process_reply,
+            delay_ms: None,
+        }
+    }
+
+    pub const fn invoke(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
                 PROTO_ID_INTERACTION_MODEL,
@@ -445,11 +573,12 @@ impl<I, E> TlvTest<I, E> {
                 true,
             ),
             expected_payload,
+            process_reply,
             delay_ms: None,
         }
     }
 
-    pub const fn timed(input_payload: I, expected_payload: E) -> Self {
+    pub const fn timed(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
                 PROTO_ID_INTERACTION_MODEL,
@@ -463,28 +592,48 @@ impl<I, E> TlvTest<I, E> {
                 true,
             ),
             expected_payload,
+            process_reply,
             delay_ms: None,
         }
     }
 }
 
-impl<'a> TlvTest<TestReadReq<'a>, TestReportDataMsg<'a>> {
+impl<'a>
+    TLVTest<
+        TestReadReq<'a>,
+        TestReportDataMsg<'a>,
+        fn(&TLVElement, &mut [u8]) -> Result<usize, Error>,
+    >
+{
     pub const fn read_attrs(input: &'a [AttrPath], expected: &'a [TestAttrResp<'a>]) -> Self {
         Self::read(
             TestReadReq::reqs(input),
             TestReportDataMsg::reports(expected),
+            ReplyProcessor::remove_attr_dataver,
         )
     }
 }
 
-impl<'a> TlvTest<TestWriteReq<'a>, TestWriteResp<'a>> {
+impl<'a>
+    TLVTest<TestWriteReq<'a>, TestWriteResp<'a>, fn(&TLVElement, &mut [u8]) -> Result<usize, Error>>
+{
     pub const fn write_attrs(input: &'a [TestAttrData<'a>], expected: &'a [AttrStatus]) -> Self {
-        Self::write(TestWriteReq::reqs(input), TestWriteResp::resp(expected))
+        Self::write(
+            TestWriteReq::reqs(input),
+            TestWriteResp::resp(expected),
+            ReplyProcessor::none,
+        )
     }
 }
 
-impl<'a> TlvTest<TestInvReq<'a>, TestInvResp<'a>> {
+impl<'a>
+    TLVTest<TestInvReq<'a>, TestInvResp<'a>, fn(&TLVElement, &mut [u8]) -> Result<usize, Error>>
+{
     pub const fn inv_cmds(input: &'a [TestCmdData<'a>], expected: &'a [TestCmdResp<'a>]) -> Self {
-        Self::invoke(TestInvReq::reqs(input), TestInvResp::resp(expected))
+        Self::invoke(
+            TestInvReq::reqs(input),
+            TestInvResp::resp(expected),
+            ReplyProcessor::none,
+        )
     }
 }

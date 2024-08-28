@@ -28,7 +28,7 @@ use rs_matter::interaction_model::messages::GenericPath;
 use crate::e2e::im::attributes::{TestAttrData, TestAttrResp};
 use crate::e2e::im::echo_cluster::ATTR_WRITE_DEFAULT_VALUE;
 use crate::e2e::im::{echo_cluster, TestReadReq, TestReportDataMsg};
-use crate::e2e::tlv::TlvTest;
+use crate::e2e::tlv::TLVTest;
 use crate::e2e::{ImEngine, IM_ENGINE_PEER_ID};
 use crate::{attr_data, attr_data_path, attr_status};
 
@@ -124,7 +124,7 @@ fn exact_read_attribute() {
 
     // Test2: Only Single response as only single endpoint is allowed
     let input = &[AttrPath::new(&wc_att1)];
-    let expected = &[attr_data_path!(wc_att1, &0x1234u16)];
+    let expected = &[attr_data_path!(wc_att1, Some(&0x1234u16))];
     im.handle_read_reqs(&handler, input, expected);
 }
 
@@ -428,13 +428,13 @@ fn test_read_data_ver() {
             0,
             echo_cluster::ID,
             echo_cluster::AttributesDiscriminants::Att1,
-            &0x1234u16
+            Some(&0x1234u16)
         ),
         attr_data!(
             1,
             echo_cluster::ID,
             echo_cluster::AttributesDiscriminants::Att1,
-            &0x1234u16
+            Some(&0x1234u16)
         ),
     ];
 

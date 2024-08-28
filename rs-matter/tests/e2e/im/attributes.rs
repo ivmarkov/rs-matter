@@ -21,7 +21,7 @@ use rs_matter::interaction_model::messages::ib::{AttrData, AttrPath, AttrResp, A
 use rs_matter::interaction_model::messages::GenericPath;
 use rs_matter::tlv::{TLVTag, TLVWrite, TLVWriter};
 
-use crate::e2e::tlv::{TestToTLV, TlvTest};
+use crate::e2e::tlv::{TLVTest, TestToTLV};
 use crate::e2e::E2eRunner;
 
 /// A macro for creating a `TestAttrResp` instance of variant `Status`.
@@ -76,7 +76,7 @@ macro_rules! attr_data {
 pub struct TestAttrData<'a> {
     pub data_ver: Option<u32>,
     pub path: AttrPath,
-    pub data: &'a dyn TestToTLV,
+    pub data: Option<&'a dyn TestToTLV>,
 }
 
 impl<'a> TestAttrData<'a> {
@@ -85,7 +85,7 @@ impl<'a> TestAttrData<'a> {
         Self {
             data_ver,
             path,
-            data,
+            data: Some(data),
         }
     }
 
@@ -106,7 +106,9 @@ impl<'a> TestToTLV for TestAttrData<'a> {
 
         self.path.test_to_tlv(&TLVTag::Context(1), tw)?;
 
-        self.data.test_to_tlv(&TLVTag::Context(2), tw)?;
+        if let Some(data) = self.data {
+            data.test_to_tlv(&TLVTag::Context(2), tw)?;
+        }
 
         tw.end_container()?;
 
@@ -177,7 +179,7 @@ impl E2eRunner {
     ) where
         H: AsyncHandler + AsyncMetadata,
     {
-        self.test_one(handler, TlvTest::read_attrs(input, expected))
+        self.test_one(handler, TLVTest::read_attrs(input, expected))
     }
 
     /// For backwards compatibility.
@@ -189,6 +191,6 @@ impl E2eRunner {
     ) where
         H: AsyncHandler + AsyncMetadata,
     {
-        self.test_one(handler, TlvTest::write_attrs(input, expected))
+        self.test_one(handler, TLVTest::write_attrs(input, expected))
     }
 }

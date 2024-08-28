@@ -55,9 +55,9 @@ fn test_read_success() {
         AttrPath::new(&ep1_attcustom),
     ];
     let expected = &[
-        attr_data_path!(ep0_att1, &0x1234u16),
-        attr_data_path!(ep1_att2, &0x5678u16),
-        attr_data_path!(ep1_attcustom, &echo_cluster::ATTR_CUSTOM_VALUE),
+        attr_data_path!(ep0_att1, Some(&0x1234u16)),
+        attr_data_path!(ep1_att2, Some(&0x5678u16)),
+        attr_data_path!(ep1_attcustom, Some(&echo_cluster::ATTR_CUSTOM_VALUE)),
     ];
     ImEngine::read_reqs(input, expected);
 }
@@ -128,13 +128,13 @@ fn test_read_wc_endpoint_all_have_clusters() {
             0,
             echo_cluster::ID,
             echo_cluster::AttributesDiscriminants::Att1,
-            &0x1234u16
+            Some(&0x1234u16)
         ),
         attr_data!(
             1,
             echo_cluster::ID,
             echo_cluster::AttributesDiscriminants::Att1,
-            &0x1234u16
+            Some(&0x1234u16)
         ),
     ];
     ImEngine::read_reqs(input, expected);
@@ -158,7 +158,7 @@ fn test_read_wc_endpoint_only_1_has_cluster() {
         1,
         cluster_on_off::ID,
         cluster_on_off::AttributesDiscriminants::OnOff,
-        &false
+        Some(&false)
     )];
     ImEngine::read_reqs(input, expected);
 }
@@ -182,12 +182,12 @@ fn test_read_wc_endpoint_wc_attribute() {
     ];
 
     let expected = &[
-        attr_data!(0, echo_cluster::ID, GlobalElements::FeatureMap, &0u8),
+        attr_data!(0, echo_cluster::ID, GlobalElements::FeatureMap, Some(&0u8)),
         attr_data!(
             0,
             echo_cluster::ID,
             GlobalElements::AttributeList,
-            &attr_list
+            Some(&attr_list)
         ),
         attr_data_path!(
             GenericPath::new(
@@ -195,7 +195,7 @@ fn test_read_wc_endpoint_wc_attribute() {
                 Some(echo_cluster::ID),
                 Some(echo_cluster::AttributesDiscriminants::Att1 as u32),
             ),
-            &0x1234u16
+            Some(&0x1234u16)
         ),
         attr_data_path!(
             GenericPath::new(
@@ -203,7 +203,7 @@ fn test_read_wc_endpoint_wc_attribute() {
                 Some(echo_cluster::ID),
                 Some(echo_cluster::AttributesDiscriminants::Att2 as u32),
             ),
-            &0x5678u16
+            Some(&0x5678u16)
         ),
         attr_data_path!(
             GenericPath::new(
@@ -211,7 +211,7 @@ fn test_read_wc_endpoint_wc_attribute() {
                 Some(echo_cluster::ID),
                 Some(echo_cluster::AttributesDiscriminants::AttCustom as u32),
             ),
-            &echo_cluster::ATTR_CUSTOM_VALUE
+            Some(&echo_cluster::ATTR_CUSTOM_VALUE)
         ),
         attr_data_path!(
             GenericPath::new(
@@ -219,7 +219,7 @@ fn test_read_wc_endpoint_wc_attribute() {
                 Some(echo_cluster::ID),
                 Some(GlobalElements::FeatureMap as u32),
             ),
-            &0u8
+            Some(&0u8)
         ),
         attr_data_path!(
             GenericPath::new(
@@ -227,7 +227,7 @@ fn test_read_wc_endpoint_wc_attribute() {
                 Some(echo_cluster::ID),
                 Some(GlobalElements::AttributeList as u32),
             ),
-            &attr_list
+            Some(&attr_list)
         ),
         attr_data_path!(
             GenericPath::new(
@@ -235,7 +235,7 @@ fn test_read_wc_endpoint_wc_attribute() {
                 Some(echo_cluster::ID),
                 Some(echo_cluster::AttributesDiscriminants::Att1 as u32),
             ),
-            &0x1234u16
+            Some(&0x1234u16)
         ),
         attr_data_path!(
             GenericPath::new(
@@ -243,7 +243,7 @@ fn test_read_wc_endpoint_wc_attribute() {
                 Some(echo_cluster::ID),
                 Some(echo_cluster::AttributesDiscriminants::Att2 as u32),
             ),
-            &0x5678u16
+            Some(&0x5678u16)
         ),
         attr_data_path!(
             GenericPath::new(
@@ -251,7 +251,7 @@ fn test_read_wc_endpoint_wc_attribute() {
                 Some(echo_cluster::ID),
                 Some(echo_cluster::AttributesDiscriminants::AttCustom as u32),
             ),
-            &echo_cluster::ATTR_CUSTOM_VALUE
+            Some(&echo_cluster::ATTR_CUSTOM_VALUE)
         ),
     ];
     ImEngine::read_reqs(input, expected);

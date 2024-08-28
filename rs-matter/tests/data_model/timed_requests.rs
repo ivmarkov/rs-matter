@@ -21,9 +21,11 @@ use rs_matter::interaction_model::messages::msg::{StatusResp, TimedReq};
 use rs_matter::interaction_model::messages::GenericPath;
 
 use crate::e2e::im::attributes::TestAttrData;
-use crate::e2e::im::{echo_cluster, TestInvReq, TestInvResp, TestWriteReq, TestWriteResp};
+use crate::e2e::im::{
+    echo_cluster, ReplyProcessor, TestInvReq, TestInvResp, TestWriteReq, TestWriteResp,
+};
 use crate::e2e::test::E2eTest;
-use crate::e2e::tlv::TlvTest;
+use crate::e2e::tlv::TLVTest;
 use crate::e2e::ImEngine;
 use crate::{echo_req, echo_resp};
 
@@ -66,7 +68,7 @@ fn test_timed_write_fail_and_success() {
     // Test with incorrect handling
     im.test_one(
         &handler,
-        TlvTest::write(
+        TLVTest::write(
             TestWriteReq {
                 timed_request: Some(true),
                 ..TestWriteReq::reqs(input)
@@ -74,30 +76,34 @@ fn test_timed_write_fail_and_success() {
             StatusResp {
                 status: IMStatusCode::Timeout,
             },
+            ReplyProcessor::none,
         ),
     );
 
     // Test with correct handling
-    let tests: [&dyn E2eTest; 2] = [
-        &TlvTest {
-            delay_ms: Some(100),
-            ..TlvTest::timed(
-                TimedReq { timeout: 500 },
-                StatusResp {
-                    status: IMStatusCode::Success,
+    im.test_all(
+        &handler,
+        [
+            &TLVTest {
+                delay_ms: Some(100),
+                ..TLVTest::timed(
+                    TimedReq { timeout: 500 },
+                    StatusResp {
+                        status: IMStatusCode::Success,
+                    },
+                    ReplyProcessor::none,
+                )
+            } as &dyn E2eTest,
+            &TLVTest::write(
+                TestWriteReq {
+                    timed_request: Some(true),
+                    ..TestWriteReq::reqs(input)
                 },
-            )
-        } as _,
-        &TlvTest::write(
-            TestWriteReq {
-                timed_request: Some(true),
-                ..TestWriteReq::reqs(input)
-            },
-            TestWriteResp::resp(expected),
-        ) as _,
-    ];
-
-    im.test_all(&handler, tests);
+                TestWriteResp::resp(expected),
+                ReplyProcessor::none,
+            ),
+        ],
+    );
 
     assert_eq!(val0, handler.echo_cluster(0).att_write.get());
 }
@@ -115,26 +121,29 @@ fn test_timed_cmd_success() {
     im.add_default_acl();
 
     // Test with correct handling
-    let tests: [&dyn E2eTest; 2] = [
-        &TlvTest {
-            delay_ms: Some(100),
-            ..TlvTest::timed(
-                TimedReq { timeout: 2000 },
-                StatusResp {
-                    status: IMStatusCode::Success,
+    im.test_all(
+        &handler,
+        [
+            &TLVTest {
+                delay_ms: Some(100),
+                ..TLVTest::timed(
+                    TimedReq { timeout: 2000 },
+                    StatusResp {
+                        status: IMStatusCode::Success,
+                    },
+                    ReplyProcessor::none,
+                )
+            } as &dyn E2eTest,
+            &TLVTest::invoke(
+                TestInvReq {
+                    timed_request: Some(true),
+                    ..TestInvReq::reqs(input)
                 },
-            )
-        } as _,
-        &TlvTest::invoke(
-            TestInvReq {
-                timed_request: Some(true),
-                ..TestInvReq::reqs(input)
-            },
-            TestInvResp::resp(expected),
-        ) as _,
-    ];
-
-    im.test_all(&handler, tests);
+                TestInvResp::resp(expected),
+                ReplyProcessor::none,
+            ),
+        ],
+    );
 }
 
 #[test]
@@ -148,28 +157,31 @@ fn test_timed_cmd_timeout() {
     let handler = im.handler();
     im.add_default_acl();
 
-    let tests: [&dyn E2eTest; 2] = [
-        &TlvTest {
-            delay_ms: Some(2000),
-            ..TlvTest::timed(
-                TimedReq { timeout: 100 },
-                StatusResp {
-                    status: IMStatusCode::Success,
+    im.test_all(
+        &handler,
+        [
+            &TLVTest {
+                delay_ms: Some(2000),
+                ..TLVTest::timed(
+                    TimedReq { timeout: 100 },
+                    StatusResp {
+                        status: IMStatusCode::Success,
+                    },
+                    ReplyProcessor::none,
+                )
+            } as &dyn E2eTest,
+            &TLVTest::invoke(
+                TestInvReq {
+                    timed_request: Some(true),
+                    ..TestInvReq::reqs(input)
                 },
-            )
-        },
-        &TlvTest::invoke(
-            TestInvReq {
-                timed_request: Some(true),
-                ..TestInvReq::reqs(input)
-            },
-            StatusResp {
-                status: IMStatusCode::Timeout,
-            },
-        ),
-    ];
-
-    im.test_all(&handler, tests);
+                StatusResp {
+                    status: IMStatusCode::Timeout,
+                },
+                ReplyProcessor::none,
+            ),
+        ],
+    );
 }
 
 #[test]
@@ -183,32 +195,35 @@ fn test_timed_cmd_timedout_mismatch() {
     let handler = im.handler();
     im.add_default_acl();
 
-    let tests: [&dyn E2eTest; 2] = [
-        &TlvTest {
-            delay_ms: Some(2000),
-            ..TlvTest::timed(
-                TimedReq { timeout: 0 },
-                StatusResp {
-                    status: IMStatusCode::Success,
+    im.test_all(
+        &handler,
+        [
+            &TLVTest {
+                delay_ms: Some(2000),
+                ..TLVTest::timed(
+                    TimedReq { timeout: 0 },
+                    StatusResp {
+                        status: IMStatusCode::Success,
+                    },
+                    ReplyProcessor::none,
+                )
+            } as &dyn E2eTest,
+            &TLVTest::write(
+                TestInvReq {
+                    timed_request: Some(false),
+                    ..TestInvReq::reqs(input)
                 },
-            )
-        },
-        &TlvTest::write(
-            TestInvReq {
-                timed_request: Some(false),
-                ..TestInvReq::reqs(input)
-            },
-            StatusResp {
-                status: IMStatusCode::TimedRequestMisMatch,
-            },
-        ),
-    ];
-
-    im.test_all(&handler, tests);
+                StatusResp {
+                    status: IMStatusCode::TimedRequestMisMatch,
+                },
+                ReplyProcessor::none,
+            ),
+        ],
+    );
 
     im.test_one(
         &handler,
-        TlvTest::write(
+        TLVTest::write(
             TestInvReq {
                 timed_request: Some(true),
                 ..TestInvReq::reqs(input)
@@ -216,6 +231,7 @@ fn test_timed_cmd_timedout_mismatch() {
             StatusResp {
                 status: IMStatusCode::TimedRequestMisMatch,
             },
+            ReplyProcessor::none,
         ),
     );
 }

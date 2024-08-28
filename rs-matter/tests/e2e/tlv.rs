@@ -24,9 +24,6 @@ use rs_matter::utils::writebuf::WriteBuf;
 
 use super::test::E2eTest;
 
-// For backwards compatibility
-pub type EncodeValue<'a> = &'a dyn TestToTLV;
-
 /// A `ToTLV` trait variant useful for testing.
 ///
 /// Unlike `ToTLV`, `TestToTLV` is `dyn`-friendly, but therefore does

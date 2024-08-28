@@ -17,7 +17,7 @@
 
 use rs_matter::data_model::objects::{AsyncHandler, AsyncMetadata};
 use rs_matter::error::Error;
-use rs_matter::interaction_model::messages::ib::{AttrData, AttrPath, AttrResp, AttrStatus};
+use rs_matter::interaction_model::messages::ib::{AttrPath, AttrStatus};
 use rs_matter::interaction_model::messages::GenericPath;
 use rs_matter::tlv::{TLVTag, TLVWrite, TLVWriter};
 
@@ -88,12 +88,6 @@ impl<'a> TestAttrData<'a> {
             data: Some(data),
         }
     }
-
-    pub fn assert_match<'b>(&self, data: &AttrData<'b>) {
-        assert_eq!(self.data_ver, data.data_ver);
-        assert_eq!(self.path, data.path);
-        // TODO assert_eq!(self.data, T::from_tlv(&data.data).unwrap());
-    }
 }
 
 impl<'a> TestToTLV for TestAttrData<'a> {
@@ -128,19 +122,6 @@ impl<'a> TestAttrResp<'a> {
     /// Create a new `TestAttrResp` instance with an `AttrData` value.
     pub fn data(path: &GenericPath, data: &'a dyn TestToTLV) -> Self {
         Self::AttrData(TestAttrData::new(None, AttrPath::new(path), data))
-    }
-
-    pub fn assert_match(&self, resp: &AttrResp) {
-        match self {
-            TestAttrResp::AttrStatus(expected) => match resp {
-                AttrResp::Status(status) => assert_eq!(expected, status),
-                _ => panic!("Expected status {expected:?}, got {resp:?}"),
-            },
-            TestAttrResp::AttrData(expected) => match resp {
-                AttrResp::Data(data) => expected.assert_match(data),
-                _ => panic!("Expected data {expected:?}, got {resp:?}"),
-            },
-        }
     }
 }
 

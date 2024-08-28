@@ -51,9 +51,16 @@ pub type ImEngine = E2eRunner;
 
 // For backwards compatibility
 pub const IM_ENGINE_PEER_ID: u64 = E2eRunner::PEER_ID;
-// For backwards compatibility
-pub const IM_ENGINE_REMOTE_PEER_ID: u64 = E2eRunner::REMOTE_PEER_ID;
 
+/// A test runner for end-to-end tests.
+///
+/// The runner works by instantiating two `Matter` instances, one for the local node and one for the
+/// remote node which is being tested. The instances are connected over a fake UDP network.
+///
+/// The runner then pre-set a single session between the two nodes and runs all tests in the context
+/// of a single exchange per test run.
+///
+/// All transport-related state is reset between test runs.
 pub struct E2eRunner {
     pub matter: Matter<'static>,
     matter_client: Matter<'static>,
@@ -77,14 +84,18 @@ impl E2eRunner {
         vendor_name: "E2E",
     };
 
+    /// The ID of the local Matter instance
     pub const PEER_ID: u64 = 445566;
+
+    /// The ID of the remote (tested) Matter instance
     pub const REMOTE_PEER_ID: u64 = 123456;
 
-    /// Create the interaction model engine
+    /// Create a new runner with default category IDs.
     pub fn new_default() -> Self {
         Self::new(NocCatIds::default())
     }
 
+    /// Create a new runner with the given category IDs.
     pub fn new(cat_ids: NocCatIds) -> Self {
         Self {
             matter: Self::new_matter(),
@@ -95,6 +106,8 @@ impl E2eRunner {
         }
     }
 
+    /// Initialize the local and remote (tested) Matter instances
+    /// that the runner owns
     pub fn init(&self) -> Result<(), Error> {
         Self::init_matter(
             &self.matter,
@@ -111,14 +124,12 @@ impl E2eRunner {
         )
     }
 
-    pub fn matter(&self) -> &Matter<'static> {
-        &self.matter
-    }
-
+    /// Get the Matter instance for the local node (the test driver).
     pub fn matter_client(&self) -> &Matter<'static> {
         &self.matter_client
     }
 
+    /// Add a default ACL entry to the remote (tested) Matter instance.
     pub fn add_default_acl(&self) {
         // Only allow the standard peer node id of the IM Engine
         let mut default_acl =
@@ -127,6 +138,7 @@ impl E2eRunner {
         self.matter.acl_mgr.borrow_mut().add(default_acl).unwrap();
     }
 
+    /// Initiates a new exchange on the local Matter instance
     pub async fn initiate_exchange(&self) -> Result<Exchange<'_>, Error> {
         Exchange::initiate(
             self.matter_client(),
@@ -137,6 +149,13 @@ impl E2eRunner {
         .await
     }
 
+    /// Runs both the local and the remote (tested) Matter instances,
+    /// by connecting them with a fake UDP network.
+    ///
+    /// The remote (tested) Matter instance will run with the provided DM handler.
+    ///
+    /// The local Matter instance does not have a DM handler as it is only used to
+    /// drive the tests (i.e. it does not have any server clusters and such).
     pub async fn run<H>(&self, handler: H) -> Result<(), Error>
     where
         H: AsyncHandler + AsyncMetadata,
@@ -233,6 +252,7 @@ impl E2eRunner {
     }
 }
 
+/// A dummy device attribute data fetcher that always returns the same hard-coded test data.
 struct E2eDummyDevAtt;
 
 impl DevAttDataFetcher for E2eDummyDevAtt {

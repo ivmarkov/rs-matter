@@ -62,6 +62,7 @@ impl<'a> TestReadReq<'a> {
         }
     }
 
+    /// Create a new `TestReadReq` instance with the provided attribute requests.
     pub const fn reqs(reqs: &'a [AttrPath]) -> Self {
         Self {
             attr_requests: Some(reqs),
@@ -94,6 +95,7 @@ impl<'a> TestWriteReq<'a> {
         }
     }
 
+    /// Create a new `TestWriteReq` instance with the provided write requests.
     pub const fn reqs(reqs: &'a [TestAttrData<'a>]) -> Self {
         Self {
             write_requests: reqs,
@@ -151,13 +153,7 @@ pub struct TestWriteResp<'a> {
 }
 
 impl<'a> TestWriteResp<'a> {
-    /// Create a new `TestWriteResp` instance.
-    pub const fn new() -> Self {
-        Self {
-            write_responses: &[],
-        }
-    }
-
+    /// Create a new `TestWriteResp` instance with the provided write responses.
     pub const fn resp(write_responses: &'a [AttrStatus]) -> Self {
         Self { write_responses }
     }
@@ -197,6 +193,7 @@ impl<'a> TestSubscribeReq<'a> {
         }
     }
 
+    /// Create a new `TestSubscribeReq` instance with the provided attribute requests.
     pub const fn reqs(reqs: &'a [AttrPath]) -> Self {
         Self {
             attr_requests: Some(reqs),
@@ -232,6 +229,7 @@ impl<'a> TestReportDataMsg<'a> {
         }
     }
 
+    /// Create a new `TestReportDataMsg` instance with the provided attribute reports.
     pub const fn reports(reports: &'a [TestAttrResp<'a>]) -> Self {
         Self {
             attr_reports: Some(reports),
@@ -297,6 +295,7 @@ impl<'a> TestInvReq<'a> {
         }
     }
 
+    /// Create a new `TestInvReq` instance with the provided command requests.
     pub const fn reqs(reqs: &'a [TestCmdData<'a>]) -> Self {
         Self {
             inv_requests: Some(reqs),
@@ -343,13 +342,7 @@ pub struct TestInvResp<'a> {
 }
 
 impl<'a> TestInvResp<'a> {
-    pub const fn new() -> Self {
-        Self {
-            suppress_response: None,
-            inv_responses: None,
-        }
-    }
-
+    /// Create a new `TestInvResp` instance with the provided command responses.
     pub const fn resp(inv_responses: &'a [TestCmdResp<'a>]) -> Self {
         Self {
             suppress_response: None,
@@ -455,14 +448,17 @@ impl ReplyProcessor {
         Ok(wb.get_tail())
     }
 
+    /// Process the supplied element without removing any data
     pub fn none(element: &TLVElement, buf: &mut [u8]) -> Result<usize, Error> {
         Self::empty().process(element, buf)
     }
 
+    /// Process the supplied element with removing the dataver from the `AttrData` payload
     pub fn remove_attr_dataver(element: &TLVElement, buf: &mut [u8]) -> Result<usize, Error> {
         Self::REMOVE_ATTRDATA_DATAVER.process(element, buf)
     }
 
+    /// Process the supplied element with removing the data value from the `AttrData` payload
     pub fn remove_attr_data<'a>(element: &TLVElement, buf: &mut [u8]) -> Result<usize, Error> {
         (Self::REMOVE_ATTRDATA_VALUE | Self::REMOVE_ATTRDATA_DATAVER).process(element, buf)
     }
@@ -472,6 +468,8 @@ impl<I, E, F> TLVTest<I, E, F>
 where
     F: Fn(&TLVElement, &mut [u8]) -> Result<usize, Error>,
 {
+    /// Create a new TLV test instance with input payload being the IM `ReadRequest` message
+    /// and the expected payload being the IM `ReportData` message.
     pub const fn read(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
@@ -491,6 +489,8 @@ where
         }
     }
 
+    /// Create a new TLV test instance with input payload being the IM `StatusResponse` message
+    /// and the expected payload being the IM `ReportData` message.
     pub const fn continue_report(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
@@ -510,6 +510,8 @@ where
         }
     }
 
+    /// Create a new TLV test instance with input payload being the IM `WriteRequest` message
+    /// and the expected payload being the IM `WriteResponse` message.
     pub const fn write(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
@@ -529,6 +531,8 @@ where
         }
     }
 
+    /// Create a new TLV test instance with input payload being the IM `SubscribeRequest` message
+    /// and the expected payload being the IM `ReportData` message.
     pub const fn subscribe(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
@@ -548,6 +552,8 @@ where
         }
     }
 
+    /// Create a new TLV test instance with input payload being the IM `StatusResponse` message
+    /// and the expected payload being the IM `SubscribeResponse` message.
     pub const fn subscribe_final(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
@@ -567,6 +573,8 @@ where
         }
     }
 
+    /// Create a new TLV test instance with input payload being the IM `InvokeRequest` message
+    /// and the expected payload being the IM `InvokeResponse` message.
     pub const fn invoke(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
@@ -586,6 +594,8 @@ where
         }
     }
 
+    /// Create a new TLV test instance with input payload being the IM `TimedRequest` message
+    /// and the expected payload being the IM `StatusResponse` message.
     pub const fn timed(input_payload: I, expected_payload: E, process_reply: F) -> Self {
         Self {
             input_meta: MessageMeta::new(
@@ -613,6 +623,11 @@ impl<'a>
         fn(&TLVElement, &mut [u8]) -> Result<usize, Error>,
     >
 {
+    /// Create a new TLV test instance with input payload being the IM `ReadRequest` message
+    /// and the expected payload being the IM `ReportData` message and the input payload and the
+    /// expected payload being the provided attribute requests and responses.
+    ///
+    /// The reply will be processed to remove the data version from the `AttrData` payload.
     pub const fn read_attrs(input: &'a [AttrPath], expected: &'a [TestAttrResp<'a>]) -> Self {
         Self::read(
             TestReadReq::reqs(input),
@@ -625,6 +640,9 @@ impl<'a>
 impl<'a>
     TLVTest<TestWriteReq<'a>, TestWriteResp<'a>, fn(&TLVElement, &mut [u8]) -> Result<usize, Error>>
 {
+    /// Create a new TLV test instance with input payload being the IM `WriteRequest` message
+    /// and the expected payload being the IM `WriteResponse` message and the input payload and the
+    /// expected payload being the provided write requests and responses.
     pub const fn write_attrs(input: &'a [TestAttrData<'a>], expected: &'a [AttrStatus]) -> Self {
         Self::write(
             TestWriteReq::reqs(input),
@@ -637,6 +655,9 @@ impl<'a>
 impl<'a>
     TLVTest<TestInvReq<'a>, TestInvResp<'a>, fn(&TLVElement, &mut [u8]) -> Result<usize, Error>>
 {
+    /// Create a new TLV test instance with input payload being the IM `InvokeRequest` message
+    /// and the expected payload being the IM `InvokeResponse` message and the input payload and the
+    /// expected payload being the provided command requests and responses.
     pub const fn inv_cmds(input: &'a [TestCmdData<'a>], expected: &'a [TestCmdResp<'a>]) -> Self {
         Self::invoke(
             TestInvReq::reqs(input),

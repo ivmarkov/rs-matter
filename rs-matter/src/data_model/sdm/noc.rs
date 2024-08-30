@@ -1,19 +1,19 @@
 /*
- *
- *    Copyright (c) 2020-2022 Project CHIP Authors
- *
- *    Licensed under the Apache License, Version 2.0 (the "License");
- *    you may not use this file except in compliance with the License.
- *    You may obtain a copy of the License at
- *
- *        http://www.apache.org/licenses/LICENSE-2.0
- *
- *    Unless required by applicable law or agreed to in writing, software
- *    distributed under the License is distributed on an "AS IS" BASIS,
- *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *    See the License for the specific language governing permissions and
- *    limitations under the License.
- */
+*
+*    Copyright (c) 2020-2022 Project CHIP Authors
+*
+*    Licensed under the Apache License, Version 2.0 (the "License");
+*    you may not use this file except in compliance with the License.
+*    You may obtain a copy of the License at
+*
+*        http://www.apache.org/licenses/LICENSE-2.0
+*
+*    Unless required by applicable law or agreed to in writing, software
+*    distributed under the License is distributed on an "AS IS" BASIS,
+*    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+*    See the License for the specific language governing permissions and
+*    limitations under the License.
+*/
 
 use core::cell::Cell;
 use core::num::NonZeroU8;
@@ -23,12 +23,12 @@ use log::{error, info, warn};
 use strum::{EnumDiscriminants, FromRepr};
 
 use crate::acl::{AclEntry, AuthMode};
-use crate::cert::{Cert, MAX_CERT_TLV_LEN};
+use crate::cert::{CertRef, MAX_CERT_TLV_LEN};
 use crate::crypto::{self, KeyPair};
 use crate::data_model::objects::*;
 use crate::data_model::sdm::dev_att;
 use crate::fabric::{Fabric, MAX_SUPPORTED_FABRICS};
-use crate::tlv::{FromTLV, OctetStr, TLVElement, TLVWriter, TagType, ToTLV, UtfStr};
+use crate::tlv::{FromTLV, OctetStr, TLVElement, TLVTag, TLVWrite, TLVWriter, ToTLV, UtfStr};
 use crate::transport::exchange::Exchange;
 use crate::transport::session::SessionMode;
 use crate::utils::epoch::Epoch;
@@ -239,7 +239,7 @@ impl NocCluster {
                     }
                     Attributes::CurrentFabricIndex(codec) => codec.encode(writer, attr.fab_idx),
                     Attributes::Fabrics(_) => {
-                        writer.start_array(AttrDataWriter::TAG)?;
+                        writer.start_array(&AttrDataWriter::TAG)?;
                         exchange
                             .matter()
                             .fabric_mgr
@@ -250,7 +250,7 @@ impl NocCluster {
 
                                     entry
                                         .get_fabric_desc(fab_idx, &root_ca_cert)?
-                                        .to_tlv(&mut writer, TagType::Anonymous)?;
+                                        .to_tlv(&TLVTag::Anonymous, &mut *writer)?;
                                 }
 
                                 Ok(())
@@ -324,16 +324,20 @@ impl NocCluster {
 
         let r = AddNocReq::from_tlv(data).map_err(|_| NocStatus::InvalidNOC)?;
 
-        let noc_cert = Cert::new(r.noc_value.0).map_err(|_| NocStatus::InvalidNOC)?;
-        info!("Received NOC as: {}", noc_cert);
+        info!(
+            "Received NOC as: {}",
+            CertRef::new(TLVElement::new(r.noc_value.0))
+        );
 
         let noc = crate::utils::storage::Vec::from_slice(r.noc_value.0)
             .map_err(|_| NocStatus::InvalidNOC)?;
 
         let icac = if let Some(icac_value) = r.icac_value {
             if !icac_value.0.is_empty() {
-                let icac_cert = Cert::new(icac_value.0).map_err(|_| NocStatus::InvalidNOC)?;
-                info!("Received ICAC as: {}", icac_cert);
+                info!(
+                    "Received ICAC as: {}",
+                    CertRef::new(TLVElement::new(icac_value.0))
+                );
 
                 let icac = crate::utils::storage::Vec::from_slice(icac_value.0)
                     .map_err(|_| NocStatus::InvalidNOC)?;
@@ -431,7 +435,7 @@ impl NocCluster {
         let cmd_data = NocResp {
             status_code: status_code as u8,
             fab_idx,
-            debug_txt: UtfStr::new(debug_txt.as_bytes()),
+            debug_txt,
         };
 
         encoder
@@ -454,10 +458,7 @@ impl NocCluster {
                 .matter()
                 .fabric_mgr
                 .borrow_mut()
-                .set_label(
-                    fab_idx,
-                    req.label.as_str().map_err(Error::map_invalid_data_type)?,
-                )
+                .set_label(fab_idx, req.label)
                 .is_err()
             {
                 (NocStatus::LabelConflict, fab_idx.get())
@@ -554,9 +555,9 @@ impl NocCluster {
 
         let mut writer = encoder.with_command(RespCommands::AttReqResp as _)?;
 
-        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX];
+        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX]; // TODO LARGE BUFFER
         let mut attest_element = WriteBuf::new(&mut buf);
-        writer.start_struct(CmdDataWriter::TAG)?;
+        writer.start_struct(&CmdDataWriter::TAG)?;
         add_attestation_element(
             exchange.matter().epoch(),
             exchange.matter().dev_att(),
@@ -588,22 +589,22 @@ impl NocCluster {
         info!("Received data: {}", data);
         let cert_type = get_certchainrequest_params(data).map_err(Error::map_invalid_command)?;
 
-        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX];
-        let len = exchange
+        let mut encoder = Some(encoder);
+
+        exchange
             .matter()
             .dev_att()
-            .get_devatt_data(cert_type, &mut buf)?;
-        let buf = &buf[0..len];
+            .with_devatt_data(cert_type, &mut |data| {
+                let cmd_data = CertChainResp {
+                    cert: OctetStr::new(data),
+                };
 
-        let cmd_data = CertChainResp {
-            cert: OctetStr::new(buf),
-        };
-
-        encoder
-            .with_command(RespCommands::CertChainResp as _)?
-            .set(cmd_data)?;
-
-        Ok(())
+                encoder
+                    .take()
+                    .unwrap()
+                    .with_command(RespCommands::CertChainResp as _)?
+                    .set(cmd_data)
+            })
     }
 
     fn handle_command_csrrequest(
@@ -630,9 +631,9 @@ impl NocCluster {
 
         let mut writer = encoder.with_command(RespCommands::CSRResp as _)?;
 
-        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX];
+        let mut buf: [u8; RESP_MAX] = [0; RESP_MAX]; // TODO LARGE BUFFER
         let mut nocsr_element = WriteBuf::new(&mut buf);
-        writer.start_struct(CmdDataWriter::TAG)?;
+        writer.start_struct(&CmdDataWriter::TAG)?;
         add_nocsrelement(&noc_keypair, req.str.0, &mut nocsr_element, &mut writer)?;
         add_attestation_signature(
             exchange.matter().dev_att(),
@@ -731,19 +732,19 @@ fn add_attestation_element(
     write_buf: &mut WriteBuf,
     t: &mut TLVWriter,
 ) -> Result<(), Error> {
-    let mut cert_dec: [u8; MAX_CERT_DECLARATION_LEN] = [0; MAX_CERT_DECLARATION_LEN];
+    let mut cert_dec: [u8; MAX_CERT_DECLARATION_LEN] = [0; MAX_CERT_DECLARATION_LEN]; // TODO LARGE BUFFER
     let len = dev_att.get_devatt_data(dev_att::DataType::CertDeclaration, &mut cert_dec)?;
     let cert_dec = &cert_dec[0..len];
 
     let epoch = epoch().as_secs() as u32;
     let mut writer = TLVWriter::new(write_buf);
-    writer.start_struct(TagType::Anonymous)?;
-    writer.str16(TagType::Context(1), cert_dec)?;
-    writer.str8(TagType::Context(2), att_nonce)?;
-    writer.u32(TagType::Context(3), epoch)?;
+    writer.start_struct(&TLVTag::Anonymous)?;
+    writer.str(&TLVTag::Context(1), cert_dec)?;
+    writer.str(&TLVTag::Context(2), att_nonce)?;
+    writer.u32(&TLVTag::Context(3), epoch)?;
     writer.end_container()?;
 
-    t.str16(TagType::Context(0), write_buf.as_slice())
+    t.str(&TLVTag::Context(0), write_buf.as_slice())
 }
 
 fn add_attestation_signature(
@@ -761,8 +762,8 @@ fn add_attestation_signature(
     }?;
     attest_element.copy_from_slice(attest_challenge)?;
     let mut signature = [0u8; crypto::EC_SIGNATURE_LEN_BYTES];
-    dac_key.sign_msg(attest_element.as_slice(), &mut signature)?;
-    resp.str8(TagType::Context(1), &signature)
+    dac_key.sign_msg(attest_element.as_slice().iter().copied(), &mut signature)?;
+    resp.str(&TLVTag::Context(1), &signature)
 }
 
 fn add_nocsrelement(
@@ -771,15 +772,15 @@ fn add_nocsrelement(
     write_buf: &mut WriteBuf,
     resp: &mut TLVWriter,
 ) -> Result<(), Error> {
-    let mut csr: [u8; MAX_CSR_LEN] = [0; MAX_CSR_LEN];
+    let mut csr: [u8; MAX_CSR_LEN] = [0; MAX_CSR_LEN]; // TODO LARGE BUFFER
     let csr = noc_keypair.get_csr(&mut csr)?;
     let mut writer = TLVWriter::new(write_buf);
-    writer.start_struct(TagType::Anonymous)?;
-    writer.str8(TagType::Context(1), csr)?;
-    writer.str8(TagType::Context(2), csr_nonce)?;
+    writer.start_struct(&TLVTag::Anonymous)?;
+    writer.str(&TLVTag::Context(1), csr)?;
+    writer.str(&TLVTag::Context(2), csr_nonce)?;
     writer.end_container()?;
 
-    resp.str8(TagType::Context(0), write_buf.as_slice())
+    resp.str(&TLVTag::Context(0), write_buf.as_slice())
 }
 
 fn get_certchainrequest_params(data: &TLVElement) -> Result<DataType, Error> {

@@ -24,12 +24,12 @@ use heapless::String;
 
 use log::info;
 
-use crate::cert::{Cert, MAX_CERT_TLV_LEN};
+use crate::cert::{CertRef, MAX_CERT_TLV_LEN};
 use crate::crypto::{self, hkdf_sha256, HmacSha256, KeyPair};
 use crate::error::{Error, ErrorCode};
 use crate::group_keys::KeySet;
 use crate::mdns::{Mdns, ServiceMode};
-use crate::tlv::{self, FromTLV, OctetStr, TLVList, TLVWriter, TagType, ToTLV, UtfStr};
+use crate::tlv::{FromTLV, OctetStr, TLVElement, TLVWriter, TagType, ToTLV, UtfStr};
 use crate::utils::init::{init, Init};
 use crate::utils::storage::{Vec, WriteBuf};
 
@@ -73,15 +73,15 @@ impl Fabric {
         label: &str,
     ) -> Result<Self, Error> {
         let (node_id, fabric_id) = {
-            let noc_p = Cert::new(&noc)?;
+            let noc_p = CertRef::new(TLVElement::new(&noc));
             (noc_p.get_node_id()?, noc_p.get_fabric_id()?)
         };
 
         let mut compressed_id = [0_u8; COMPRESSED_FABRIC_ID_LEN];
 
         let ipk = {
-            let root_ca_p = Cert::new(&root_ca)?;
-            Fabric::get_compressed_id(root_ca_p.get_pubkey(), fabric_id, &mut compressed_id)?;
+            let root_ca_p = CertRef::new(TLVElement::new(&root_ca));
+            Fabric::get_compressed_id(root_ca_p.pubkey()?, fabric_id, &mut compressed_id)?;
             KeySet::new(ipk, &compressed_id)?
         };
 
@@ -131,7 +131,7 @@ impl Fabric {
         let mut mac = HmacSha256::new(self.ipk.op_key())?;
 
         mac.update(random)?;
-        mac.update(self.get_root_ca()?.get_pubkey())?;
+        mac.update(self.get_root_ca()?.pubkey()?)?;
 
         let mut buf: [u8; 8] = [0; 8];
         LittleEndian::write_u64(&mut buf, self.fabric_id);
@@ -150,7 +150,7 @@ impl Fabric {
     }
 
     pub fn sign_msg(&self, msg: &[u8], signature: &mut [u8]) -> Result<usize, Error> {
-        self.key_pair.sign_msg(msg, signature)
+        self.key_pair.sign_msg(msg.iter().copied(), signature)
     }
 
     pub fn get_node_id(&self) -> u64 {
@@ -161,21 +161,21 @@ impl Fabric {
         self.fabric_id
     }
 
-    pub fn get_root_ca(&self) -> Result<Cert<'_>, Error> {
-        Cert::new(&self.root_ca)
+    pub fn get_root_ca(&self) -> Result<CertRef<'_>, Error> {
+        Ok(CertRef::new(TLVElement::new(&self.root_ca)))
     }
 
     pub fn get_fabric_desc<'a>(
         &'a self,
         fab_idx: NonZeroU8,
-        root_ca_cert: &'a Cert,
+        root_ca_cert: &'a CertRef<'a>,
     ) -> Result<FabricDescriptor<'a>, Error> {
         let desc = FabricDescriptor {
-            root_public_key: OctetStr::new(root_ca_cert.get_pubkey()),
+            root_public_key: OctetStr::new(root_ca_cert.pubkey()?),
             vendor_id: self.vendor_id,
             fabric_id: self.fabric_id,
             node_id: self.node_id,
-            label: UtfStr(self.label.as_bytes()),
+            label: self.label.as_str(),
             fab_idx,
         };
 
@@ -215,13 +215,19 @@ impl FabricMgr {
     }
 
     pub fn load(&mut self, data: &[u8], mdns: &dyn Mdns) -> Result<(), Error> {
+        let entries = TLVElement::new(data).array()?.iter();
+
         for fabric in self.fabrics.iter().flatten() {
             mdns.remove(&fabric.mdns_service_name)?;
         }
 
-        let root = TLVList::new(data).iter().next().ok_or(ErrorCode::Invalid)?;
+        for entry in entries {
+            let entry = entry?;
 
-        tlv::vec_from_tlv(&mut self.fabrics, &root)?;
+            self.fabrics
+                .push(Option::<Fabric>::from_tlv(&entry)?)
+                .map_err(|_| ErrorCode::NoSpace)?;
+        }
 
         for fabric in self.fabrics.iter().flatten() {
             mdns.add(&fabric.mdns_service_name, ServiceMode::Commissioned)?;
@@ -239,11 +245,11 @@ impl FabricMgr {
 
             self.fabrics
                 .as_slice()
-                .to_tlv(&mut tw, TagType::Anonymous)?;
+                .to_tlv(&TagType::Anonymous, &mut tw)?;
 
             self.changed = false;
 
-            let len = tw.get_tail();
+            let len = wb.get_tail();
 
             Ok(Some(&buf[..len]))
         } else {

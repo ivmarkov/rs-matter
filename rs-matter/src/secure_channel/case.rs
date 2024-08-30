@@ -21,12 +21,12 @@ use log::{error, trace};
 
 use crate::{
     alloc,
-    cert::Cert,
+    cert::CertRef,
     crypto::{self, KeyPair, Sha256},
     error::{Error, ErrorCode},
     fabric::Fabric,
     secure_channel::common::{complete_with_status, OpCode, SCStatusCodes},
-    tlv::{get_root_node_struct, FromTLV, OctetStr, TLVWriter, TagType},
+    tlv::{get_root_node_struct, FromTLV, OctetStr, TLVElement, TLVTag, TLVWrite},
     transport::{
         exchange::Exchange,
         session::{NocCatIds, ReservedSession, SessionMode},
@@ -109,7 +109,7 @@ impl Case {
                 .and_then(|fabric_idx| fabric_mgr.get_fabric(fabric_idx));
             if let Some(fabric) = fabric {
                 let root = get_root_node_struct(exchange.rx()?.payload())?;
-                let encrypted = root.find_tag(1)?.slice()?;
+                let encrypted = root.structure()?.ctx(1)?.str()?;
 
                 let mut decrypted = alloc!([0; 800]);
                 if encrypted.len() > decrypted.len() {
@@ -126,19 +126,19 @@ impl Case {
                 let root = get_root_node_struct(decrypted)?;
                 let d = Sigma3Decrypt::from_tlv(&root)?;
 
-                let initiator_noc = alloc!(Cert::new(d.initiator_noc.0)?);
-                let mut initiator_icac = None;
-                if let Some(icac) = d.initiator_icac {
-                    initiator_icac = Some(alloc!(Cert::new(icac.0)?));
-                }
+                let initiator_noc = CertRef::new(TLVElement::new(d.initiator_noc.0));
+                let initiator_icac = d
+                    .initiator_icac
+                    .map(|icac| CertRef::new(TLVElement::new(icac.0)));
 
-                #[cfg(feature = "alloc")]
-                let initiator_icac_mut = initiator_icac.as_deref();
-
-                #[cfg(not(feature = "alloc"))]
-                let initiator_icac_mut = initiator_icac.as_ref();
-
-                if let Err(e) = Case::validate_certs(fabric, &initiator_noc, initiator_icac_mut) {
+                let mut validate_certs_buf = alloc!([0; 800]);
+                let validate_certs_buf = &mut validate_certs_buf[..];
+                if let Err(e) = Case::validate_certs(
+                    fabric,
+                    &initiator_noc,
+                    initiator_icac.as_ref(),
+                    validate_certs_buf,
+                ) {
                     error!("Certificate Chain doesn't match: {}", e);
                     SCStatusCodes::InvalidParameter
                 } else if let Err(e) = Case::validate_sigma3_sign(
@@ -153,7 +153,7 @@ impl Case {
                 } else {
                     // Only now do we add this message to the TT Hash
                     let mut peer_catids: NocCatIds = Default::default();
-                    initiator_noc.get_cat_ids(&mut peer_catids);
+                    initiator_noc.get_cat_ids(&mut peer_catids)?;
                     case_session
                         .tt_hash
                         .as_mut()
@@ -319,13 +319,12 @@ impl Case {
             let encrypted = &encrypted[0..encrypted_len];
 
             exchange
-                .send_with(|_, wb| {
-                    let mut tw = TLVWriter::new(wb);
-                    tw.start_struct(TagType::Anonymous)?;
-                    tw.str8(TagType::Context(1), &our_random)?;
-                    tw.u16(TagType::Context(2), local_sessid)?;
-                    tw.str8(TagType::Context(3), &case_session.our_pub_key)?;
-                    tw.str16(TagType::Context(4), encrypted)?;
+                .send_with(|_, tw| {
+                    tw.start_struct(&TLVTag::Anonymous)?;
+                    tw.str(&TLVTag::Context(1), &our_random)?;
+                    tw.u16(&TLVTag::Context(2), local_sessid)?;
+                    tw.str(&TLVTag::Context(3), &case_session.our_pub_key)?;
+                    tw.str(&TLVTag::Context(4), encrypted)?;
                     tw.end_container()?;
 
                     if !hash_updated {
@@ -333,7 +332,7 @@ impl Case {
                             .tt_hash
                             .as_mut()
                             .unwrap()
-                            .update(wb.as_mut_slice())?;
+                            .update(tw.as_mut_slice())?;
                         hash_updated = true;
                     }
 
@@ -348,29 +347,34 @@ impl Case {
     fn validate_sigma3_sign(
         initiator_noc: &[u8],
         initiator_icac: Option<&[u8]>,
-        initiator_noc_cert: &Cert,
+        initiator_noc_cert: &CertRef,
         sign: &[u8],
         case_session: &CaseSession,
     ) -> Result<(), Error> {
         const MAX_TBS_SIZE: usize = 800;
         let mut buf = [0; MAX_TBS_SIZE];
         let mut write_buf = WriteBuf::new(&mut buf);
-        let mut tw = TLVWriter::new(&mut write_buf);
-        tw.start_struct(TagType::Anonymous)?;
-        tw.str16(TagType::Context(1), initiator_noc)?;
+        let tw = &mut write_buf;
+        tw.start_struct(&TLVTag::Anonymous)?;
+        tw.str(&TLVTag::Context(1), initiator_noc)?;
         if let Some(icac) = initiator_icac {
-            tw.str16(TagType::Context(2), icac)?;
+            tw.str(&TLVTag::Context(2), icac)?;
         }
-        tw.str8(TagType::Context(3), &case_session.peer_pub_key)?;
-        tw.str8(TagType::Context(4), &case_session.our_pub_key)?;
+        tw.str(&TLVTag::Context(3), &case_session.peer_pub_key)?;
+        tw.str(&TLVTag::Context(4), &case_session.our_pub_key)?;
         tw.end_container()?;
 
-        let key = KeyPair::new_from_public(initiator_noc_cert.get_pubkey())?;
-        key.verify_msg(write_buf.as_slice(), sign)?;
+        let key = KeyPair::new_from_public(initiator_noc_cert.pubkey()?)?;
+        key.verify_msg(write_buf.as_slice().iter().copied(), sign)?;
         Ok(())
     }
 
-    fn validate_certs(fabric: &Fabric, noc: &Cert, icac: Option<&Cert>) -> Result<(), Error> {
+    fn validate_certs(
+        fabric: &Fabric,
+        noc: &CertRef,
+        icac: Option<&CertRef>,
+        buf: &mut [u8],
+    ) -> Result<(), Error> {
         let mut verifier = noc.verify_chain_start();
 
         if fabric.get_fabric_id() != noc.get_fabric_id()? {
@@ -384,12 +388,12 @@ impl Case {
                     Err(ErrorCode::Invalid)?;
                 }
             }
-            verifier = verifier.add_cert(icac)?;
+            verifier = verifier.add_cert(icac, buf)?;
         }
 
         verifier
-            .add_cert(&Cert::new(&fabric.root_ca)?)?
-            .finalise()?;
+            .add_cert(&CertRef::new(TLVElement::new(&fabric.root_ca)), buf)?
+            .finalise(buf)?;
         Ok(())
     }
 
@@ -519,15 +523,15 @@ impl Case {
         )?;
 
         let mut write_buf = WriteBuf::new(out);
-        let mut tw = TLVWriter::new(&mut write_buf);
-        tw.start_struct(TagType::Anonymous)?;
-        tw.str16(TagType::Context(1), &fabric.noc)?;
+        let tw = &mut write_buf;
+        tw.start_struct(&TLVTag::Anonymous)?;
+        tw.str(&TLVTag::Context(1), &fabric.noc)?;
         if let Some(icac_cert) = fabric.icac.as_ref() {
-            tw.str16(TagType::Context(2), icac_cert)?
+            tw.str(&TLVTag::Context(2), icac_cert)?
         };
 
-        tw.str8(TagType::Context(3), signature)?;
-        tw.str8(TagType::Context(4), &resumption_id)?;
+        tw.str(&TLVTag::Context(3), signature)?;
+        tw.str(&TLVTag::Context(4), &resumption_id)?;
         tw.end_container()?;
         //println!("TBE is {:x?}", write_buf.as_borrow_slice());
         let nonce: [u8; crypto::AEAD_NONCE_LEN_BYTES] = [
@@ -558,17 +562,17 @@ impl Case {
         signature: &mut [u8],
     ) -> Result<usize, Error> {
         // We are guaranteed this unwrap will work
-        const MAX_TBS_SIZE: usize = 800;
+        const MAX_TBS_SIZE: usize = 800; // TODO LARGE BUFFER
         let mut buf = [0; MAX_TBS_SIZE];
         let mut write_buf = WriteBuf::new(&mut buf);
-        let mut tw = TLVWriter::new(&mut write_buf);
-        tw.start_struct(TagType::Anonymous)?;
-        tw.str16(TagType::Context(1), &fabric.noc)?;
+        let tw = &mut write_buf;
+        tw.start_struct(&TLVTag::Anonymous)?;
+        tw.str(&TLVTag::Context(1), &fabric.noc)?;
         if let Some(icac_cert) = fabric.icac.as_deref() {
-            tw.str16(TagType::Context(2), icac_cert)?;
+            tw.str(&TLVTag::Context(2), icac_cert)?;
         }
-        tw.str8(TagType::Context(3), our_pub_key)?;
-        tw.str8(TagType::Context(4), peer_pub_key)?;
+        tw.str(&TLVTag::Context(3), our_pub_key)?;
+        tw.str(&TLVTag::Context(4), peer_pub_key)?;
         tw.end_container()?;
         //println!("TBS is {:x?}", write_buf.as_borrow_slice());
         fabric.sign_msg(write_buf.as_slice(), signature)

@@ -16,7 +16,7 @@
  */
 
 use rs_matter::data_model::sdm::dev_att::{DataType, DevAttDataFetcher};
-use rs_matter::error::{Error, ErrorCode};
+use rs_matter::error::Error;
 
 pub struct HardCodedDevAtt {}
 
@@ -146,20 +146,17 @@ const CERT_DECLARATION: [u8; 541] = [
 ];
 
 impl DevAttDataFetcher for HardCodedDevAtt {
-    fn get_devatt_data(&self, data_type: DataType, data: &mut [u8]) -> Result<usize, Error> {
-        let src = match data_type {
-            DataType::CertDeclaration => &CERT_DECLARATION[..],
-            DataType::PAI => &PAI_CERT[..],
-            DataType::DAC => &DAC_CERT[..],
-            DataType::DACPubKey => &DAC_PUBKEY[..],
-            DataType::DACPrivKey => &DAC_PRIVKEY[..],
-        };
-        if src.len() <= data.len() {
-            let data = &mut data[0..src.len()];
-            data.copy_from_slice(src);
-            Ok(src.len())
-        } else {
-            Err(ErrorCode::NoSpace.into())
-        }
+    fn with_devatt_data(
+        &self,
+        data_type: DataType,
+        f: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        f(match data_type {
+            DataType::CertDeclaration => &CERT_DECLARATION,
+            DataType::PAI => &PAI_CERT,
+            DataType::DAC => &DAC_CERT,
+            DataType::DACPubKey => &DAC_PUBKEY,
+            DataType::DACPrivKey => &DAC_PRIVKEY,
+        })
     }
 }

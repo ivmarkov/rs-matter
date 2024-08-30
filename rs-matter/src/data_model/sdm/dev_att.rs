@@ -15,7 +15,7 @@
  *    limitations under the License.
  */
 
-use crate::error::Error;
+use crate::error::{Error, ErrorCode};
 
 /// Device Attestation Data Type
 pub enum DataType {
@@ -36,10 +36,47 @@ pub enum DataType {
 /// Objects that implement this trait allow the Matter subsystem to query the object
 /// for the Device Attestation data that is programmed in the Matter device.
 pub trait DevAttDataFetcher {
-    /// Get Device Attestation Data
-    ///
-    /// This API is expected to return the particular Device Attestation data as is
-    /// requested by the Matter subsystem.
+    /// Get the data in the provided buffer
+    fn get_devatt_data(&self, data_type: DataType, buf: &mut [u8]) -> Result<usize, Error> {
+        let mut len = 0;
+
+        self.with_devatt_data(data_type, &mut |data| {
+            if data.len() > buf.len() {
+                Err(ErrorCode::NoSpace)?;
+            }
+
+            buf[..data.len()].copy_from_slice(data);
+
+            len = data.len();
+
+            Ok(())
+        })?;
+
+        Ok(len)
+    }
+
+    /// Get the data in the provided callback
     /// The type of data that can be queried is defined in the [DataType] enum.
-    fn get_devatt_data(&self, data_type: DataType, data: &mut [u8]) -> Result<usize, Error>;
+    fn with_devatt_data(
+        &self,
+        data_type: DataType,
+        f: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error>;
+}
+
+impl<T> DevAttDataFetcher for &T
+where
+    T: DevAttDataFetcher,
+{
+    fn get_devatt_data(&self, data_type: DataType, buf: &mut [u8]) -> Result<usize, Error> {
+        (*self).get_devatt_data(data_type, buf)
+    }
+
+    fn with_devatt_data(
+        &self,
+        data_type: DataType,
+        f: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        (*self).with_devatt_data(data_type, f)
+    }
 }

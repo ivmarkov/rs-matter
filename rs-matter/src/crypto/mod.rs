@@ -16,7 +16,7 @@
  */
 use crate::{
     error::{Error, ErrorCode},
-    tlv::{FromTLV, TLVWriter, TagType, ToTLV},
+    tlv::{FromTLV, TLVTag, TLVWrite, ToTLV, TLV},
 };
 
 pub const SYMM_KEY_LEN_BITS: usize = 128;
@@ -67,32 +67,32 @@ impl<'a> FromTLV<'a> for KeyPair {
     where
         Self: Sized,
     {
-        t.confirm_array()?.enter();
+        let array = t.array()?;
+        let mut iter = array.iter();
 
-        if let Some(mut array) = t.enter() {
-            let pub_key = array.next().ok_or(ErrorCode::Invalid)?.slice()?;
-            let priv_key = array.next().ok_or(ErrorCode::Invalid)?.slice()?;
+        let pub_key = iter.next().ok_or(ErrorCode::Invalid)??.str()?;
+        let priv_key = iter.next().ok_or(ErrorCode::Invalid)??.str()?;
 
-            KeyPair::new_from_components(pub_key, priv_key)
-        } else {
-            Err(ErrorCode::Invalid.into())
-        }
+        KeyPair::new_from_components(pub_key, priv_key)
     }
 }
 
 impl ToTLV for KeyPair {
-    fn to_tlv(&self, tw: &mut TLVWriter, tag: TagType) -> Result<(), Error> {
-        let mut buf = [0; 1024]; // TODO
-
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
         tw.start_array(tag)?;
 
-        let size = self.get_public_key(&mut buf)?;
-        tw.str16(TagType::Anonymous, &buf[..size])?;
+        self.with_public_key(|key| tw.str(&TLVTag::Anonymous, key))?;
 
-        let size = self.get_private_key(&mut buf)?;
-        tw.str16(TagType::Anonymous, &buf[..size])?;
+        self.with_private_key(|key| tw.str(&TLVTag::Anonymous, key))?;
 
         tw.end_container()
+    }
+
+    fn tlv_iter(&self, _tag: TLVTag) -> impl Iterator<Item = Result<TLV, Error>> {
+        unimplemented!("Not implemented for `KeyPair`");
+
+        #[allow(unreachable_code)]
+        core::iter::empty()
     }
 }
 
@@ -105,15 +105,21 @@ mod tests {
     #[test]
     fn test_verify_msg_success() {
         let key = KeyPair::new_from_public(&test_vectors::PUB_KEY1).unwrap();
-        key.verify_msg(&test_vectors::MSG1_SUCCESS, &test_vectors::SIGNATURE1)
-            .unwrap();
+        key.verify_msg(
+            test_vectors::MSG1_SUCCESS.iter().copied(),
+            &test_vectors::SIGNATURE1,
+        )
+        .unwrap();
     }
     #[test]
     fn test_verify_msg_fail() {
         let key = KeyPair::new_from_public(&test_vectors::PUB_KEY1).unwrap();
         assert_eq!(
-            key.verify_msg(&test_vectors::MSG1_FAIL, &test_vectors::SIGNATURE1)
-                .map_err(|e| e.code()),
+            key.verify_msg(
+                test_vectors::MSG1_FAIL.iter().copied(),
+                &test_vectors::SIGNATURE1
+            )
+            .map_err(|e| e.code()),
             Err(ErrorCode::InvalidSignature)
         );
     }

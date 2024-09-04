@@ -78,7 +78,7 @@ fn main() -> Result<(), Error> {
         // e.g., an opt-level of "0" will require a several times' larger stack.
         //
         // Optimizing/lowering `rs-matter` memory consumption is an ongoing topic.
-        .stack_size(54 * 1024)
+        .stack_size(45 * 1024)
         .spawn(run)
         .unwrap();
 
@@ -91,9 +91,10 @@ fn run() -> Result<(), Error> {
     );
 
     info!(
-        "Matter memory: Matter={}B, IM Buffers={}B",
+        "Matter memory: Matter (BSS)={}B, IM Buffers (BSS)={}B, Subscriptions (BSS)={}B",
         core::mem::size_of::<Matter>(),
-        core::mem::size_of::<PooledBuffers<10, NoopRawMutex, IMBuffer>>()
+        core::mem::size_of::<PooledBuffers<10, NoopRawMutex, IMBuffer>>(),
+        core::mem::size_of::<Subscriptions<3>>()
     );
 
     let matter = MATTER.uninit().init_with(Matter::init(
@@ -115,8 +116,6 @@ fn run() -> Result<(), Error> {
 
     info!("IM buffers initialized");
 
-    let mut mdns = pin!(run_mdns(&matter));
-
     let on_off = cluster_on_off::OnOffCluster::new(Dataver::new_rand(matter.rand()));
 
     let subscriptions = SUBSCRIPTIONS.uninit().init_with(Subscriptions::init());
@@ -128,7 +127,7 @@ fn run() -> Result<(), Error> {
     // All other subscription requests will be turned down with "resource exhausted"
     let responder = DefaultResponder::new(&matter, buffers, &subscriptions, dm_handler);
     info!(
-        "Responder memory: Responder={}B, Runner={}B",
+        "Responder memory: Responder (BSS)={}B, Runner fut (stack)={}B",
         core::mem::size_of_val(&responder),
         core::mem::size_of_val(&responder.run::<4, 4>())
     );
@@ -156,6 +155,25 @@ fn run() -> Result<(), Error> {
     let socket = async_io::Async::<UdpSocket>::bind(MATTER_SOCKET_BIND_ADDR)?;
 
     // Run the Matter and mDNS transports
+    info!(
+        "Transport memory: Transport fut (stack)={}B, mDNS fut (stack)={}B",
+        core::mem::size_of_val(&matter.run(
+            &socket,
+            &socket,
+            Some((
+                CommissioningData {
+                    // TODO: Hard-coded for now
+                    verifier: VerifierData::new_with_pw(123456, matter.rand()),
+                    discriminator: 250,
+                },
+                Default::default(),
+            )),
+        )),
+        core::mem::size_of_val(&run_mdns(&matter))
+    );
+
+    let mut mdns = pin!(run_mdns(&matter));
+
     let mut transport = pin!(matter.run(
         &socket,
         &socket,
@@ -171,8 +189,13 @@ fn run() -> Result<(), Error> {
 
     // NOTE:
     // Replace with your own persister for e.g. `no_std` environments
-
     let psm = PSM.uninit().init_with(Psm::init());
+
+    info!(
+        "Persist memory: Persist (BSS)={}B, Persist fut (stack)={}B",
+        core::mem::size_of::<Psm<4096>>(),
+        core::mem::size_of_val(&psm.run(std::env::temp_dir().join("rs-matter"), &matter))
+    );
 
     let mut persist = pin!(psm.run(std::env::temp_dir().join("rs-matter"), &matter));
 
@@ -235,6 +258,7 @@ async fn run_mdns(matter: &Matter<'_>) -> Result<(), Error> {
 
     // NOTE:
     // Replace with your own network initialization for e.g. `no_std` environments
+    #[inline(never)]
     fn initialize_network() -> Result<(Ipv4Addr, Ipv6Addr, u32), Error> {
         use log::error;
         use nix::{net::if_::InterfaceFlags, sys::socket::SockaddrIn6};

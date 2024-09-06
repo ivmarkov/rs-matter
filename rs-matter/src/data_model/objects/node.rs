@@ -148,7 +148,7 @@ impl<'a, const N: usize> DynamicNode<'a, N> {
 
     /// Return a static node view of the dynamic node.
     ///
-    /// Nercessary, because the `Metadata` trait needs a `Node` type
+    /// Necessary, because the `Metadata` trait needs a `Node` type
     pub fn node(&self) -> Node<'_> {
         Node {
             id: self.id,
@@ -376,13 +376,13 @@ where
     item: Option<T>,
     /// The current endpoint index.
     /// Might not yet be computed (UNKNOWN_INDEX).
-    endpoint_index: usize,
+    endpoint_index: u32,
     /// The current cluster index.
     /// Might not yet be computed (UNKNOWN_INDEX).
-    cluster_index: usize,
+    cluster_index: u16,
     /// The current leaf index.
     /// Might not yet be computed (UNKNOWN_INDEX).
-    leaf_index: usize,
+    leaf_index: u16,
 }
 
 impl<'a, T, I> PathExpander<'a, T, I>
@@ -391,9 +391,11 @@ where
     T: PathExpansionItem<'a>,
 {
     /// The index value for an unknown index.
-    /// Used instead of `Option<usize>` to save memory.
+    /// Used instead of `Option<u16>` to save memory.
     /// (`Option<usize>` would be 2 words due to memory alignment, `usize` is 1 word)
-    const UNKNOWN_INDEX: usize = usize::MAX;
+    const UNKNOWN_INDEX: u16 = u16::MAX;
+    /// Ditto but for `u32`
+    const UNKNOWN_INDEX_EP: u32 = u32::MAX;
 
     /// Create a new path expander with the given node, accessor, and paths.
     pub const fn new(node: &'a Node<'a>, accessor: &'a Accessor<'a>, paths: Option<I>) -> Self {
@@ -402,7 +404,7 @@ where
             accessor,
             items: paths,
             item: None,
-            endpoint_index: Self::UNKNOWN_INDEX,
+            endpoint_index: Self::UNKNOWN_INDEX_EP,
             cluster_index: Self::UNKNOWN_INDEX,
             leaf_index: Self::UNKNOWN_INDEX,
         }
@@ -415,7 +417,7 @@ where
             return false;
         };
 
-        if self.endpoint_index == Self::UNKNOWN_INDEX {
+        if self.endpoint_index == Self::UNKNOWN_INDEX_EP {
             // The index of the expanded endpoint is not yet known. Compute it.
 
             if let Some(endpoint) = path.endpoint {
@@ -430,7 +432,7 @@ where
                     return false;
                 };
 
-                self.endpoint_index = endpoint_index;
+                self.endpoint_index = endpoint_index as _;
             } else if self.node.endpoints.is_empty() {
                 // No endpoints in the node and the path is a wildcard one
                 return false;
@@ -438,7 +440,9 @@ where
                 // Position on the first endpoint for a wildcard traversal
                 self.endpoint_index = 0;
             }
-        } else if path.endpoint.is_some() || self.endpoint_index == self.node.endpoints.len() - 1 {
+        } else if path.endpoint.is_some()
+            || self.endpoint_index == (self.node.endpoints.len() - 1) as _
+        {
             // Cannot move to the next endpoint
             // Bail out with `false` and indicate to the main iterator that it needs to fetch the next item
             return false;
@@ -469,7 +473,7 @@ where
                 if let Some(cluster) = path.cluster {
                     // Non-wildcard cluster case
 
-                    let Some(cluster_index) = self.node.endpoints[self.endpoint_index]
+                    let Some(cluster_index) = self.node.endpoints[self.endpoint_index as usize]
                         .clusters
                         .iter()
                         .position(|cl| cl.id == cluster)
@@ -479,8 +483,11 @@ where
                         continue;
                     };
 
-                    self.cluster_index = cluster_index;
-                } else if self.node.endpoints[self.endpoint_index].clusters.is_empty() {
+                    self.cluster_index = cluster_index as _;
+                } else if self.node.endpoints[self.endpoint_index as usize]
+                    .clusters
+                    .is_empty()
+                {
                     // No clusters in the current endpoint and the path is a wildcard one, move to the next endpoint
                     continue;
                 } else {
@@ -492,7 +499,11 @@ where
             }
 
             if path.cluster.is_some()
-                || self.cluster_index == self.node.endpoints[self.endpoint_index].clusters.len() - 1
+                || self.cluster_index
+                    == (self.node.endpoints[self.endpoint_index as usize]
+                        .clusters
+                        .len()
+                        - 1) as _
             {
                 // Cannot move to the next cluster as the clusters of the current endpoint are exchausted
                 // or the cluster is a non-wildcard one.
@@ -527,7 +538,8 @@ where
                 }
             }
 
-            let cluster = &self.node.endpoints[self.endpoint_index].clusters[self.cluster_index];
+            let cluster = &self.node.endpoints[self.endpoint_index as usize].clusters
+                [self.cluster_index as usize];
             let cluster_leaves_len = if command {
                 cluster.commands.len()
             } else {
@@ -553,7 +565,7 @@ where
                         continue;
                     };
 
-                    self.leaf_index = leaf_index;
+                    self.leaf_index = leaf_index as _;
                 } else if cluster_leaves_len == 0 {
                     // No commands in the current cluster and the leaf is a wildcard one, move to the next cluster
                     continue;
@@ -565,7 +577,7 @@ where
                 break true;
             }
 
-            if path.leaf.is_some() || self.leaf_index == cluster_leaves_len - 1 {
+            if path.leaf.is_some() || self.leaf_index == (cluster_leaves_len - 1) as _ {
                 // Cannot move to the next leaf as the leaves of the current cluster are exchausted
                 // or the leaf is a non-wildcard one.
                 // Try to move to the next cluster
@@ -609,11 +621,11 @@ where
             if self.next_leaf() {
                 // Stepped-in. All indices valid now
 
-                let endpoint = &self.node.endpoints[self.endpoint_index];
-                let cluster = &endpoint.clusters[self.cluster_index];
+                let endpoint = &self.node.endpoints[self.endpoint_index as usize];
+                let cluster = &endpoint.clusters[self.cluster_index as usize];
 
                 let (leaf_id, check) = if matches!(T::LEAF_ACCESS, LeafAccess::Command) {
-                    let command_id = cluster.commands[self.leaf_index];
+                    let command_id = cluster.commands[self.leaf_index as usize];
 
                     (
                         command_id,
@@ -623,7 +635,7 @@ where
                         ),
                     )
                 } else {
-                    let attr_id = cluster.attributes[self.leaf_index].id as _;
+                    let attr_id = cluster.attributes[self.leaf_index as usize].id as _;
 
                     (
                         attr_id,
@@ -631,7 +643,7 @@ where
                             self.accessor,
                             GenericPath::new(Some(endpoint.id), Some(cluster.id), Some(attr_id)),
                             matches!(T::LEAF_ACCESS, LeafAccess::AttrWrite),
-                            cluster.attributes[self.leaf_index].access,
+                            cluster.attributes[self.leaf_index as usize].access,
                         ),
                     )
                 };
@@ -663,7 +675,7 @@ where
                 if just_fetched && !self.item.as_ref().unwrap().path().is_wildcard() {
                     // Need to report an error status for non-wildcard paths which do not exist in our meta-data
                     let status;
-                    if self.endpoint_index == Self::UNKNOWN_INDEX {
+                    if self.endpoint_index == Self::UNKNOWN_INDEX_EP {
                         status = IMStatusCode::UnsupportedEndpoint;
                     } else if self.cluster_index == Self::UNKNOWN_INDEX {
                         status = IMStatusCode::UnsupportedCluster;

@@ -201,10 +201,10 @@ struct AttrReadPath<'a> {
 /// A helper type for `PathExpander` that captures what type of expansion is being done:
 /// Read requests, write requests, or invoke requests.
 #[derive(Debug)]
-enum LeafAccess {
-    AttrRead,
-    AttrWrite,
-    Command,
+enum Operation {
+    Read,
+    Write,
+    Invoke,
 }
 
 /// A helper trait type for `PathExpander` modeling a generic "item which can be expanded".
@@ -212,8 +212,8 @@ enum LeafAccess {
 /// The item must contain a path (`GenericPath`) but might contain other data as well,
 /// which needs to be carried over to the expanded output.
 trait PathExpansionItem<'a> {
-    /// Leaf type (attr for reading, attr for writing, command)
-    const LEAF_ACCESS: LeafAccess;
+    /// Path of expansion for what type of operation: read (or subscribe which is considered the same), write or invoke
+    const OPERATION: Operation;
 
     /// The type of the expanded item
     type Expanded<'n>;
@@ -242,7 +242,7 @@ trait PathExpansionItem<'a> {
 
 /// `PathExpansionItem` implementation for `AttrReadPath` (attr read requests expansion).
 impl<'a> PathExpansionItem<'a> for AttrReadPath<'a> {
-    const LEAF_ACCESS: LeafAccess = LeafAccess::AttrRead;
+    const OPERATION: Operation = Operation::Read;
 
     type Expanded<'n> = AttrDetails<'n>;
     type Status = AttrStatus;
@@ -279,7 +279,7 @@ impl<'a> PathExpansionItem<'a> for AttrReadPath<'a> {
 
 /// `PathExpansionItem` implementation for `AttrData` (attr write requests expansion).
 impl<'a> PathExpansionItem<'a> for AttrData<'a> {
-    const LEAF_ACCESS: LeafAccess = LeafAccess::AttrWrite;
+    const OPERATION: Operation = Operation::Write;
 
     type Expanded<'n> = (AttrDetails<'n>, TLVElement<'n>);
     type Status = AttrStatus;
@@ -321,7 +321,7 @@ impl<'a> PathExpansionItem<'a> for AttrData<'a> {
 
 /// `PathExpansionItem` implementation for `CmdData` (command requests expansion).
 impl<'a> PathExpansionItem<'a> for CmdData<'a> {
-    const LEAF_ACCESS: LeafAccess = LeafAccess::Command;
+    const OPERATION: Operation = Operation::Invoke;
 
     type Expanded<'n> = (CmdDetails<'n>, TLVElement<'n>);
     type Status = CmdStatus;
@@ -390,13 +390,6 @@ where
     I: Iterator<Item = Result<T, Error>>,
     T: PathExpansionItem<'a>,
 {
-    /// The index value for an unknown index.
-    /// Used instead of `Option<u16>` to save memory.
-    /// (`Option<usize>` would be 2 words due to memory alignment, `usize` is 1 word)
-    const UNKNOWN_INDEX: u16 = u16::MAX;
-    /// Ditto but for `u32`
-    const UNKNOWN_INDEX_EP: u32 = u32::MAX;
-
     /// Create a new path expander with the given node, accessor, and paths.
     pub const fn new(node: &'a Node<'a>, accessor: &'a Accessor<'a>, paths: Option<I>) -> Self {
         Self {
@@ -404,190 +397,130 @@ where
             accessor,
             items: paths,
             item: None,
-            endpoint_index: Self::UNKNOWN_INDEX_EP,
-            cluster_index: Self::UNKNOWN_INDEX,
-            leaf_index: Self::UNKNOWN_INDEX,
+            endpoint_index: 0,
+            cluster_index: 0,
+            leaf_index: 0,
         }
     }
 
-    /// Move to the next endpoint in the path.
-    fn next_endpoint(&mut self) -> bool {
-        let Some(path) = self.item.as_ref().map(PathExpansionItem::path) else {
-            // No item to expand. Indicate to the main iterator that it needs to fetch the next one
-            return false;
-        };
+    /// Move to the next (endpoint, cluster, leaf) triple that matches the path
+    /// of the current item.
+    ///
+    /// Returns an error status if the no match is found, where the error status indicates
+    /// whether the endpoint, the cluster, or the leaf is not matching.
+    ///
+    /// This method should only be called when `self.item` is `Some` or else it will panic.
+    fn next_for_path(&mut self) -> Result<Option<(EndptId, ClusterId, u32)>, IMStatusCode> {
+        let path = self.item.as_ref().map(PathExpansionItem::path).unwrap();
 
-        if self.endpoint_index == Self::UNKNOWN_INDEX_EP {
-            // The index of the expanded endpoint is not yet known. Compute it.
+        let command = matches!(T::OPERATION, Operation::Invoke);
 
-            if let Some(endpoint) = path.endpoint {
-                // Non-wildcard endpoint case
-
-                let Some(endpoint_index) =
-                    self.node.endpoints.iter().position(|ep| ep.id == endpoint)
-                else {
-                    // This endpoint does not exist in our meta-data
-                    // bail-out with `false`
-
-                    return false;
-                };
-
-                self.endpoint_index = endpoint_index as _;
-            } else if self.node.endpoints.is_empty() {
-                // No endpoints in the node and the path is a wildcard one
-                return false;
-            } else {
-                // Position on the first endpoint for a wildcard traversal
-                self.endpoint_index = 0;
+        // Do some basic checks on wildcards, as not all wildcards are supported for each type of operation
+        if !matches!(T::OPERATION, Operation::Read) {
+            if path.cluster.is_none() {
+                return Err(IMStatusCode::UnsupportedCluster);
             }
-        } else if path.endpoint.is_some()
-            || self.endpoint_index == (self.node.endpoints.len() - 1) as _
-        {
-            // Cannot move to the next endpoint
-            // Bail out with `false` and indicate to the main iterator that it needs to fetch the next item
-            return false;
+
+            if path.leaf.is_none() {
+                return Err(IMStatusCode::UnsupportedAttribute);
+            }
         }
 
-        // Move to the next endpoint for a wildcard traversal
-        self.endpoint_index += 1;
-        true
-    }
+        while (self.endpoint_index as usize) < self.node.endpoints.len() {
+            let endpoint = &self.node.endpoints[self.endpoint_index as usize];
 
-    /// Move to the next cluster in the path and if the clusters of the current endpoint are exhausted,
-    /// move to the next endpoint.
-    fn next_cluster(&mut self) -> bool {
-        loop {
-            let Some(path) = self.item.as_ref().map(PathExpansionItem::path) else {
-                // No item to expand. Indicate to the main iterator that it needs to fetch the next one
-                return false;
-            };
+            if path.endpoint.is_none() || path.endpoint == Some(endpoint.id) {
+                while (self.cluster_index as usize) < endpoint.clusters.len() {
+                    let cluster = &endpoint.clusters[self.cluster_index as usize];
 
-            if self.cluster_index == Self::UNKNOWN_INDEX {
-                // The index of the expanded cluster is not yet known. Compute it.
+                    if path.cluster.is_none() || path.cluster == Some(cluster.id) {
+                        let cluster_leaves_len = if command {
+                            cluster.commands.len()
+                        } else {
+                            cluster.attributes.len()
+                        };
 
-                // Make sure we have a valid endpoint position first
-                if !self.next_endpoint() {
-                    break false;
+                        while (self.leaf_index as usize) < cluster_leaves_len {
+                            let leaf_id = if command {
+                                cluster.commands[self.leaf_index as usize]
+                            } else {
+                                cluster.attributes[self.leaf_index as usize].id as _
+                            };
+
+                            if path.leaf.is_none() || path.leaf == Some(leaf_id as _) {
+                                // Leaf found, check its access rights
+
+                                let check = if matches!(T::OPERATION, Operation::Invoke) {
+                                    Cluster::check_cmd_access(
+                                        self.accessor,
+                                        GenericPath::new(
+                                            Some(endpoint.id),
+                                            Some(cluster.id),
+                                            Some(leaf_id),
+                                        ),
+                                    )
+                                } else {
+                                    Cluster::check_attr_access(
+                                        self.accessor,
+                                        GenericPath::new(
+                                            Some(endpoint.id),
+                                            Some(cluster.id),
+                                            Some(leaf_id),
+                                        ),
+                                        matches!(T::OPERATION, Operation::Write),
+                                        cluster.attributes[self.leaf_index as usize].access,
+                                    )
+                                };
+
+                                match check {
+                                    Ok(()) => {
+                                        // Because on the next call we should start from the next leaf or if leaves
+                                        // are over, from the next cluster and so on
+                                        self.leaf_index += 1;
+
+                                        return Ok(Some((endpoint.id, cluster.id, leaf_id)));
+                                    }
+                                    Err(status) => {
+                                        if !path.is_wildcard() {
+                                            // Only return if non-wildcard, else just skip the error and
+                                            // continue scanning
+                                            return Err(status);
+                                        }
+                                    }
+                                }
+                            }
+
+                            self.leaf_index += 1;
+                        }
+
+                        if !path.is_wildcard() {
+                            if command {
+                                return Err(IMStatusCode::UnsupportedCommand);
+                            } else {
+                                return Err(IMStatusCode::UnsupportedAttribute);
+                            }
+                        }
+
+                        self.leaf_index = 0;
+                    }
+
+                    self.cluster_index += 1;
                 }
 
-                if let Some(cluster) = path.cluster {
-                    // Non-wildcard cluster case
-
-                    let Some(cluster_index) = self.node.endpoints[self.endpoint_index as usize]
-                        .clusters
-                        .iter()
-                        .position(|cl| cl.id == cluster)
-                    else {
-                        // This cluster does not exist in our meta-data.
-                        // Try to move to the next endpoint
-                        continue;
-                    };
-
-                    self.cluster_index = cluster_index as _;
-                } else if self.node.endpoints[self.endpoint_index as usize]
-                    .clusters
-                    .is_empty()
-                {
-                    // No clusters in the current endpoint and the path is a wildcard one, move to the next endpoint
-                    continue;
-                } else {
-                    // Position on the first cluster for a wildcard traversal
-                    self.cluster_index = 0;
+                if !path.is_wildcard() {
+                    return Err(IMStatusCode::UnsupportedCluster);
                 }
 
-                break true;
+                self.cluster_index = 0;
             }
 
-            if path.cluster.is_some()
-                || self.cluster_index
-                    == (self.node.endpoints[self.endpoint_index as usize]
-                        .clusters
-                        .len()
-                        - 1) as _
-            {
-                // Cannot move to the next cluster as the clusters of the current endpoint are exchausted
-                // or the cluster is a non-wildcard one.
-                // Try to move to the next endpoint
-                self.cluster_index = Self::UNKNOWN_INDEX;
-                continue;
-            }
-
-            // Move to the next cluster for a wildcard traversal
-            self.cluster_index += 1;
-            break true;
+            self.endpoint_index += 1;
         }
-    }
 
-    /// Move to the next leaf in the path and if the leaves of the current cluster are exhausted,
-    /// move to the next cluster and so on to the next endpoint, if necessary.
-    fn next_leaf(&mut self) -> bool {
-        let command = matches!(T::LEAF_ACCESS, LeafAccess::Command);
-
-        loop {
-            let Some(path) = self.item.as_ref().map(PathExpansionItem::path) else {
-                // No item to expand. Indicate to the main iterator that it needs to fetch the next one
-                return false;
-            };
-
-            if self.leaf_index == Self::UNKNOWN_INDEX {
-                // The index of the expanded leaf is not yet known. Compute it.
-
-                // Make sure we have a valid cluster position first
-                if !self.next_cluster() {
-                    break false;
-                }
-            }
-
-            let cluster = &self.node.endpoints[self.endpoint_index as usize].clusters
-                [self.cluster_index as usize];
-            let cluster_leaves_len = if command {
-                cluster.commands.len()
-            } else {
-                cluster.attributes.len()
-            };
-
-            if self.leaf_index == Self::UNKNOWN_INDEX {
-                if let Some(leaf) = path.leaf {
-                    // Non-wildcard leaf case
-
-                    let leaf_index = if command {
-                        cluster.commands.iter().position(|cmd: &u32| *cmd == leaf)
-                    } else {
-                        cluster
-                            .attributes
-                            .iter()
-                            .position(|attr| attr.id == leaf as _)
-                    };
-
-                    let Some(leaf_index) = leaf_index else {
-                        // This leaf does not exist in our meta-data
-                        // Try to move to the next cluster
-                        continue;
-                    };
-
-                    self.leaf_index = leaf_index as _;
-                } else if cluster_leaves_len == 0 {
-                    // No commands in the current cluster and the leaf is a wildcard one, move to the next cluster
-                    continue;
-                } else {
-                    // Position on the first leaf for a leaf wildcard traversal
-                    self.leaf_index = 0;
-                }
-
-                break true;
-            }
-
-            if path.leaf.is_some() || self.leaf_index == (cluster_leaves_len - 1) as _ {
-                // Cannot move to the next leaf as the leaves of the current cluster are exchausted
-                // or the leaf is a non-wildcard one.
-                // Try to move to the next cluster
-                self.leaf_index = Self::UNKNOWN_INDEX;
-                continue;
-            }
-
-            // Move to the next leaf for a wildcard traversal
-            self.leaf_index += 1;
-            break true;
+        if !path.is_wildcard() {
+            Err(IMStatusCode::UnsupportedEndpoint)
+        } else {
+            Ok(None)
         }
     }
 }
@@ -601,95 +534,50 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let mut just_fetched = false;
-
             // Fetch an item to expand if not already there
             if self.item.is_none() {
                 let item = self.items.as_mut().and_then(|items| items.next())?;
 
                 match item {
-                    Err(err) => return Some(Err(err)),
+                    Err(err) => break Some(Err(err)),
                     Ok(item) => self.item = Some(item),
                 }
 
-                just_fetched = true;
+                self.endpoint_index = 0;
+                self.cluster_index = 0;
+                self.leaf_index = 0;
             }
 
             // From here on, we do have a valid `self.item` to expand
 
-            // Step on the first/next leaf of the item to be expanded
-            if self.next_leaf() {
-                // Stepped-in. All indices valid now
-
-                let endpoint = &self.node.endpoints[self.endpoint_index as usize];
-                let cluster = &endpoint.clusters[self.cluster_index as usize];
-
-                let (leaf_id, check) = if matches!(T::LEAF_ACCESS, LeafAccess::Command) {
-                    let command_id = cluster.commands[self.leaf_index as usize];
-
-                    (
-                        command_id,
-                        Cluster::check_cmd_access(
-                            self.accessor,
-                            GenericPath::new(Some(endpoint.id), Some(cluster.id), Some(command_id)),
-                        ),
-                    )
-                } else {
-                    let attr_id = cluster.attributes[self.leaf_index as usize].id as _;
-
-                    (
-                        attr_id,
-                        Cluster::check_attr_access(
-                            self.accessor,
-                            GenericPath::new(Some(endpoint.id), Some(cluster.id), Some(attr_id)),
-                            matches!(T::LEAF_ACCESS, LeafAccess::AttrWrite),
-                            cluster.attributes[self.leaf_index as usize].access,
-                        ),
-                    )
-                };
-
-                if let Err(status) = check {
-                    // Access check failed
-
-                    if self.item.as_ref().unwrap().path().is_wildcard() {
-                        // Wildcard path, skip to the next leaf rather than reporting an error
-                        continue;
-                    } else {
-                        // Non-wildcard path, report an error and remove the current item
-                        break Some(Ok(Err(self.item.take().unwrap().into_status(status))));
-                    }
-                } else {
-                    // Access check succeeded
+            // Step on the first/next expanded path of the item
+            match self.next_for_path() {
+                Ok(Some((endpoint_id, cluster_id, leaf_id))) => {
+                    // Next expansion of the path
 
                     let expanded = self.item.as_ref().unwrap().expand(
                         self.node,
                         self.accessor,
-                        endpoint.id,
-                        cluster.id,
+                        endpoint_id,
+                        cluster_id,
                         leaf_id,
                     );
 
-                    break Some(expanded.map(Ok));
-                }
-            } else {
-                if just_fetched && !self.item.as_ref().unwrap().path().is_wildcard() {
-                    // Need to report an error status for non-wildcard paths which do not exist in our meta-data
-                    let status;
-                    if self.endpoint_index == Self::UNKNOWN_INDEX_EP {
-                        status = IMStatusCode::UnsupportedEndpoint;
-                    } else if self.cluster_index == Self::UNKNOWN_INDEX {
-                        status = IMStatusCode::UnsupportedCluster;
-                    } else {
-                        status = IMStatusCode::UnsupportedAttribute;
+                    if !self.item.as_ref().unwrap().path().is_wildcard() {
+                        // Non-wildcard path, remove the current item
+                        self.item = None;
                     }
 
-                    // Also remove the current item
+                    break Some(expanded.map(Ok));
+                }
+                Ok(None) => {
+                    // This path is exhausted, time to move to the next one
+                    self.item = None;
+                }
+                Err(status) => {
+                    // Report an error status and remove the current item
                     break Some(Ok(Err(self.item.take().unwrap().into_status(status))));
                 }
-
-                // No error but since `next_leaf` returned `false`, the current item can no longer
-                // be processed and we need to move to the next one
-                self.item = None;
             }
         }
     }
@@ -713,4 +601,297 @@ fn dataver(
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod test {
+    use crate::acl::{Accessor, AccessorSubjects, AuthMode};
+    use crate::data_model::objects::{
+        Access, Attribute, Cluster, ClusterId, DeviceType, Endpoint, EndptId, Quality,
+    };
+    use crate::error::{Error, ErrorCode};
+    use crate::fabric::FabricMgr;
+    use crate::interaction_model::core::IMStatusCode;
+    use crate::interaction_model::messages::GenericPath;
+    use crate::utils::cell::RefCell;
+
+    use super::{Node, Operation, PathExpander, PathExpansionItem};
+
+    // For tests
+    impl<'a> PathExpansionItem<'a> for GenericPath {
+        const OPERATION: Operation = Operation::Read;
+
+        type Expanded<'n> = GenericPath;
+        type Status = IMStatusCode;
+
+        fn path(&self) -> GenericPath {
+            self.clone()
+        }
+
+        fn expand(
+            &self,
+            _node: &'a Node<'a>,
+            _accessor: &'a Accessor<'a>,
+            endpoint_id: EndptId,
+            cluster_id: ClusterId,
+            leaf_id: u32,
+        ) -> Result<Self::Expanded<'a>, Error> {
+            Ok(GenericPath::new(
+                Some(endpoint_id),
+                Some(cluster_id),
+                Some(leaf_id),
+            ))
+        }
+
+        fn into_status(self, status: IMStatusCode) -> Self::Status {
+            status
+        }
+    }
+
+    /// Compare an input of paths against their expanded expectations.
+    fn test(
+        node: &Node,
+        input: &[GenericPath],
+        expected: &[Result<Result<GenericPath, IMStatusCode>, ErrorCode>],
+    ) {
+        let fab_mgr = RefCell::new(FabricMgr::new());
+        let accessor = Accessor::new(0, AccessorSubjects::new(0), AuthMode::Pase, &fab_mgr);
+
+        let expander =
+            PathExpander::new(&node, &accessor, Some(input.into_iter().cloned().map(Ok)));
+
+        assert_eq!(
+            expander
+                .map(|r| r.map_err(|e| e.code()))
+                .collect::<alloc::vec::Vec<_>>()
+                .as_slice(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_none() {
+        static NODE: Node = Node::new(0, &[]);
+
+        // Invalid endpoint with wildcard paths should not return anything
+        test(&NODE, &[GenericPath::new(Some(0), None, None)], &[]);
+
+        // Invalid cluster with wildcard paths should not return anything
+        test(&NODE, &[GenericPath::new(None, Some(0), None)], &[]);
+
+        // Invalid leaf with wildcard paths should not return anything
+        test(&NODE, &[GenericPath::new(None, None, Some(0))], &[]);
+
+        // Invalid endpoint with non-wildcard paths should return an err status
+        test(
+            &NODE,
+            &[GenericPath::new(Some(0), Some(0), Some(0))],
+            &[Ok(Err(IMStatusCode::UnsupportedEndpoint))],
+        );
+    }
+
+    #[test]
+    fn test_one_all() {
+        static NODE: Node = Node::new(
+            0,
+            &[Endpoint::new(
+                0,
+                DeviceType { dtype: 0, drev: 0 },
+                &[Cluster::new(
+                    0,
+                    0,
+                    &[Attribute::new(0, Access::all(), Quality::all())],
+                    &[],
+                )],
+            )],
+        );
+
+        // Happy path, wildcard
+        test(
+            &NODE,
+            &[GenericPath::new(None, None, None)],
+            &[Ok(Ok(GenericPath::new(Some(0), Some(0), Some(0))))],
+        );
+
+        // Happy path, non-wildcard
+        test(
+            &NODE,
+            &[GenericPath::new(Some(0), Some(0), Some(0))],
+            &[Ok(Ok(GenericPath::new(Some(0), Some(0), Some(0))))],
+        );
+
+        // Invalid cluster with non-wildcard paths should return an err status
+        test(
+            &NODE,
+            &[GenericPath::new(Some(0), Some(1), Some(0))],
+            &[Ok(Err(IMStatusCode::UnsupportedCluster))],
+        );
+
+        // Invalid leaf with non-wildcard paths should return an err status
+        test(
+            &NODE,
+            &[GenericPath::new(Some(0), Some(0), Some(1))],
+            &[Ok(Err(IMStatusCode::UnsupportedAttribute))],
+        );
+
+        // Multiple wildcard paths with an empty node should not return anything
+        test(
+            &Node::new(0, &[]),
+            &[
+                GenericPath::new(None, None, None),
+                GenericPath::new(None, None, None),
+            ],
+            &[],
+        );
+
+        // Multiple wildcard paths with non-empty node should return twice the output
+        test(
+            &NODE,
+            &[
+                GenericPath::new(None, None, None),
+                GenericPath::new(None, None, None),
+            ],
+            &[
+                Ok(Ok(GenericPath::new(Some(0), Some(0), Some(0)))),
+                Ok(Ok(GenericPath::new(Some(0), Some(0), Some(0)))),
+            ],
+        );
+
+        // One wildcard and one non-wildcard should also return twice the output
+        test(
+            &NODE,
+            &[
+                GenericPath::new(None, None, None),
+                GenericPath::new(Some(0), Some(0), Some(0)),
+            ],
+            &[
+                Ok(Ok(GenericPath::new(Some(0), Some(0), Some(0)))),
+                Ok(Ok(GenericPath::new(Some(0), Some(0), Some(0)))),
+            ],
+        );
+
+        // One correct non-wildcard and one incorrect wildcard should return once the output
+        test(
+            &NODE,
+            &[
+                GenericPath::new(Some(0), Some(0), Some(0)),
+                GenericPath::new(None, Some(1), None),
+            ],
+            &[Ok(Ok(GenericPath::new(Some(0), Some(0), Some(0))))],
+        );
+
+        // One incorrect non-wildcard and one correct wildcard should return once an error and once the output
+        test(
+            &NODE,
+            &[
+                GenericPath::new(Some(0), Some(1), Some(0)),
+                GenericPath::new(None, Some(0), Some(0)),
+            ],
+            &[
+                Ok(Err(IMStatusCode::UnsupportedCluster)),
+                Ok(Ok(GenericPath::new(Some(0), Some(0), Some(0)))),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_multiple() {
+        static NODE: Node = Node::new(
+            0,
+            &[
+                Endpoint::new(
+                    0,
+                    DeviceType { dtype: 0, drev: 0 },
+                    &[
+                        Cluster::new(
+                            1,
+                            0,
+                            &[Attribute::new(1, Access::all(), Quality::all())],
+                            &[],
+                        ),
+                        Cluster::new(
+                            10,
+                            0,
+                            &[Attribute::new(1, Access::all(), Quality::all())],
+                            &[],
+                        ),
+                    ],
+                ),
+                Endpoint::new(
+                    5,
+                    DeviceType { dtype: 0, drev: 0 },
+                    &[
+                        Cluster::new(
+                            1,
+                            0,
+                            &[Attribute::new(1, Access::all(), Quality::all())],
+                            &[],
+                        ),
+                        Cluster::new(
+                            20,
+                            0,
+                            &[
+                                Attribute::new(20, Access::all(), Quality::all()),
+                                Attribute::new(30, Access::all(), Quality::all()),
+                            ],
+                            &[],
+                        ),
+                    ],
+                ),
+            ],
+        );
+
+        // Test with a single, global wildcard
+        test(
+            &NODE,
+            &[GenericPath::new(None, None, None)],
+            &[
+                Ok(Ok(GenericPath::new(Some(0), Some(1), Some(1)))),
+                Ok(Ok(GenericPath::new(Some(0), Some(10), Some(1)))),
+                Ok(Ok(GenericPath::new(Some(5), Some(1), Some(1)))),
+                Ok(Ok(GenericPath::new(Some(5), Some(20), Some(20)))),
+                Ok(Ok(GenericPath::new(Some(5), Some(20), Some(30)))),
+            ],
+        );
+
+        // Test with two concrete correct non-wildcards,
+        // one incorrect non-wildcard and one incorrect wildcard
+        test(
+            &NODE,
+            &[
+                GenericPath::new(Some(0), Some(1), Some(1)),
+                GenericPath::new(Some(5), Some(20), Some(20)),
+                GenericPath::new(Some(0), Some(1), Some(11)),
+                GenericPath::new(None, Some(2), None),
+            ],
+            &[
+                Ok(Ok(GenericPath::new(Some(0), Some(1), Some(1)))),
+                Ok(Ok(GenericPath::new(Some(5), Some(20), Some(20)))),
+                Ok(Err(IMStatusCode::UnsupportedAttribute)),
+            ],
+        );
+
+        // Test with a global wildcard, two concrete correct non-wildcards,
+        // one incorrect non-wildcard and one incorrect wildcard
+        test(
+            &NODE,
+            &[
+                GenericPath::new(None, None, None),
+                GenericPath::new(Some(0), Some(1), Some(1)),
+                GenericPath::new(Some(5), Some(20), Some(20)),
+                GenericPath::new(Some(0), Some(1), Some(11)),
+                GenericPath::new(None, Some(2), None),
+            ],
+            &[
+                Ok(Ok(GenericPath::new(Some(0), Some(1), Some(1)))),
+                Ok(Ok(GenericPath::new(Some(0), Some(10), Some(1)))),
+                Ok(Ok(GenericPath::new(Some(5), Some(1), Some(1)))),
+                Ok(Ok(GenericPath::new(Some(5), Some(20), Some(20)))),
+                Ok(Ok(GenericPath::new(Some(5), Some(20), Some(30)))),
+                Ok(Ok(GenericPath::new(Some(0), Some(1), Some(1)))),
+                Ok(Ok(GenericPath::new(Some(5), Some(20), Some(20)))),
+                Ok(Err(IMStatusCode::UnsupportedAttribute)),
+            ],
+        );
+    }
 }

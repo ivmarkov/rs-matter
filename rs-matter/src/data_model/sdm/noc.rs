@@ -221,7 +221,10 @@ impl NocCluster {
                     Attributes::Fabrics(_) => {
                         writer.start_array(&AttrDataWriter::TAG)?;
                         for fabric in exchange.matter().fabric_mgr.borrow().iter() {
-                            if !attr.fab_filter || attr.fab_idx == fabric.fab_idx().get() {
+                            if (!attr.fab_filter || attr.fab_idx == fabric.fab_idx().get())
+                                && !fabric.root_ca().is_empty()
+                            {
+                                // Empty `root_ca` might happen in the E2E tests
                                 let root_ca_cert = CertRef::new(TLVElement::new(fabric.root_ca()));
 
                                 fabric

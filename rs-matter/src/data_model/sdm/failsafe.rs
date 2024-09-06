@@ -218,6 +218,7 @@ impl FailSafe {
         Ok(self.key_pair.as_ref().unwrap())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_noc(
         &mut self,
         session_mode: &SessionMode,
@@ -254,6 +255,7 @@ impl FailSafe {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_noc(
         &mut self,
         fabric_mgr: &RefCell<FabricMgr>,

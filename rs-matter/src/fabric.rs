@@ -115,6 +115,7 @@ impl Fabric {
     ///
     /// This method is supposed to be called right after `Fabric::init` or
     /// when the NOC of the fabric needs to be updated.
+    #[allow(clippy::too_many_arguments)]
     fn update(
         &mut self,
         root_ca: &[u8],
@@ -139,13 +140,13 @@ impl Fabric {
             .extend_from_slice(noc)
             .map_err(|_| ErrorCode::NoSpace)?;
 
-        let noc_p = CertRef::new(TLVElement::new(&noc));
+        let noc_p = CertRef::new(TLVElement::new(noc));
 
         self.node_id = noc_p.get_node_id()?;
         self.fabric_id = noc_p.get_fabric_id()?;
         self.vendor_id = vendor_id;
 
-        let root_ca_p = CertRef::new(TLVElement::new(&root_ca));
+        let root_ca_p = CertRef::new(TLVElement::new(root_ca));
 
         let mut compressed_id = [0_u8; COMPRESSED_FABRIC_ID_LEN];
         Fabric::compute_compressed_id(root_ca_p.pubkey()?, self.fabric_id, &mut compressed_id)?;
@@ -451,6 +452,7 @@ impl FabricMgr {
     /// Add a new fabric to the manager with the provided data.
     ///
     /// If this operation succeeds, the fabric immediately becomes operational.
+    #[allow(clippy::too_many_arguments)]
     pub fn add(
         &mut self,
         key_pair: KeyPair,
@@ -510,6 +512,7 @@ impl FabricMgr {
     /// If this operation succeeds, the fabric immediately becomes operational.
     /// Note however, that the caller is expected to remove all sessions associated with the fabric, as they would
     /// contain invalid keys after the NOC update.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         fab_idx: NonZeroU8,

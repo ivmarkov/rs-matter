@@ -25,6 +25,7 @@ use embassy_sync::{
 };
 
 use rs_matter::acl::{AclEntry, AuthMode};
+use rs_matter::crypto::KeyPair;
 use rs_matter::data_model::cluster_basic_information::BasicInfoConfig;
 use rs_matter::data_model::core::{DataModel, IMBuffer};
 use rs_matter::data_model::objects::{AsyncHandler, AsyncMetadata, Privilege};
@@ -218,6 +219,12 @@ impl E2eRunner {
             rand,
             MATTER_PORT,
         );
+
+        matter
+            .fabric_mgr
+            .borrow_mut()
+            .add_with_post_init(KeyPair::new(matter.rand()).unwrap(), |_| Ok(()))
+            .unwrap();
 
         matter.initialize_transport_buffers().unwrap();
 

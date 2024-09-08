@@ -392,6 +392,12 @@ impl FabricMgr {
         })
     }
 
+    /// Removes all fabrics
+    pub fn reset(&mut self) {
+        self.fabrics.clear();
+        self.changed = false;
+    }
+
     /// Load the fabrics from the provided TLV data
     pub fn load(&mut self, data: &[u8], mdns: &dyn Mdns) -> Result<(), Error> {
         for fabric in self.iter() {
@@ -449,21 +455,19 @@ impl FabricMgr {
         self.changed
     }
 
-    /// Add a new fabric to the manager with the provided data.
+    /// Add a new fabric to the manager with the provided data and immediately updates it with the provided post-init updater.
+    ///
+    /// This method is unlikely to be useful outside of tests.
     ///
     /// If this operation succeeds, the fabric immediately becomes operational.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add(
+    pub fn add_with_post_init<F>(
         &mut self,
         key_pair: KeyPair,
-        root_ca: &[u8],
-        noc: &[u8],
-        icac: &[u8],
-        ipk: &[u8],
-        vendor_id: u16,
-        case_admin_subject: u64,
-        mdns: &dyn Mdns,
-    ) -> Result<&mut Fabric, Error> {
+        post_init: F,
+    ) -> Result<&mut Fabric, Error>
+    where
+        F: FnOnce(&mut Fabric) -> Result<(), Error>,
+    {
         let max_fab_idx = self
             .iter()
             .map(|fabric| fabric.fab_idx().get())
@@ -487,17 +491,7 @@ impl FabricMgr {
         self.fabrics.push_init(
             Fabric::init(fab_idx, key_pair)
                 .into_fallible::<Error>()
-                .chain(|fabric| {
-                    fabric.update(
-                        root_ca,
-                        noc,
-                        icac,
-                        ipk,
-                        vendor_id,
-                        Some(case_admin_subject),
-                        mdns,
-                    )
-                }),
+                .chain(post_init),
             || ErrorCode::NoSpace.into(),
         )?;
 
@@ -505,6 +499,34 @@ impl FabricMgr {
         self.changed = true;
 
         Ok(fabric)
+    }
+
+    /// Add a new fabric to the manager with the provided data.
+    ///
+    /// If this operation succeeds, the fabric immediately becomes operational.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add(
+        &mut self,
+        key_pair: KeyPair,
+        root_ca: &[u8],
+        noc: &[u8],
+        icac: &[u8],
+        ipk: &[u8],
+        vendor_id: u16,
+        case_admin_subject: u64,
+        mdns: &dyn Mdns,
+    ) -> Result<&mut Fabric, Error> {
+        self.add_with_post_init(key_pair, |fabric| {
+            fabric.update(
+                root_ca,
+                noc,
+                icac,
+                ipk,
+                vendor_id,
+                Some(case_admin_subject),
+                mdns,
+            )
+        })
     }
 
     /// Update an existing fabric with the provided data (usually, as a result of an `UpdateNOC` IM command).

@@ -781,7 +781,10 @@ impl<'a> ReportDataReq<'a> {
         tw.start_struct(&TLVTag::Anonymous)?;
 
         if let Some(subscription_id) = subscription_id {
-            assert!(matches!(self, ReportDataReq::Subscribe(_)));
+            assert!(matches!(
+                self,
+                ReportDataReq::Subscribe(_) | ReportDataReq::SubscribeReport(_)
+            ));
             tw.u32(
                 &TLVTag::Context(ReportDataTag::SubscriptionId as u8),
                 subscription_id,

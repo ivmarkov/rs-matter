@@ -280,12 +280,22 @@ impl Fabric {
         self.acl.iter()
     }
 
-    /// Add a new ACL entry to the fabric
-    fn acl_add(&mut self, mut entry: AclEntry) -> Result<(), Error> {
+    /// Add a new ACL entry to the fabric.
+    ///
+    /// Return the index of the added entry.
+    fn acl_add(&mut self, mut entry: AclEntry) -> Result<usize, Error> {
+        if entry.auth_mode() == AuthMode::Pase {
+            // Reserved for future use
+            // TODO: Should be something that results in IMStatusCode::ConstraintError
+            Err(ErrorCode::Invalid)?;
+        }
+
         // Overwrite the fabric index with our accessing fabric index
         entry.fab_idx = Some(self.fab_idx);
 
-        self.acl.push(entry).map_err(|_| ErrorCode::NoSpace.into())
+        self.acl.push(entry).map_err(|_| ErrorCode::NoSpace)?;
+
+        Ok(self.acl.len() - 1)
     }
 
     /// Update an existing ACL entry in the fabric
@@ -314,7 +324,8 @@ impl Fabric {
     }
 
     /// Remove all ACL entries from the fabric
-    fn acl_remove_all(&mut self) {
+    pub fn acl_remove_all(&mut self) {
+        // pub for tests
         self.acl.clear();
     }
 
@@ -605,7 +616,8 @@ impl FabricMgr {
     }
 
     /// Get a mutable fabric reference by its local index
-    fn get_mut(&mut self, fab_idx: NonZeroU8) -> Option<&mut Fabric> {
+    pub fn get_mut(&mut self, fab_idx: NonZeroU8) -> Option<&mut Fabric> {
+        // pub for testing
         self.fabrics
             .iter_mut()
             .find(|fabric| fabric.fab_idx == fab_idx)
@@ -656,13 +668,16 @@ impl FabricMgr {
     }
 
     /// Add a new ACL entry to the fabric with the provided local index
-    pub fn acl_add(&mut self, fab_idx: NonZeroU8, entry: AclEntry) -> Result<(), Error> {
-        self.get_mut(fab_idx)
+    ///
+    /// Return the index of the added entry.
+    pub fn acl_add(&mut self, fab_idx: NonZeroU8, entry: AclEntry) -> Result<usize, Error> {
+        let index = self
+            .get_mut(fab_idx)
             .ok_or(ErrorCode::NotFound)?
             .acl_add(entry)?;
         self.changed = true;
 
-        Ok(())
+        Ok(index)
     }
 
     /// Update an existing ACL entry in the fabric with the provided local index

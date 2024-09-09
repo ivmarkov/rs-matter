@@ -33,7 +33,7 @@ use crate::transport::exchange::Exchange;
 use crate::transport::session::SessionMode;
 use crate::utils::init::InitMaybeUninit;
 use crate::utils::storage::WriteBuf;
-use crate::{attribute_enum, cmd_enter, command_enum, error::*};
+use crate::{alloc, attribute_enum, cmd_enter, command_enum, error::*};
 
 use super::dev_att::{DataType, DevAttDataFetcher};
 
@@ -41,16 +41,16 @@ use super::dev_att::{DataType, DevAttDataFetcher};
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
-enum NocStatus {
+pub enum NocStatus {
     Ok = 0,
     InvalidPublicKey = 1,
     InvalidNodeOpId = 2,
     InvalidNOC = 3,
     MissingCsr = 4,
     TableFull = 5,
-    MissingAcl = 6,
-    MissingIpk = 7,
-    InsufficientPrivlege = 8,
+    InvalidAdminSubject = 6,
+    Reserved1 = 7,
+    Reserved2 = 8,
     FabricConflict = 9,
     LabelConflict = 10,
     InvalidFabricIndex = 11,
@@ -145,10 +145,9 @@ impl NocStatus {
         match result {
             Ok(()) => Ok(NocStatus::Ok),
             Err(err) => match err.code() {
-                // TODO
-                ErrorCode::FailSafeInvalidFabricIndex => Ok(NocStatus::InvalidFabricIndex),
-                ErrorCode::FailSafeInvalidAuthentication => Ok(NocStatus::InsufficientPrivlege),
-                ErrorCode::FailSafeConstraintError => Ok(NocStatus::MissingCsr),
+                ErrorCode::NocFabricTableFull => Ok(NocStatus::TableFull),
+                ErrorCode::NocInvalidFabricIndex => Ok(NocStatus::InvalidFabricIndex),
+                ErrorCode::ConstraintError => Ok(NocStatus::MissingCsr),
                 _ => Err(err),
             },
         }
@@ -293,7 +292,7 @@ impl NocCluster {
 
         let status = NocStatus::map(exchange.with_session(|sess| {
             let SessionMode::Case { fab_idx, .. } = sess.get_session_mode() else {
-                return Err(ErrorCode::FailSafeInvalidAuthentication.into());
+                return Err(ErrorCode::GennCommInvalidAuthentication.into());
             };
 
             updated_fab_idx = fab_idx.get();
@@ -303,6 +302,13 @@ impl NocCluster {
                 .fabric_mgr
                 .borrow_mut()
                 .update_label(*fab_idx, req.label)
+                .map_err(|e| {
+                    if e.code() == ErrorCode::Invalid {
+                        ErrorCode::NocLabelConflict.into()
+                    } else {
+                        e
+                    }
+                })
         }))?;
 
         Self::create_nocresponse(encoder, status as _, updated_fab_idx, "")
@@ -373,6 +379,9 @@ impl NocCluster {
 
         let mut added_fab_idx = 0;
 
+        let mut buf = alloc!([0; 800]); // TODO LARGE BUFFER
+        let buf = &mut buf[..];
+
         let status = NocStatus::map(exchange.with_session(|sess| {
             let fab_idx = exchange.matter().failsafe.borrow_mut().add_noc(
                 &exchange.matter().fabric_mgr,
@@ -382,6 +391,7 @@ impl NocCluster {
                 r.noc_value.0,
                 r.ipk_value.0,
                 r.case_admin_subject,
+                buf,
                 &exchange.matter().transport_mgr.mdns,
             )?;
 

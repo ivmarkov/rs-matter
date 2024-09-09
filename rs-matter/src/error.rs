@@ -37,9 +37,7 @@ pub enum ErrorCode {
     InvalidAction,
     InvalidCommand,
     FailSafeRequired,
-    FailSafeConstraintError,
-    FailSafeInvalidFabricIndex,
-    FailSafeInvalidAuthentication,
+    ConstraintError,
     InvalidDataType,
     UnsupportedAccess,
     ResourceExhausted,
@@ -86,6 +84,13 @@ pub enum ErrorCode {
     TLVTypeMismatch,
     TruncatedPacket,
     Utf8Fail,
+    GennCommInvalidAuthentication,
+    NocInvalidNoc,
+    NocMissingCsr,
+    NocFabricTableFull,
+    NocFabricConflict,
+    NocLabelConflict,
+    NocInvalidFabricIndex,
 }
 
 impl From<ErrorCode> for Error {

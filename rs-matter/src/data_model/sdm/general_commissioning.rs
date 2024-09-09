@@ -67,10 +67,10 @@ impl CommissioningErrorEnum {
         match result {
             Ok(()) => Ok(CommissioningErrorEnum::OK),
             Err(err) => match err.code() {
-                ErrorCode::Busy | ErrorCode::FailSafeInvalidFabricIndex => {
+                ErrorCode::Busy | ErrorCode::NocInvalidFabricIndex => {
                     Ok(CommissioningErrorEnum::BusyWithOtherAdmin)
                 }
-                ErrorCode::FailSafeInvalidAuthentication => {
+                ErrorCode::GennCommInvalidAuthentication => {
                     Ok(CommissioningErrorEnum::InvalidAuthentication)
                 }
                 ErrorCode::FailSafeRequired => Ok(CommissioningErrorEnum::NoFailSafe),

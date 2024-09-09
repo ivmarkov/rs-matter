@@ -286,8 +286,7 @@ impl Fabric {
     fn acl_add(&mut self, mut entry: AclEntry) -> Result<usize, Error> {
         if entry.auth_mode() == AuthMode::Pase {
             // Reserved for future use
-            // TODO: Should be something that results in IMStatusCode::ConstraintError
-            Err(ErrorCode::Invalid)?;
+            Err(ErrorCode::ConstraintError)?;
         }
 
         // Overwrite the fabric index with our accessing fabric index

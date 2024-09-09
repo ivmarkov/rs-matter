@@ -22,12 +22,13 @@ use bitflags::bitflags;
 
 use log::error;
 
-use crate::cert::MAX_CERT_TLV_LEN;
+use crate::cert::{CertRef, MAX_CERT_TLV_LEN};
 use crate::crypto::KeyPair;
 use crate::error::{Error, ErrorCode};
 use crate::fabric::FabricMgr;
 use crate::interaction_model::core::IMStatusCode;
 use crate::mdns::Mdns;
+use crate::tlv::TLVElement;
 use crate::transport::session::SessionMode;
 use crate::utils::cell::RefCell;
 use crate::utils::epoch::Epoch;
@@ -114,7 +115,7 @@ impl FailSafe {
         if matches!(self.state, State::Idle) {
             if matches!(session_mode, SessionMode::PlainText) {
                 // Only PASE and CASE sessions supported
-                return Err(ErrorCode::FailSafeInvalidAuthentication)?;
+                return Err(ErrorCode::GennCommInvalidAuthentication)?;
             }
 
             self.state = State::Armed(ArmedCtx {
@@ -129,7 +130,12 @@ impl FailSafe {
 
         // Re-arm
 
-        self.check_state(session_mode, NocFlags::empty(), NocFlags::empty())?;
+        self.check_state(
+            session_mode,
+            NocFlags::empty(),
+            NocFlags::empty(),
+            NocFlags::empty(),
+        )?;
 
         let State::Armed(ctx) = &mut self.state else {
             // Impossible, as we checked for Idle above
@@ -147,13 +153,18 @@ impl FailSafe {
 
         if matches!(self.state, State::Idle) {
             error!("Received Fail-Safe Disarm without it being armed");
-            return Err(ErrorCode::FailSafeConstraintError)?;
+            return Err(ErrorCode::ConstraintError)?;
         }
 
         // Has to be a CASE session
         Self::get_case_fab_idx(session_mode)?;
 
-        self.check_state(session_mode, NocFlags::empty(), NocFlags::empty())?;
+        self.check_state(
+            session_mode,
+            NocFlags::empty(),
+            NocFlags::empty(),
+            NocFlags::empty(),
+        )?;
         self.state = State::Idle;
 
         Ok(())
@@ -170,8 +181,8 @@ impl FailSafe {
             session_mode,
             NocFlags::empty(),
             NocFlags::ADD_ROOT_CERT_RECVD,
+            NocFlags::ADD_ROOT_CERT_RECVD,
         )?;
-        self.check_cert(Some(root_ca))?;
 
         self.root_ca.clear();
         self.root_ca
@@ -190,6 +201,7 @@ impl FailSafe {
             session_mode,
             NocFlags::empty(),
             NocFlags::ADD_CSR_REQ_RECVD | NocFlags::UPDATE_CSR_REQ_RECVD,
+            NocFlags::ADD_CSR_REQ_RECVD,
         )?;
 
         self.key_pair = Some(KeyPair::new(self.rand)?);
@@ -209,6 +221,7 @@ impl FailSafe {
             session_mode,
             NocFlags::empty(),
             NocFlags::ADD_CSR_REQ_RECVD | NocFlags::UPDATE_CSR_REQ_RECVD,
+            NocFlags::UPDATE_CSR_REQ_RECVD,
         )?;
 
         self.key_pair = Some(KeyPair::new(self.rand)?);
@@ -227,6 +240,7 @@ impl FailSafe {
         icac: Option<&[u8]>,
         noc: &[u8],
         ipk: &[u8],
+        buf: &mut [u8],
         mdns: &dyn Mdns,
     ) -> Result<(), Error> {
         self.update_state_timeout();
@@ -237,6 +251,15 @@ impl FailSafe {
             session_mode,
             NocFlags::ADD_ROOT_CERT_RECVD | NocFlags::UPDATE_CSR_REQ_RECVD,
             NocFlags::ADD_NOC_RECVD | NocFlags::ADD_CSR_REQ_RECVD | NocFlags::UPDATE_NOC_RECVD,
+            NocFlags::UPDATE_NOC_RECVD,
+        )?;
+
+        Self::validate_certs(
+            &CertRef::new(TLVElement::new(noc)),
+            icac.map(|icac| CertRef::new(TLVElement::new(icac)))
+                .as_ref(),
+            &CertRef::new(TLVElement::new(&self.root_ca)),
+            buf,
         )?;
 
         fabric_mgr.borrow_mut().update(
@@ -265,6 +288,7 @@ impl FailSafe {
         noc: &[u8],
         ipk: &[u8],
         case_admin_subject: u64,
+        buf: &mut [u8],
         mdns: &dyn Mdns,
     ) -> Result<NonZeroU8, Error> {
         self.update_state_timeout();
@@ -273,9 +297,16 @@ impl FailSafe {
             session_mode,
             NocFlags::ADD_ROOT_CERT_RECVD | NocFlags::ADD_CSR_REQ_RECVD,
             NocFlags::ADD_NOC_RECVD | NocFlags::UPDATE_CSR_REQ_RECVD | NocFlags::UPDATE_NOC_RECVD,
+            NocFlags::ADD_NOC_RECVD,
         )?;
-        self.check_cert(icac)?;
-        self.check_cert(Some(noc))?;
+
+        Self::validate_certs(
+            &CertRef::new(TLVElement::new(noc)),
+            icac.map(|icac| CertRef::new(TLVElement::new(icac)))
+                .as_ref(),
+            &CertRef::new(TLVElement::new(&self.root_ca)),
+            buf,
+        )?;
 
         let fab_idx = fabric_mgr
             .borrow_mut()
@@ -288,7 +319,14 @@ impl FailSafe {
                 vendor_id,
                 case_admin_subject,
                 mdns,
-            )?
+            )
+            .map_err(|e| {
+                if e.code() == ErrorCode::NoSpace {
+                    ErrorCode::NocFabricTableFull.into()
+                } else {
+                    e
+                }
+            })?
             .fab_idx();
 
         self.add_flags(NocFlags::ADD_NOC_RECVD);
@@ -296,12 +334,28 @@ impl FailSafe {
         Ok(fab_idx)
     }
 
+    fn validate_certs(
+        noc: &CertRef,
+        icac: Option<&CertRef>,
+        root: &CertRef,
+        buf: &mut [u8],
+    ) -> Result<(), Error> {
+        let mut verifier = noc.verify_chain_start();
+
+        if let Some(icac) = icac {
+            // If ICAC is present handle it
+            verifier = verifier.add_cert(icac, buf)?;
+        }
+
+        verifier.add_cert(root, buf)?.finalise(buf)
+    }
+
     fn get_case_fab_idx(session_mode: &SessionMode) -> Result<NonZeroU8, Error> {
         if let SessionMode::Case { fab_idx, .. } = session_mode {
             Ok(*fab_idx)
         } else {
             // Only CASE session supported
-            Err(ErrorCode::FailSafeInvalidAuthentication.into())
+            Err(ErrorCode::GennCommInvalidAuthentication.into())
         }
     }
 
@@ -310,21 +364,47 @@ impl FailSafe {
         session_mode: &SessionMode,
         present: NocFlags,
         absent: NocFlags,
+        op: NocFlags,
     ) -> Result<(), Error> {
         if let State::Armed(ctx) = &self.state {
             if matches!(session_mode, SessionMode::PlainText) {
                 // Session is plain text
-                Err(ErrorCode::FailSafeInvalidAuthentication)?;
+                Err(ErrorCode::GennCommInvalidAuthentication)?;
             }
 
             if ctx.fab_idx != session_mode.fab_idx() {
                 // Fabric index does not match
-                Err(ErrorCode::FailSafeInvalidFabricIndex)?;
+                Err(ErrorCode::NocInvalidFabricIndex)?;
             }
 
-            if !ctx.flags.contains(present) || !ctx.flags.intersection(absent).is_empty() {
+            if !ctx.flags.contains(present) {
                 // State is not what is expected for that concrete command
-                Err(ErrorCode::FailSafeConstraintError)?;
+
+                if op == NocFlags::ADD_NOC_RECVD
+                    && !ctx.flags.contains(NocFlags::UPDATE_CSR_REQ_RECVD)
+                    || op == NocFlags::UPDATE_NOC_RECVD
+                        && !ctx.flags.contains(NocFlags::UPDATE_CSR_REQ_RECVD)
+                {
+                    // Return a more concrete error if the problem is that the CSR request is missing
+                    Err(ErrorCode::NocMissingCsr)?;
+                }
+
+                Err(ErrorCode::ConstraintError)?;
+            }
+
+            if !ctx.flags.intersection(absent).is_empty() {
+                // State is not what is expected for that concrete command
+
+                if op == NocFlags::ADD_NOC_RECVD
+                    && ctx.flags.contains(NocFlags::UPDATE_CSR_REQ_RECVD)
+                    || op == NocFlags::UPDATE_NOC_RECVD
+                        && ctx.flags.contains(NocFlags::ADD_CSR_REQ_RECVD)
+                {
+                    // Return a more concrete error if the problem is an add/update NOC mismatch
+                    Err(ErrorCode::NocFabricConflict)?;
+                }
+
+                Err(ErrorCode::ConstraintError)?;
             }
         } else {
             // Fail-safe is not armed
@@ -332,10 +412,6 @@ impl FailSafe {
         }
 
         Ok(())
-    }
-
-    fn check_cert(&self, _cert: Option<&[u8]>) -> Result<(), Error> {
-        Ok(()) // TODO
     }
 
     fn add_flags(&mut self, flags: NocFlags) {

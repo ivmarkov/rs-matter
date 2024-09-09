@@ -637,7 +637,7 @@ impl<'a> TLVElement<'a> {
     /// Retrieve the context ID of the element.
     /// If element is not tagged with a context tag, the method will return an error.
     pub fn ctx(&self) -> Result<u8, Error> {
-        self.try_ctx()?.ok_or(ErrorCode::TLVTypeMismatch.into())
+        Ok(self.try_ctx()?.ok_or(ErrorCode::TLVTypeMismatch)?)
     }
 
     /// Retrieve the context ID of the element.
@@ -947,7 +947,7 @@ impl<'a> TLVSequence<'a> {
     /// will designate the start of the TLV element value or value length.
     #[inline(always)]
     fn tag_start(&self) -> Result<&'a [u8], Error> {
-        self.0.get(1..).ok_or(ErrorCode::TLVTypeMismatch.into())
+        Ok(self.0.get(1..).ok_or(ErrorCode::TLVTypeMismatch)?)
     }
 
     /// Return a sub-slice of the wrapped byte slice that designates the exact raw slice representing the tag payload
@@ -957,9 +957,10 @@ impl<'a> TLVSequence<'a> {
     /// will be the empty slice.
     #[inline(always)]
     fn tag(&self, tag_type: TLVTagType) -> Result<&'a [u8], Error> {
-        self.tag_start()?
+        Ok(self
+            .tag_start()?
             .get(..tag_type.size())
-            .ok_or(ErrorCode::TLVTypeMismatch.into())
+            .ok_or(ErrorCode::TLVTypeMismatch)?)
     }
 
     /// Return a sub-slice of the wrapped byte slice that designates the START of the value length field
@@ -970,9 +971,11 @@ impl<'a> TLVSequence<'a> {
     /// the returned sub-slice will designate the start of the value field.
     #[inline(always)]
     fn value_len_start(&self, tag_type: TLVTagType) -> Result<&'a [u8], Error> {
-        self.tag_start()?
+        Ok(self
+            .tag_start()
+            .unwrap()
             .get(tag_type.size()..)
-            .ok_or(ErrorCode::TLVTypeMismatch.into())
+            .ok_or(ErrorCode::TLVTypeMismatch)?)
     }
 
     /// Return a sub-slice of the wrapped byte slice that designates the START of the value field of
@@ -981,9 +984,10 @@ impl<'a> TLVSequence<'a> {
     /// The value field is the field that designates the actual value of the TLV element.
     #[inline(always)]
     fn value_start(&self, control: TLVControl) -> Result<&'a [u8], Error> {
-        self.value_len_start(control.tag_type)?
+        Ok(self
+            .value_len_start(control.tag_type)?
             .get(control.value_type.variable_size_len()..)
-            .ok_or(ErrorCode::TLVTypeMismatch.into())
+            .ok_or(ErrorCode::TLVTypeMismatch)?)
     }
 
     /// Return a sub-slice of the wrapped byte slice that designates the exact raw slice representing the value payload
@@ -995,9 +999,10 @@ impl<'a> TLVSequence<'a> {
     fn value(&self, control: TLVControl) -> Result<&'a [u8], Error> {
         let value_len = self.value_len(control)?;
 
-        self.value_start(control)?
+        Ok(self
+            .value_start(control)?
             .get(..value_len)
-            .ok_or(ErrorCode::TLVTypeMismatch.into())
+            .ok_or(ErrorCode::TLVTypeMismatch)?)
     }
 
     /// Return a sub-slice of the wrapped byte slice that designates the exact raw slice representing the value payload
@@ -1006,9 +1011,10 @@ impl<'a> TLVSequence<'a> {
     fn container_value(&self, control: TLVControl) -> Result<&'a [u8], Error> {
         let value_len = self.container_value_len(control)?;
 
-        self.value_start(control)?
+        Ok(self
+            .value_start(control)?
             .get(..value_len)
-            .ok_or(ErrorCode::TLVTypeMismatch.into())
+            .ok_or(ErrorCode::TLVTypeMismatch)?)
     }
 
     /// Return the length of the value field of the first TLV element in the sequence.
@@ -1093,9 +1099,10 @@ impl<'a> TLVSequence<'a> {
     fn next_start(&self, control: TLVControl) -> Result<&'a [u8], Error> {
         let value_len = self.value_len(control)?;
 
-        self.value_start(control)?
+        Ok(self
+            .value_start(control)?
             .get(value_len..)
-            .ok_or(ErrorCode::TLVTypeMismatch.into())
+            .ok_or(ErrorCode::TLVTypeMismatch)?)
     }
 
     pub(crate) fn fmt(&self, indent: usize, f: &mut fmt::Formatter) -> fmt::Result {

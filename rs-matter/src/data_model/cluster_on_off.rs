@@ -73,6 +73,11 @@ pub struct OnOffCluster {
 
 impl OnOffCluster {
     pub const fn new(data_ver: Dataver) -> Self {
+        let _req = on_off::OffWithEffectRequest {
+            effect_identifier: on_off::EffectIdentifierEnum::DyingLight,
+            effect_variant: 0,
+        };
+
         Self {
             data_ver,
             on: Cell::new(false),

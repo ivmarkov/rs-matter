@@ -243,7 +243,7 @@ fn struct_field_definition(f: &StructField, context: &IdlGenerateContext) -> Tok
     quote!(
       #doc_comment
       // #[tagval(#code)] - TODO: add this once we support to/from TLV
-      #name: #field_type
+      pub #name: #field_type
     )
 }
 
@@ -802,5 +802,38 @@ mod tests {
                 }
             )
         );
+    }
+}
+
+pub struct StructRef<'a> {
+    strukt: &'a Struct,
+    cluster: &'a Cluster,
+}
+
+impl<'a> StructRef<'a> {
+    pub const fn new(strukt: &'a Struct, cluster: &'a Cluster) -> Self {
+        Self { strukt, cluster }
+    }
+
+    pub fn needs_lifetime(&self) -> bool {
+        self.strukt.fields.iter().map(|field| StructFieldRef::new(field, self.cluster)).any(StructFieldRef::needs_lifetime)
+    }
+}
+
+pub struct StructFieldRef<'a> {
+    field: &'a StructField,
+    cluster: &'a Cluster,
+}
+
+impl<'a> StructFieldRef<'a> {
+    pub const fn new(field: &'a StructField, cluster: &'a Cluster) -> Self {
+        Self { field, cluster }
+    }
+
+    pub fn needs_lifetime(&self) -> bool {
+        if self.field.field.data_type.is_list {
+            return true;
+        }
+        
     }
 }

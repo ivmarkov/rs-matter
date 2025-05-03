@@ -316,6 +316,54 @@ impl defmt::Format for Cluster<'_> {
     }
 }
 
+/// A macro to generate the clusters for an endpoint.
+#[allow(unused_macros)]
+#[macro_export]
+macro_rules! clusters {
+    (sys; $($cluster:expr $(,)?)*) => {
+        $crate::clusters!(
+            $($cluster,)*
+            <$crate::data_model::basic_info::BasicInfoHandler as $crate::data_model::basic_info::ClusterHandler>::CLUSTER,
+            <$crate::data_model::system_model::desc::DescHandler as $crate::data_model::system_model::desc::ClusterHandler>::CLUSTER,
+            <$crate::data_model::system_model::acl::AclHandler as $crate::data_model::system_model::acl::ClusterHandler>::CLUSTER,
+            <$crate::data_model::sdm::gen_comm::GenCommHandler as $crate::data_model::sdm::gen_comm::ClusterHandler>::CLUSTER,
+            <$crate::data_model::sdm::adm_comm::AdminCommHandler as $crate::data_model::sdm::adm_comm::ClusterHandler>::CLUSTER,
+            <$crate::data_model::sdm::noc::NocHandler as $crate::data_model::sdm::noc::ClusterHandler>::CLUSTER,
+            <$crate::data_model::sdm::grp_key_mgmt::GrpKeyMgmtHandler as $crate::data_model::sdm::grp_key_mgmt::ClusterHandler>::CLUSTER,
+        )
+    };
+    (eth; $($cluster:expr $(,)?)*) => {
+        $crate::clusters!(
+            sys;
+            <$crate::data_model::sdm::gen_diag::GenDiagHandler as $crate::data_model::sdm::gen_diag::ClusterHandler>::CLUSTER,
+            <$crate::data_model::sdm::eth_diag::EthDiagHandler as $crate::data_model::sdm::eth_diag::ClusterHandler>::CLUSTER,
+            $crate::data_model::sdm::net_comm::NetworkType::Ethernet.cluster(),
+
+        )
+    };
+    (thread; $($cluster:expr $(,)?)*) => {
+        $crate::clusters!(
+            sys;
+            <$crate::data_model::sdm::gen_diag::GenDiagHandler as $crate::data_model::sdm::gen_diag::ClusterHandler>::CLUSTER,
+            <$crate::data_model::sdm::thread_diag::ThreadDiagHandler as $crate::data_model::sdm::thread_diag::ClusterHandler>::CLUSTER,
+            $crate::data_model::sdm::net_comm::NetworkType::Thread.cluster(),
+        )
+    };
+    (wifi; $($cluster:expr $(,)?)*) => {
+        $crate::clusters!(
+            sys;
+            <$crate::data_model::sdm::gen_diag::GenDiagHandler as $crate::data_model::sdm::gen_diag::ClusterHandler>::CLUSTER,
+            <$crate::data_model::sdm::wifi_diag::WifiDiagHandler as $crate::data_model::sdm::wifi_diag::ClusterHandler>::CLUSTER,
+            $crate::data_model::sdm::net_comm::NetworkType::Wifi.cluster(),
+        )
+    };
+    ($($cluster:expr $(,)?)*) => {
+        &[
+            $($cluster,)*
+        ]
+    }
+}
+
 /// A macro that generates a "with" fn for matching attributes and commands
 ///
 /// Usage:
@@ -338,6 +386,25 @@ macro_rules! with {
         #[allow(clippy::collapsible_match)]
         |attr, _, _| {
             if !attr.quality.contains($crate::data_model::objects::Quality::OPTIONAL) {
+                true
+            } else if let Ok(l) = attr.id.try_into() {
+                #[allow(unreachable_patterns)]
+                match l {
+                    $($id => true,)*
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        }
+    };
+    (system) => {
+        |attr, _, _| attr.is_system()
+    };
+    (system; $($id:path $(|)?)*) => {
+        #[allow(clippy::collapsible_match)]
+        |attr, _, _| {
+            if attr.is_system() {
                 true
             } else if let Ok(l) = attr.id.try_into() {
                 #[allow(unreachable_patterns)]

@@ -81,6 +81,22 @@ impl TLVWrite for TLVWriter<'_, '_> {
     fn rewind_to(&mut self, pos: Self::Position) {
         WriteBuf::rewind_tail_to(self.0, pos)
     }
+
+    fn str_cb(
+        &mut self,
+        tag: &TLVTag,
+        cb: impl FnOnce(&mut [u8]) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        self.0.str_cb(tag, cb)
+    }
+
+    fn utf8_cb(
+        &mut self,
+        tag: &TLVTag,
+        cb: impl FnOnce(&mut [u8]) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        self.0.utf8_cb(tag, cb)
+    }
 }
 
 /// A trait representing a storage where data can be serialized as a TLV stream.
@@ -227,6 +243,26 @@ pub trait TLVWrite {
         self.stri(tag, data.len(), data.iter().copied())
     }
 
+    /// Write a tag and a TLV Octet String to the TLV stream, where the Octet String is a slice of u8 bytes.
+    ///
+    /// The writing is done via a user-supplied callback `cb`, that is expected to fill the provided buffer with the data
+    /// and to return the length of the written data.
+    ///
+    /// This method is useful when the data to be written needs to be computed first, and the computation needs a buffer where
+    /// to operate.
+    ///
+    /// Note that this method always uses a Str16l value type to write the data, which restricts the data length to no more than
+    /// 65535 bytes.
+    ///
+    /// Note also that this method might not be supported by all `TLVWrite` implementations.
+    fn str_cb(
+        &mut self,
+        _tag: &TLVTag,
+        _cb: impl FnOnce(&mut [u8]) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        unimplemented!("str_cb not implemented for this TLVWrite instance");
+    }
+
     /// Write a tag and a TLV Octet String to the TLV stream, where the Octet String is
     /// anything that can be turned into an iterator of u8 bytes.
     ///
@@ -285,6 +321,26 @@ pub trait TLVWrite {
         }
 
         self.write_raw_data(data)
+    }
+
+    /// Write a tag and a TLV UTF-8 String to the TLV stream, where the UTF-8 String is a str.
+    ///
+    /// The writing is done via a user-supplied callback `cb`, that is expected to fill the provided buffer with the data
+    /// and to return the length of the written data.
+    ///
+    /// This method is useful when the data to be written needs to be computed first, and the computation needs a buffer where
+    /// to operate.
+    ///
+    /// Note that this method always uses a Utf16l value type to write the data, which restricts the data length to no more than
+    /// 65535 bytes.
+    ///
+    /// Note also that this method might not be supported by all `TLVWrite` implementations.
+    fn utf8_cb(
+        &mut self,
+        _tag: &TLVTag,
+        _cb: impl FnOnce(&mut [u8]) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        unimplemented!("utf8_cb not implemented for this TLVWrite instance");
     }
 
     /// Write a tag and a value indicating the start of a Struct TLV container.
@@ -398,11 +454,31 @@ pub trait TLVWrite {
         Ok(())
     }
 
+    /// Append a single byte to the TLV stream.
     fn write(&mut self, byte: u8) -> Result<(), Error>;
 
-    fn get_tail(&self) -> Self::Position;
+    /// Get the current position in the TLV stream.
+    ///
+    /// NOTE: This method might not be supported by all implementations and therefore it might panic.
+    fn get_tail(&self) -> Self::Position {
+        unimplemented!("get_tail not implemented for this TLVWrite instance");
+    }
 
-    fn rewind_to(&mut self, _pos: Self::Position);
+    /// Rewind the TLV stream to a previous position.
+    ///
+    /// NOTE: This method might not be supported by all implementations and therefore it might panic.
+    fn rewind_to(&mut self, _pos: Self::Position) {
+        unimplemented!("rewind_to not implemented for this TLVWrite instance");
+    }
+
+    /// Get a mutable slice of the available space in the TLV stream.
+    ///
+    /// NOTE: This method assumes that the TLV write implementation is writing to a buffer,
+    /// which might not be the case for all implementations. Therefore, this method might panic
+    /// if the implementation does not support it.
+    fn available_space(&mut self) -> &mut [u8] {
+        unimplemented!("available_space not implemented for this TLVWrite instance");
+    }
 }
 
 impl<T> TLVWrite for &mut T
@@ -422,6 +498,26 @@ where
     fn rewind_to(&mut self, pos: Self::Position) {
         (**self).rewind_to(pos)
     }
+
+    fn str_cb(
+        &mut self,
+        tag: &TLVTag,
+        cb: impl FnOnce(&mut [u8]) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        (**self).str_cb(tag, cb)
+    }
+
+    fn utf8_cb(
+        &mut self,
+        tag: &TLVTag,
+        cb: impl FnOnce(&mut [u8]) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        (**self).utf8_cb(tag, cb)
+    }
+
+    fn available_space(&mut self) -> &mut [u8] {
+        (**self).available_space()
+    }
 }
 
 impl TLVWrite for WriteBuf<'_> {
@@ -437,6 +533,26 @@ impl TLVWrite for WriteBuf<'_> {
 
     fn rewind_to(&mut self, pos: Self::Position) {
         WriteBuf::rewind_tail_to(self, pos)
+    }
+
+    fn str_cb(
+        &mut self,
+        tag: &TLVTag,
+        cb: impl FnOnce(&mut [u8]) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        WriteBuf::str_cb(self, tag, cb)
+    }
+
+    fn utf8_cb(
+        &mut self,
+        tag: &TLVTag,
+        cb: impl FnOnce(&mut [u8]) -> Result<usize, Error>,
+    ) -> Result<(), Error> {
+        WriteBuf::utf8_cb(self, tag, cb)
+    }
+
+    fn available_space(&mut self) -> &mut [u8] {
+        WriteBuf::empty_as_mut_slice(self)
     }
 }
 
